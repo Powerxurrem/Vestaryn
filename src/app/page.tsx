@@ -1,65 +1,78 @@
-import Image from "next/image";
+import { redirect } from "next/navigation";
+import { supabaseServerComponent } from "@/lib/supabase/server";
+import Link from "next/link";
 
-export default function Home() {
+export default async function Home() {
+  const supabase = await supabaseServerComponent();
+
+
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  // Get user's workspaces
+  const { data: memberships } = await supabase
+    .from("workspace_members")
+    .select("workspace_id")
+    .eq("user_id", user.id)
+    .limit(1);
+
+  let workspaceId = memberships?.[0]?.workspace_id;
+
+  if (!workspaceId) {
+    // Create default workspace
+    const { data: workspace } = await supabase
+      .from("workspaces")
+      .insert({
+        name: "Personal",
+        owner_user_id: user.id,
+      })
+      .select()
+      .single();
+
+    workspaceId = workspace?.id;
+
+    await supabase.from("workspace_members").insert({
+      workspace_id: workspaceId,
+      user_id: user.id,
+      role: "owner",
+    });
+  }
+
+  // Fetch repos
+  const { data: repos } = await supabase
+    .from("repos")
+    .select("id,name")
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: false });
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="p-8 space-y-6">
+      <h1 className="text-2xl font-semibold">Vestaryn</h1>
+
+      <form action="/api/repos" method="post" className="flex gap-2">
+        <input
+          name="name"
+          placeholder="New repo name"
+          className="border px-3 py-2 rounded"
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+        <button className="border px-3 py-2 rounded">
+          Create
+        </button>
+      </form>
+
+      <div className="space-y-2">
+        {repos?.map((repo) => (
+          <div key={repo.id} className="border p-3 rounded">
+            <Link href={`/repo/${repo.id}`} className="underline">
+              {repo.name}
+            </Link>
+          </div>
+        ))}
+      </div>
+
     </div>
   );
 }
