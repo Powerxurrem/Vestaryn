@@ -74,6 +74,21 @@ with check (
   )
 );
 
+alter table public.repo_files
+add column if not exists version integer not null default 1;
+
+create unique index if not exists repo_file_versions_file_version_uniq
+on public.repo_file_versions (file_id, version);
+
+alter table public.repo_file_versions
+add column if not exists file_id uuid references public.repo_files(id),
+add column if not exists version integer,
+add column if not exists storage_key text,
+add column if not exists size_bytes bigint,
+add column if not exists mime text,
+add column if not exists created_at timestamptz not null default now(),
+add column if not exists created_by uuid;
+
 -- Usually you don't allow update/delete of versions (append-only).
 -- If you want strict append-only: do NOT create update/delete policies.
 -- Leaving them absent will deny those actions under RLS.
