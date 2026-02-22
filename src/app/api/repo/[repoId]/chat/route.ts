@@ -114,7 +114,12 @@ function isTextMime(mime: string | null | undefined) {
     m.endsWith("+xml") ||
     m === "application/yaml" ||
     m === "application/x-yaml" ||
-    m === "application/toml"
+    m === "application/toml" ||
+    // ✅ add these:
+    m === "application/javascript" ||
+    m === "text/javascript" ||
+    m === "application/typescript" ||
+    m === "application/x-typescript"
   );
 }
 
@@ -131,26 +136,64 @@ async function vault_list_files(supabase: any, repoId: string) {
   return data ?? [];
 }
 
-async function vault_read_text(supabase: any, repoId: string, fileId: string) {
-  const { data: row, error } = await supabase
+async function vault_read_text(supabase: any, repoId: string, fileRef: string) {
+  // fileRef can be a UUID or a filename/path like "dog.js"
+
+  const isUuid = (v: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
+  // 1) Resolve metadata row deterministically
+  let row: any = null;
+
+  if (isUuid(fileRef)) {
+    const { data, error } = await supabase
+      .from("repo_files")
+      .select("id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at")
+      .eq("repo_id", repoId)
+      .eq("id", fileRef)
+      .maybeSingle();
+
+    if (error) throw new Error(`vault_read_text metadata failed: ${error.message}`);
+    row = data;
+} else {
+  const id = await resolveFileIdByPathOrName(
+    supabase,
+    repoId,
+    fileRef
+  );
+
+  if (!id) throw new Error("File not found (by name/path)");
+
+  const { data, error } = await supabase
     .from("repo_files")
-    .select("id, repo_id, path, name, mime, size_bytes, storage_key")
+    .select("id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at")
     .eq("repo_id", repoId)
-    .eq("id", fileId)
+    .eq("id", id)
     .maybeSingle();
 
   if (error) throw new Error(`vault_read_text metadata failed: ${error.message}`);
+
+  row = data;
+}
+
   if (!row) throw new Error("File not found");
+  if (row.deleted_at) throw new Error("File not found"); // hide soft-deleted rows
+
   if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
   if ((row.size_bytes ?? 0) > MAX_READ_BYTES)
     throw new Error(`File too large (>${MAX_READ_BYTES} bytes)`);
 
+  if (!row.storage_key) throw new Error("Missing storage_key");
+
+  // 2) Download blob and decode
   const { data: blob, error: dlErr } = await supabase.storage
     .from(VAULT_BUCKET)
     .download(row.storage_key);
 
   if (dlErr) throw new Error(`vault_read_text download failed: ${dlErr.message}`);
-  if (!blob) throw new Error("Download returned empty");
+
+  // IMPORTANT: empty files are valid — return empty string, don't error
+  if (!blob) return { id: row.id, path: row.path, name: row.name, mime: row.mime, content: "" };
 
   const ab = await blob.arrayBuffer();
   if (ab.byteLength > MAX_READ_BYTES)
@@ -159,6 +202,39 @@ async function vault_read_text(supabase: any, repoId: string, fileId: string) {
   const text = new TextDecoder("utf-8", { fatal: false }).decode(ab);
 
   return { id: row.id, path: row.path, name: row.name, mime: row.mime, content: text };
+}
+async function resolveFileIdByPathOrName(
+  supabase: any,
+  repoId: string,
+  wanted: string
+) {
+  const base = supabase
+    .from("repo_files")
+    .select("id, created_at")
+    .eq("repo_id", repoId)
+    .is("deleted_at", null);
+
+  // 1) path exact
+  let r = await base
+    .eq("path", wanted)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (r.error) throw new Error(`resolve(path) failed: ${r.error.message}`);
+  if (r.data?.id) return r.data.id;
+
+  // 2) name exact
+  r = await base
+    .eq("name", wanted)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (r.error) throw new Error(`resolve(name) failed: ${r.error.message}`);
+  if (r.data?.id) return r.data.id;
+
+  return null;
 }
 /**
  * Vault write model (controlled mutation):
@@ -396,38 +472,25 @@ async function runTool(
       console.log("[tool]", ts, name, { ok: true });
       return result;
     }
-
+    
 if (name === "vault_read_text") {
   let fileId = String(args?.fileId || "").trim();
 
-  // UUID check
   const looksUuid =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileId);
 
-  // If not UUID, treat as name/path and resolve
   if (!looksUuid) {
     const wanted = String(args?.path || args?.name || fileId).trim();
-
-    const { data: row, error } = await supabase
-      .from("repo_files")
-      .select("id")
-      .eq("repo_id", repoId)
-      .is("deleted_at", null)
-      .or(`path.eq.${wanted},name.eq.${wanted}`)
-      .maybeSingle();
-
-    if (error)
-      throw new Error(`vault_read_text resolve failed: ${error.message}`);
-    if (!row?.id)
-      throw new Error("File not found (by name/path)");
-
-    fileId = row.id;
+    const id = await resolveFileIdByPathOrName(supabase, repoId, wanted);
+    if (!id) throw new Error(`File not found (by name/path): ${wanted}`);
+    fileId = id;
   }
 
+  console.log("[vault_read_text] args=", args);
+  console.log("[vault_read_text] resolved fileId=", fileId);
+
   const result = await vault_read_text(supabase, repoId, fileId);
-
   console.log("[tool]", ts, name, { ok: true, fileId });
-
   return result;
 }
 
@@ -445,18 +508,13 @@ if (name === "vault_read_text") {
 
       if (!isUuid) {
         // The model often puts the filename in fileId; treat it as a path/name fallback.
-        const needle = path || fileId;
+        const needle = (path || fileId).trim();
         if (!needle) throw new Error("vault_propose_write missing fileId/path");
 
-        const files = await vault_list_files(supabase, repoId);
+        const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
+        if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
 
-        const match =
-          files.find((f: any) => f.path === needle) ||
-          files.find((f: any) => f.name === needle) ||
-          files.find((f: any) => String(f.path || "").endsWith("/" + needle));
-
-        if (!match?.id) throw new Error(`File not found by path/name: ${needle}`);
-        fileId = match.id;
+        fileId = resolvedId;
       }
 
       const result = await vault_propose_write(supabase, repoId, fileId, content);
@@ -475,16 +533,15 @@ if (name === "vault_apply_write") {
 
   if (!isUuid) {
     const needle = path || fileId;
-    if (!needle) throw new Error("vault_apply_write missing fileId/path");
+    if (!isUuid) {
+  const needle = (path || fileId).trim();
+  if (!needle) throw new Error("vault_apply_write missing fileId/path");
 
-    const files = await vault_list_files(supabase, repoId);
-    const match =
-      files.find((f: any) => f.path === needle) ||
-      files.find((f: any) => f.name === needle) ||
-      files.find((f: any) => String(f.path || "").endsWith("/" + needle));
+  const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
+  if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
 
-    if (!match?.id) throw new Error(`File not found by path/name: ${needle}`);
-    fileId = match.id;
+  fileId = resolvedId;
+}
   }
 
   const payload = {
@@ -640,7 +697,7 @@ Recreate proposal.`,
     let firstTokenTime: number | null = null;
 
     // buffer for a single tool call
-let pendingTool: { call_id: string; name: string; arguments: string } | null = null;
+let pendingTools: { call_id: string; name: string; arguments: string }[] = [];
       // track response id for tool follow-ups (stream returns an async iterable, not an object)
 
 // accumulate streamed function-call arguments (some SDKs send args in deltas)
@@ -658,22 +715,18 @@ for await (const event of respStream) {
   }
 
   // 2) function call item announced
-  if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
-    const callId = event.item.call_id || event.item.id;
-    if (callId) {
-      toolArgsByCallId.set(callId, event.item.arguments ?? "");
-      if (!pendingTool) {
-        pendingTool = {
-          call_id: callId,
-          name: event.item.name,
-          arguments: event.item.arguments ?? "",
-        };
-        console.log("[tool] captured", pendingTool);
-      } else {
-        console.log("[tool] extra tool call ignored", { name: event.item.name, callId });
-      }
-    }
+if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
+  const callId = event.item.call_id || event.item.id;
+  if (callId) {
+    toolArgsByCallId.set(callId, event.item.arguments ?? "");
+    pendingTools.push({
+      call_id: callId,
+      name: event.item.name,
+      arguments: event.item.arguments ?? "",
+    });
+    console.log("[tool] queued", { name: event.item.name, callId });
   }
+}
 
   // 3) arguments accumulation (SDKs differ: may be function_call_arguments.delta OR output_item.delta/done)
   if (event.type === "response.function_call_arguments.delta") {
@@ -683,9 +736,6 @@ for await (const event of respStream) {
       const next = prev + (event.delta ?? "");
       toolArgsByCallId.set(callId, next);
 
-      if (pendingTool && pendingTool.call_id === callId) {
-        pendingTool.arguments = next;
-      }
     }
   }
 
@@ -698,9 +748,6 @@ for await (const event of respStream) {
       const next = prev + delta;
       toolArgsByCallId.set(callId, next);
 
-      if (pendingTool && pendingTool.call_id === callId) {
-        pendingTool.arguments = next;
-      }
     }
   }
 
@@ -711,20 +758,6 @@ for await (const event of respStream) {
       const full = event.item.arguments ?? "";
       toolArgsByCallId.set(callId, full);
 
-      if (pendingTool && pendingTool.call_id === callId) {
-        pendingTool.arguments = full;
-      }
-    }
-  }
-
-  // 4) (optional) alternate tool call event shape
-  if (event.type === "response.function_call") {
-    if (!pendingTool) {
-      pendingTool = {
-        call_id: event.call_id,
-        name: event.name,
-        arguments: event.arguments ?? "{}",
-      };
     }
   }
 
@@ -770,70 +803,63 @@ if (event.type === "response.output_text.done") {
       
       
 // TOOL FOLLOW-UP LOOP (bounded)
-for (let i = 0; i < 3; i++) {
-  if (!pendingTool) break;
-  const tool = pendingTool as { call_id: string; name: string; arguments: string };
-  
-  pendingTool = null;
+for (let round = 0; round < 3; round++) {
+  if (pendingTools.length === 0) break;
 
-  const toolName = tool.name;
-  const callId = tool.call_id;
-  const argsJson = tool.arguments;
+  const toolsToRun = pendingTools;
+  pendingTools = [];
 
-  if (!argsJson || !argsJson.trim()) {
-    throw new Error(`Tool call had empty arguments for ${toolName} (call_id=${callId})`);
-  }
+  const toolOutputs: any[] = [];
 
-  let parsedArgs: any = {};
-  try {
-    parsedArgs = JSON.parse(argsJson);
-  } catch (e) {
-    throw new Error(`Tool call arguments were not valid JSON for ${toolName} (call_id=${callId})`);
-  }
+  for (const tool of toolsToRun) {
+    const callId = tool.call_id;
+    const toolName = tool.name;
 
-  const out = await runTool(
-    supabase,
-    repoId,
-    user.id,
-    content, // IMPORTANT: current user message
-    toolName,
-    parsedArgs
-  );
-if (toolName === "vault_propose_write" && out && !out.error) {
-  console.log("[tool] proposal out keys:", Object.keys(out));
-  console.log("[tool] proposal confirm value:", out.confirm);
-
-  console.log("[tool] sent __PROPOSAL__ marker");
-
-  controller.enqueue(
-    encoder.encode(`\n__PROPOSAL__:${JSON.stringify(out)}\n`)
-  );
-}
-    if (toolName === "vault_propose_write" && out && !out.error) {
-      controller.enqueue(
-        encoder.encode(`\n__PROPOSAL__:${JSON.stringify(out)}\n`)
-      );
+    const argsJson = (toolArgsByCallId.get(callId) ?? tool.arguments ?? "").trim();
+    if (!argsJson) {
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({ error: `Empty arguments for ${toolName}` }),
+      });
+      continue;
     }
-  if (!lastResponseId) {
-    throw new Error("Missing response id; cannot send tool output");
+
+    let parsedArgs: any;
+    try {
+      parsedArgs = JSON.parse(argsJson);
+    } catch {
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({ error: `Invalid JSON arguments for ${toolName}` }),
+      });
+      continue;
+    }
+
+    const out = await runTool(supabase, repoId, user.id, content, toolName, parsedArgs);
+
+    // only emit proposal marker for propose_write outputs
+    if (toolName === "vault_propose_write" && out && !out.error) {
+      controller.enqueue(encoder.encode(`\n__PROPOSAL__:${JSON.stringify(out)}\n`));
+    }
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
   }
 
-  console.log("[tool] follow-up previous_response_id", lastResponseId);
-  console.log("[tool] follow-up call_id", callId);
+  if (!lastResponseId) throw new Error("Missing response id; cannot send tool output");
 
   resp = await openai.responses.create({
     model: process.env.OPENAI_MODEL || "gpt-4o-mini",
     instructions: SYSTEM_PROTECTOR,
     previous_response_id: lastResponseId,
-input: [
-  {
-    type: "function_call_output",
-    call_id: callId,
-    output: JSON.stringify(out),
-  },
-],
-tools: TOOLS,
-tool_choice: "none",
+    input: toolOutputs,
+    tools: TOOLS,
+    tool_choice: "none",
     stream: true,
     max_output_tokens: 220,
   });

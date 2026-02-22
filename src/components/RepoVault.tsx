@@ -44,6 +44,9 @@ type RepoFile = {
   updated_at: string;
   created_at: string;
 };
+function isUuid(v: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
 
 // ─────────────────────────────────────────────────────────────
 // Component
@@ -71,6 +74,7 @@ export default function RepoVault({
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("untitled.md");
   const [creating, setCreating] = useState(false);
+  const validRepoId = isUuid(repoId);
 
   // ─────────────────────────────────────────────────────────────
   // Refs
@@ -102,25 +106,39 @@ export default function RepoVault({
   // ─────────────────────────────────────────────────────────────
   // Data ops: refresh list
   // ─────────────────────────────────────────────────────────────
-  async function refresh() {
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch(`/api/repos/${repoId}/files`, { cache: "no-store" });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
-      setFiles(j.files ?? []);
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to load files");
-    } finally {
-      setLoading(false);
-    }
+async function refresh() {
+  if (!validRepoId) {
+    setError(`invalid repoId: ${repoId}`);
+    return;
   }
+
+  setLoading(true);
+  setError(null);
+
+  try {
+    const r = await fetch(`/api/repos/${repoId}/files`, { cache: "no-store" });
+    const j = await r.json().catch(() => ({}));
+
+    if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
+
+    // only update files on success (prevents "disappear on refresh")
+    setFiles(j.files ?? []);
+  } catch (e: any) {
+    setError(e?.message ?? "Failed to load files");
+    // IMPORTANT: do NOT clear files here
+  } finally {
+    setLoading(false);
+  }
+}
 
   // ─────────────────────────────────────────────────────────────
   // Data ops: create file (empty v1)
   // ─────────────────────────────────────────────────────────────
   async function createFile() {
+    if (!validRepoId) {
+    setError(`invalid repoId: ${repoId}`);
+    return;
+}
     setCreating(true);
     setError(null);
 
@@ -159,6 +177,10 @@ export default function RepoVault({
   // Data ops: upload one file
   // ─────────────────────────────────────────────────────────────
   async function uploadOne(file: File) {
+    if (!validRepoId) {
+    setError(`invalid repoId: ${repoId}`);
+    return;
+}
     setUploading(true);
     setError(null);
 
@@ -186,6 +208,10 @@ export default function RepoVault({
   // Data ops: export/download via signed URL
   // ─────────────────────────────────────────────────────────────
   async function exportFile(f: RepoFile) {
+    if (!validRepoId) {
+    setError(`invalid repoId: ${repoId}`);
+    return;
+}
     setError(null);
 
     try {
@@ -209,6 +235,10 @@ export default function RepoVault({
   // Data ops: delete (soft-delete via API)
   // ─────────────────────────────────────────────────────────────
   async function deleteFile(f: RepoFile) {
+    if (!validRepoId) {
+    setError(`invalid repoId: ${repoId}`);
+    return;
+}
     setError(null);
 
     try {
@@ -327,9 +357,7 @@ export default function RepoVault({
         {/* Actions */}
         <div className="mt-2 flex gap-2">
           <button
-            className="px-3 py-2 rounded-md bg-white/10 hover:bg-white/15 text-sm text-white"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
+            disabled={uploading || !validRepoId}
           >
             {uploading ? "Uploading..." : "Upload"}
           </button>
@@ -340,7 +368,7 @@ export default function RepoVault({
               setCreateName("untitled.md");
               setCreateOpen(true);
             }}
-            disabled={creating}
+            disabled={creating || !validRepoId}
           >
             {creating ? "Creating..." : "+ Create"}
           </button>
@@ -348,7 +376,7 @@ export default function RepoVault({
           <button
             className="px-3 py-2 rounded-md bg-white/10 hover:bg-white/15 text-sm text-white"
             onClick={refresh}
-            disabled={loading}
+            disabled={loading || !validRepoId}
           >
             {loading ? "Loading..." : "Refresh"}
           </button>
@@ -375,10 +403,15 @@ export default function RepoVault({
             const f = e.dataTransfer.files?.[0];
             if (f) await uploadOne(f);
           }}
+          
         >
           Drop a file here
         </div>
-
+            {!validRepoId && (
+              <div className="mt-2 text-xs text-red-300">
+                invalid repoId: {String(repoId)}
+              </div>
+            )}
         {error && <div className="mt-2 text-xs text-red-300">{error}</div>}
       </div>
 
