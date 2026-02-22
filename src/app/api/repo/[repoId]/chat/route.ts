@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { supabaseServerComponent } from "@/lib/supabase/server";
-import crypto from "crypto";
+import { randomUUID, randomBytes, createHash } from "crypto";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -37,8 +37,10 @@ export const runtime = "nodejs";
 // OpenAI client
 // ─────────────────────────────────────────────────────────────
 const openai = new OpenAI({
+  
   apiKey: process.env.OPENAI_API_KEY!,
 });
+
 
 // ─────────────────────────────────────────────────────────────
 // SYSTEM_PROTECTOR (critical contract)
@@ -100,9 +102,46 @@ Rules:
 - If you output a confirmation phrase, print it alone inside a fenced code block and do not add punctuation or formatting.
 - content:
   "Now answer in the required format. Do NOT repeat the earlier text. Output exactly one set of [Observation]/[Assessment]/[Action]."
+  - If the user says “add”, “append”, or “also add”, prefer vault_propose_append over overwrite.
+  - If you output a confirmation phrase, output __APPLY__:{...} JSON only (no raw APPLY phrase).
 `;
 const VAULT_BUCKET = "vestaryn-files";
 const MAX_READ_BYTES = 200 * 1024;
+const SACRED_PATH = "memory/chamber-state.md";
+const SACRED_NAME = "chamber-state.md";
+const SACRED_MIME = "text/markdown";
+const SUMMARY_TRIGGER_MSGS = 260;  // when total messages exceed this
+const SUMMARY_KEEP_LAST = 40;      // keep only last N messages after summarizing
+const SUMMARY_TARGET_MSGS = 200;   // how many recent msgs to summarize
+const SACRED_TEMPLATE = `# Chamber State (Sacred)
+
+## Identity
+- Chamber: Vestaryn
+- Mode: Deterministic workspace cognition
+
+## Architectural Invariants
+- RLS canon (no deleted_at in SELECT policies)
+- DB is metadata source-of-truth
+- Storage keys: repos/<repoId>/<fileId>/vN
+- Signed URLs only (30m)
+- Soft-delete filtered at API/UI level
+- Assistant output contract: [Observation]/[Assessment]/[Action]
+
+## Current Focus
+- 
+
+## Decisions
+- 
+
+## Open Tasks
+- 
+
+## Risks / Watchouts
+- 
+
+## Active Files
+- 
+`;
 
 function isTextMime(mime: string | null | undefined) {
   const m = (mime || "").toLowerCase();
@@ -137,77 +176,73 @@ async function vault_list_files(supabase: any, repoId: string) {
 }
 
 async function vault_read_text(supabase: any, repoId: string, fileRef: string) {
-  // fileRef can be a UUID or a filename/path like "dog.js"
-
   const isUuid = (v: string) =>
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
-  // 1) Resolve metadata row deterministically
   let row: any = null;
 
   if (isUuid(fileRef)) {
     const { data, error } = await supabase
       .from("repo_files")
-      .select("id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at")
+      .select(
+        "id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at"
+      )
       .eq("repo_id", repoId)
       .eq("id", fileRef)
       .maybeSingle();
 
     if (error) throw new Error(`vault_read_text metadata failed: ${error.message}`);
     row = data;
-} else {
-  const id = await resolveFileIdByPathOrName(
-    supabase,
-    repoId,
-    fileRef
-  );
+  } else {
+    const id = await resolveFileIdByPathOrName(supabase, repoId, fileRef);
+    if (!id) throw new Error("File not found (by name/path)");
 
-  if (!id) throw new Error("File not found (by name/path)");
+    const { data, error } = await supabase
+      .from("repo_files")
+      .select(
+        "id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at"
+      )
+      .eq("repo_id", repoId)
+      .eq("id", id)
+      .maybeSingle();
 
-  const { data, error } = await supabase
-    .from("repo_files")
-    .select("id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at")
-    .eq("repo_id", repoId)
-    .eq("id", id)
-    .maybeSingle();
-
-  if (error) throw new Error(`vault_read_text metadata failed: ${error.message}`);
-
-  row = data;
-}
+    if (error) throw new Error(`vault_read_text metadata failed: ${error.message}`);
+    row = data;
+  }
 
   if (!row) throw new Error("File not found");
-  if (row.deleted_at) throw new Error("File not found"); // hide soft-deleted rows
+  if (row.deleted_at) throw new Error("File not found");
 
   if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
-  if ((row.size_bytes ?? 0) > MAX_READ_BYTES)
+  if ((row.size_bytes ?? 0) > MAX_READ_BYTES) {
     throw new Error(`File too large (>${MAX_READ_BYTES} bytes)`);
+  }
 
   if (!row.storage_key) throw new Error("Missing storage_key");
 
-  // 2) Download blob and decode
   const { data: blob, error: dlErr } = await supabase.storage
     .from(VAULT_BUCKET)
     .download(row.storage_key);
 
   if (dlErr) throw new Error(`vault_read_text download failed: ${dlErr.message}`);
-
-  // IMPORTANT: empty files are valid — return empty string, don't error
   if (!blob) return { id: row.id, path: row.path, name: row.name, mime: row.mime, content: "" };
 
   const ab = await blob.arrayBuffer();
-  if (ab.byteLength > MAX_READ_BYTES)
+  if (ab.byteLength > MAX_READ_BYTES) {
     throw new Error(`Downloaded bytes too large (>${MAX_READ_BYTES} bytes)`);
+  }
 
   const text = new TextDecoder("utf-8", { fatal: false }).decode(ab);
-
   return { id: row.id, path: row.path, name: row.name, mime: row.mime, content: text };
 }
-async function resolveFileIdByPathOrName(
-  supabase: any,
-  repoId: string,
-  wanted: string
-) {
+
+
+async function resolveFileIdByPathOrName(supabase: any, repoId: string, wanted: string) {
+  wanted = (wanted || "").trim();
+  wanted = wanted.replace(/^path:\s*/i, "").replace(/^name:\s*/i, "").trim();
+  wanted = wanted.replace(/^["'`]+|["'`]+$/g, "").trim();
+  wanted = wanted.replace(/^\*\*|\*\*$/g, "").replace(/^\*|\*$/g, "").trim();
+  
   const base = supabase
     .from("repo_files")
     .select("id, created_at")
@@ -247,7 +282,7 @@ async function resolveFileIdByPathOrName(
  *   APPLY <fileId> <nextHash>
  */
 function sha256(text: string) {
-  return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 function confirmPhrase(fileId: string, nextHash: string) {
@@ -279,11 +314,11 @@ async function vault_propose_write(
   if (!row) throw new Error("File not found");
   if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
 
-  const current = await vault_read_text(supabase, repoId, fileId);
+  const current = await vault_read_text(supabase, repoId, fileId); 
   const prevHash = sha256(current.content);
   const nextHash = sha256(newContent);
-
   const phrase = confirmPhrase(fileId, nextHash);
+  const confirm = confirmPhrase(fileId, nextHash);
 
   return {
     fileId,
@@ -296,6 +331,42 @@ async function vault_propose_write(
     content: newContent,
     bytes: Buffer.byteLength(newContent, "utf8"),
   };
+}
+
+async function vault_propose_append(
+  supabase: any,
+  repoId: string,
+  fileRef: string,
+  appendText: string
+  
+) {
+  // Resolve file id
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileRef);
+
+  let fileId = fileRef;
+
+  if (!isUuid) {
+    const resolved = await resolveFileIdByPathOrName(supabase, repoId, fileRef);
+    if (!resolved) throw new Error(`File not found by path/name: ${fileRef}`);
+    fileId = resolved;
+  }
+
+  // Read current content
+  const current = await vault_read_text(supabase, repoId, fileId);
+
+  const base = current.content ?? "";
+  const glue =
+    base.length === 0
+      ? ""
+      : base.endsWith("\n")
+      ? ""
+      : "\n";
+
+  const newContent = base + glue + appendText;
+
+  // Reuse overwrite proposal logic
+  return vault_propose_write(supabase, repoId, fileId, newContent);
 }
 
 async function vault_apply_write(
@@ -328,48 +399,75 @@ async function vault_apply_write(
   if (!row) throw new Error("File not found");
   if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
 
-  // optimistic concurrency: re-read current file and verify prevHash
+  // ─────────────────────────────────────────────────────────────
+  // Hash safety: idempotency + stale protection + content verification
+  // ─────────────────────────────────────────────────────────────
   const current = await vault_read_text(supabase, repoId, fileId);
   const currentHash = sha256(current.content);
+
+  // ✅ Idempotent retry: if file already equals proposed end-state, no-op success
+  if (currentHash === nextHash) {
+    return {
+      ok: true,
+      fileId,
+      path: row.path,
+      version:
+        typeof row.version === "number" ? row.version : parseVersionFromKey(row.storage_key),
+      storage_key: row.storage_key,
+      nextHash,
+      confirm: expected,
+      noop: true,
+    };
+  }
+
+  // Stale proposal protection: file must still match prevHash
   if (currentHash !== prevHash) {
     throw new Error("Stale proposal: file changed since proposal (hash mismatch)");
   }
 
-  // verify next hash matches content provided
+  // Verify nextHash matches provided content
   const computedNextHash = sha256(content);
-  if (computedNextHash !== nextHash) throw new Error("Proposed content hash mismatch");
+  if (computedNextHash !== nextHash) {
+    throw new Error("Proposed content hash mismatch");
+  }
 
-  // compute next version
-  const currentVersion =
+  // ─────────────────────────────────────────────────────────────
+  // Versioning + upload (collision-safe)
+  // ─────────────────────────────────────────────────────────────
+  const baseVersion =
     typeof row.version === "number" ? row.version : parseVersionFromKey(row.storage_key);
-  const nextVersion = currentVersion + 1;
-  const newKey = `repos/${repoId}/${fileId}/v${nextVersion}`;
 
-  // upload new object (no overwrite)
-  const blob = new Blob([content], { type: row.mime || "text/plain" });
-  const { error: upErr } = await supabase.storage
-    .from(VAULT_BUCKET)
-    .upload(newKey, blob, { upsert: false, contentType: row.mime || "text/plain" });
+  let nextVersion = baseVersion + 1;
+  let newKey = `repos/${repoId}/${fileId}/v${nextVersion}`;
 
-  if (upErr) throw new Error(`Upload failed: ${upErr.message}`);
+  let uploaded = false;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    newKey = `repos/${repoId}/${fileId}/v${nextVersion}`;
+
+    const blob = new Blob([content], { type: row.mime || "text/plain" });
+    const { error: upErr } = await supabase.storage
+      .from(VAULT_BUCKET)
+      .upload(newKey, blob, { upsert: false, contentType: row.mime || "text/plain" });
+
+    if (!upErr) {
+      uploaded = true;
+      break;
+    }
+
+    const msg = (upErr.message || "").toLowerCase();
+    if (msg.includes("already exists")) {
+      nextVersion += 1;
+      continue;
+    }
+
+    throw new Error(`Upload failed: ${upErr.message}`);
+  }
+
+  if (!uploaded) throw new Error("Upload failed: version collision retry exhausted");
 
   const sizeBytes = Buffer.byteLength(content, "utf8");
 
-  // append version row (best-effort; schema may differ)
-  const verInsert = await supabase.from("repo_file_versions").insert({
-    file_id: fileId,
-    version: nextVersion,
-    storage_key: newKey,
-    size_bytes: sizeBytes,
-    mime: row.mime,
-    created_by: userId,
-  });
-
-  if (verInsert.error) {
-    console.log("[vault_apply_write] repo_file_versions insert failed:", verInsert.error.message);
-  }
-
-  // update canonical pointer
+  // Update canonical pointer FIRST (authoritative)
   const upd = await supabase
     .from("repo_files")
     .update({
@@ -383,6 +481,26 @@ async function vault_apply_write(
     .eq("repo_id", repoId);
 
   if (upd.error) throw new Error(`repo_files update failed: ${upd.error.message}`);
+
+  // Append repo_file_versions (best-effort)
+  const verInsert = await supabase.from("repo_file_versions").insert({
+    file_id: fileId,
+    version: nextVersion,
+    storage_key: newKey,
+    size_bytes: sizeBytes,
+    mime: row.mime,
+    actor: "user",      // ✅ satisfies actor_check
+    created_by: userId, // ✅ who confirmed
+    sha256: nextHash,   // optional column
+  });
+
+  if (verInsert.error) {
+    console.log(
+      "[vault_apply_write] repo_file_versions insert failed:",
+      verInsert.error.message
+    );
+    // best-effort: do NOT throw
+  }
 
   return {
     ok: true,
@@ -436,6 +554,22 @@ const TOOLS: any[] = [
       additionalProperties: false,
     },
   },
+{
+  type: "function",
+  name: "vault_propose_append",
+  description:
+    "Propose appending text to an existing text file. Does NOT write. Returns hashes and a confirmation phrase.",
+  parameters: {
+    type: "object",
+    properties: {
+      fileId: { type: "string", description: "UUID of the file (preferred if known)" },
+      path: { type: "string", description: "File path or name, e.g. pikachu.txt" },
+      content: { type: "string", description: "Text to append" },
+    },
+    required: ["content", "path"],
+    additionalProperties: false,
+  },
+},
   {
     type: "function",
     name: "vault_apply_write",
@@ -495,36 +629,66 @@ if (name === "vault_read_text") {
 }
 
     // NEW: propose write (no mutation)
-    if (name === "vault_propose_write") {
-      const content = String(args?.content ?? "");
-      if (!content) throw new Error("vault_propose_write missing content");
+if (name === "vault_propose_write") {
+  const content = String(args?.content ?? "");
+  if (!content) throw new Error("vault_propose_write missing content");
 
-      // Accept either fileId (uuid) OR path/name (e.g. miauw.tsx)
-      let fileId = String(args?.fileId ?? "").trim();
-      const path = String(args?.path ?? "").trim();
+  const path = String(args?.path ?? "").trim();
+  let fileId = String(args?.fileId ?? "").trim();
 
-      const isUuid =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileId);
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileId);
 
-      if (!isUuid) {
-        // The model often puts the filename in fileId; treat it as a path/name fallback.
-        const needle = (path || fileId).trim();
-        if (!needle) throw new Error("vault_propose_write missing fileId/path");
+  // ✅ Prefer path when present (avoids wrong UUID hallucinations)
+  if (!isUuid) {
+    const needle = path || fileId;
+    if (!needle) throw new Error("vault_propose_write missing fileId/path");
 
-        const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
-        if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
+    const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
+    if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
 
+    fileId = resolvedId;
+  } else {
+    // Optional safety: if both provided, ensure they match; otherwise trust path
+    if (path) {
+      const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, path);
+      if (resolvedId && resolvedId !== fileId) {
+        console.log("[vault_propose_write] ignoring mismatched fileId, using path", { fileId, resolvedId, path });
         fileId = resolvedId;
       }
-
-      const result = await vault_propose_write(supabase, repoId, fileId, content);
-      console.log("[tool]", ts, name, { ok: true, fileId });
-      return result;
     }
+  }
 
+  const result = await vault_propose_write(supabase, repoId, fileId, content);
+  console.log("[tool]", ts, name, { ok: true, fileId });
+  return result;
+}
+    
+    console.log("[vault_propose_append] raw args:", args);
+if (name === "vault_propose_append") {
+  const content = String(args?.content ?? "");
+  if (!content) throw new Error("vault_propose_append missing content");
+
+  const path = String(args?.path ?? "").trim();
+const fileId = String(args?.fileId ?? "").trim();
+
+// Prefer path/name when present (avoids stale/wrong UUID hallucinations)
+let fileRef = path || fileId;
+
+if (!fileRef) throw new Error("vault_propose_append missing fileId/path");
+    console.log("[vault_propose_append] fileRef:", fileRef);
+  const result = await vault_propose_append(
+    supabase,
+    repoId,
+    fileRef,
+    content
+  );
+
+  console.log("[tool]", ts, name, { ok: true, fileRef });
+  return result;
+}
 // NEW: apply write (mutates, version bump) — requires user confirmation phrase
 if (name === "vault_apply_write") {
-  // resolve fileId if it’s actually a filename
   let fileId = String(args?.fileId ?? "").trim();
   const path = String(args?.path ?? "").trim();
 
@@ -532,16 +696,23 @@ if (name === "vault_apply_write") {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileId);
 
   if (!isUuid) {
-    const needle = path || fileId;
-    if (!isUuid) {
-  const needle = (path || fileId).trim();
-  if (!needle) throw new Error("vault_apply_write missing fileId/path");
+    // If fileId isn't a UUID, treat it as a name/path (but prefer explicit path)
+    const needle = (path || fileId).trim();
+    if (!needle) throw new Error("vault_apply_write missing fileId/path");
 
-  const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
-  if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
+    const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
+    if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
 
-  fileId = resolvedId;
-}
+    fileId = resolvedId;
+  } else {
+    // ✅ If both are present, validate they refer to the same file
+    if (path) {
+      const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, path);
+      if (resolvedId && resolvedId !== fileId) {
+        // Strict: refuse mutation if mismatch
+        throw new Error(`vault_apply_write mismatch: fileId does not match path (${path})`);
+      }
+    }
   }
 
   const payload = {
@@ -557,7 +728,13 @@ if (name === "vault_apply_write") {
   if (!payload.nextHash) throw new Error("vault_apply_write missing nextHash");
   if (!payload.confirm) throw new Error("vault_apply_write missing confirm");
 
-  const result = await vault_apply_write(supabase, repoId, userId, userMessage, payload);
+  const result = await vault_apply_write(
+  supabase,
+  repoId,
+  userId,
+  payload.confirm, // ✅ this is the phrase the user confirmed with
+  payload
+);
   console.log("[tool]", ts, name, { ok: true, fileId: payload.fileId });
   return result;
 }
@@ -568,9 +745,213 @@ if (name === "vault_apply_write") {
     return { error: e?.message || "Tool failed" };
   }
 }
+
+async function ensureSacredMemoryFile(
+  supabase: any,
+  repoId: string,
+  userId: string
+) {
+  // 1) Does it already exist?
+  const { data: existing, error: findErr } = await supabase
+    .from("repo_files")
+    .select("id, path, name, mime, storage_key, version")
+    .eq("repo_id", repoId)
+    .eq("path", SACRED_PATH)
+    .is("deleted_at", null)
+    .maybeSingle();
+
+  if (findErr) {
+    throw new Error(`ensureSacredMemoryFile lookup failed: ${findErr.message}`);
+  }
+  if (existing?.id) return existing;
+
+  // 2) Pre-generate fileId so storage_key can be NOT NULL at insert time
+  const fileId =
+  typeof randomUUID === "function"
+    ? randomUUID()
+    : randomBytes(16).toString("hex");
+
+  const storageKey = `repos/${repoId}/${fileId}/v1`;
+  const sizeBytes = Buffer.byteLength(SACRED_TEMPLATE, "utf8");
+
+  // 3) Insert repo_files with storage_key set (NOT NULL constraint)
+  const { error: createErr } = await supabase.from("repo_files").insert({
+    id: fileId,
+    repo_id: repoId,
+    path: SACRED_PATH,
+    name: SACRED_NAME,
+    mime: SACRED_MIME,
+    size_bytes: sizeBytes,
+    storage_key: storageKey,
+    version: 1,
+    updated_at: new Date().toISOString(),
+  });
+
+  if (createErr) {
+    throw new Error(`ensureSacredMemoryFile create failed: ${createErr.message}`);
+  }
+
+  // 4) Upload v1 content
+  const blob = new Uint8Array(Buffer.from(SACRED_TEMPLATE, "utf8"));
+  const { error: upErr } = await supabase.storage
+    .from(VAULT_BUCKET)
+    .upload(storageKey, blob, { upsert: false, contentType: SACRED_MIME });
+
+  if (upErr) {
+    // rollback DB row (best-effort)
+    await supabase.from("repo_files").delete().eq("id", fileId).eq("repo_id", repoId);
+    throw new Error(`ensureSacredMemoryFile upload failed: ${upErr.message}`);
+  }
+
+  // 5) Append repo_file_versions (best-effort)
+const ver = await supabase.from("repo_file_versions").insert({
+  file_id: fileId,
+  version: 1,
+  storage_key: storageKey,
+  size_bytes: sizeBytes,
+  mime: SACRED_MIME,
+  actor: "system",        // ✅ REQUIRED
+  created_by: userId,   // optional
+});
+
+  if (ver.error) {
+    console.log("[ensureSacredMemoryFile] versions insert failed:", ver.error.message);
+  }
+
+  return { id: fileId, path: SACRED_PATH, storage_key: storageKey, version: 1 };
+}
+
+type RepoMessageRow = {
+  id?: string;
+  role: string;
+  content: string;
+  created_at: string;
+};
+
+async function maybeSummarizeAndPrune(supabase: any, repoId: string, userId: string) {
+  const SUMMARY_TABLE = "repo_chat_summaries";
+
+  // 1) count messages
+  const { count, error: countErr } = await supabase
+    .from("repo_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("repo_id", repoId);
+
+  if (countErr) {
+    console.log("[summary] count failed:", countErr.message);
+    return null;
+  }
+
+  if ((count ?? 0) < SUMMARY_TRIGGER_MSGS) return null;
+
+  // 2) fetch recent messages to summarize
+  const { data: recent, error: recentErr } = await supabase
+    .from("repo_messages")
+    .select("role, content, created_at")
+    .eq("repo_id", repoId)
+    .order("created_at", { ascending: false })
+    .limit(SUMMARY_TARGET_MSGS);
+
+  if (recentErr) {
+    console.log("[summary] recent fetch failed:", recentErr.message);
+    return null;
+  }
+
+  const ordered = (recent ?? []).slice().reverse();
+
+  // 3) build summary prompt (clip to keep it fast)
+  const clip = (s: string, n = 700) => (s.length > n ? s.slice(0, n) + "…" : s);
+
+  const toSummarize = ordered
+    .map((m: { role: string; content: string }) => `${m.role.toUpperCase()}: ${clip(m.content)}`)
+    .join("\n\n");
+
+  const summaryPrompt = `
+Summarize this repo chat into a compact "handover" for future context.
+
+Output STRICT markdown with these sections:
+# Handover Summary
+## Current Goal
+## Decisions / Invariants
+## What Works (confirmed)
+## Open Problems
+## Next Actions
+## Risk Notes
+
+Do NOT include raw chat logs. Be concise but specific.
+
+CHAT:
+${toSummarize}
+`.trim();
+
+  // 4) OpenAI summary (use a small model explicitly)
+  const resp = await openai.responses.create({
+    model: "gpt-4o-mini",
+    input: summaryPrompt,
+    max_output_tokens: 400,
+  });
+
+  const summaryText =
+    (resp.output_text || "").trim() ||
+    "# Handover Summary\n\n(Empty summary produced)";
+
+  // 5) write summary into DB
+  const { data: inserted, error: insErr } = await supabase
+    .from(SUMMARY_TABLE)
+    .insert({
+      repo_id: repoId,
+      created_by: userId,
+      summary_md: summaryText,
+    })
+    .select("id")
+    .single();
+
+  if (insErr) {
+    const msg = insErr.message || "";
+
+    // If PostgREST can't see the table, don't spam logs every request.
+    if (msg.includes("schema cache") || msg.includes("Could not find the table")) {
+      console.log("[summary] disabled (table missing in schema cache)");
+      return null;
+    }
+
+    console.log("[summary] insert failed:", msg);
+    return null;
+  }
+// 6) prune old messages deterministically: keep last SUMMARY_KEEP_LAST, delete the rest
+const { data: keep, error: keepErr } = await supabase
+  .from("repo_messages")
+  .select("id")
+  .eq("repo_id", repoId)
+  .order("created_at", { ascending: false })
+  .limit(SUMMARY_KEEP_LAST);
+
+if (keepErr) {
+  console.log("[summary] keep fetch failed:", keepErr.message);
+} else {
+  const keepIds = (keep ?? []).map((x: any) => x.id).filter(Boolean);
+
+  if (keepIds.length > 0) {
+    const keepIdsCsv = keepIds.map((id: string) => `"${id}"`).join(",");
+
+    const { error: delErr } = await supabase
+      .from("repo_messages")
+      .delete()
+      .eq("repo_id", repoId)
+      .not("id", "in", `(${keepIdsCsv})`);
+
+    if (delErr) console.log("[summary] prune failed:", delErr.message);
+  }
+}
+  // ✅ DB-only fast path (no vault write, no prune)
+  return { summaryId: inserted.id, summaryPath: null };
+}
+
+
 // ─────────────────────────────────────────────────────────────
 // Route: POST /api/repo/[repoId]/chat
 // ─────────────────────────────────────────────────────────────
+console.log("[supabase]", process.env.NEXT_PUBLIC_SUPABASE_URL);
 export async function POST(
   req: Request,
   context: { params: Promise<{ repoId: string }> }
@@ -595,6 +976,42 @@ export async function POST(
 const { content } = await req.json();
 if (!content?.trim()) return new Response("Missing content", { status: 400 });
 
+// 🔒 Deterministic short-circuit: current year
+if (/what year|current year/i.test(content)) {
+  const year = new Date().getFullYear();
+
+  const txt = `[Observation]
+User requested current year.
+
+[Assessment]
+This is deterministic from server clock and should not use the LLM.
+
+[Action]
+Not a systems question. It is currently ${year}.`;
+
+  // persist user message (to keep chat history consistent)
+  await supabase.from("repo_messages").insert({
+    repo_id: repoId,
+    user_id: user.id,
+    role: "user",
+    content,
+  });
+
+  // persist assistant response
+  await supabase.from("repo_messages").insert({
+    repo_id: repoId,
+    user_id: user.id,
+    role: "assistant",
+    content: txt,
+  });
+
+  return new Response(txt, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+    },
+  });
+}
+
 // 🔒 APPLY SHORT-CIRCUIT (deterministic apply, bypass LLM)
 if (content.startsWith("__APPLY__:")) {
   const raw = content.slice("__APPLY__:".length);
@@ -602,13 +1019,15 @@ if (content.startsWith("__APPLY__:")) {
   try {
     const proposal = JSON.parse(raw);
 
-    const result = await vault_apply_write(
-      supabase,
-      repoId,
-      user.id,
-      proposal.confirm,
-      proposal
-    );
+    const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
+
+const result = await vault_apply_write(
+  supabase,
+  repoId,
+  user.id,
+  expected,
+  { ...proposal, confirm: expected }
+);
 
     return new Response(
       `[Observation]
@@ -644,6 +1063,22 @@ Recreate proposal.`,
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// Sacred Memory: ensure + read
+// ─────────────────────────────────────────────────────────────
+await ensureSacredMemoryFile(supabase, repoId, user.id);
+
+// Read the sacred file (by path). This uses your resolver + read path.
+let sacredText = "";
+try {
+  const sacred = await vault_read_text(supabase, repoId, SACRED_PATH);
+  sacredText = sacred.content || "";
+} catch (e: any) {
+  // deterministic: don't fail the whole chat if sacred memory read fails
+  sacredText = "";
+  console.log("[sacred] read failed:", e?.message);
+}
+
   // ─────────────────────────────────────────────────────────────
   // DB writes: insert user + fetch history (parallel)
   // ─────────────────────────────────────────────────────────────
@@ -670,6 +1105,23 @@ Recreate proposal.`,
     return new Response("Failed to save message", { status: 500 });
   }
 
+function ensureTriplet(text: string) {
+  const t = (text || "").trim();
+  if (!t) return "";
+
+  if (t.startsWith("[Observation]")) return t;
+
+  // Minimal deterministic wrapper so UI/filters never drop it
+  return `[Observation]
+Assistant produced a non-contract response.
+
+[Assessment]
+The raw output did not start with the required marker, so it would be hidden by contract-based rendering.
+
+[Action]
+${t}`.trim();
+}
+
   // ─────────────────────────────────────────────────────────────
   // History sanitation: keep only contract-compliant assistant messages
   // ─────────────────────────────────────────────────────────────
@@ -680,111 +1132,116 @@ Recreate proposal.`,
     return m.content.trim().startsWith("[Observation]");
   });
 
-  const input = [
-    ...cleanedHistory.map((m) => ({ role: m.role, content: m.content })),
-    { role: "user", content },
-  ];
+const sacredBlock = sacredText.trim()
+  ? `=== SACRED_MEMORY (authoritative, user-confirmed) ===\n${sacredText.trim()}\n=== END SACRED_MEMORY ===`
+  : `=== SACRED_MEMORY ===\n(empty)\n=== END SACRED_MEMORY ===`;
 
-  // ─────────────────────────────────────────────────────────────
-  // Streaming pipeline: OpenAI -> ReadableStream
-  // ─────────────────────────────────────────────────────────────
-  const encoder = new TextEncoder();
+const input = [
+  { role: "system", content: sacredBlock },
+  ...cleanedHistory.map((m) => ({ role: m.role, content: m.content })),
+  { role: "user", content },
+];
 
-  const stream = new ReadableStream({
+ // ─────────────────────────────────────────────────────────────
+// Streaming pipeline: OpenAI -> ReadableStream
+// ─────────────────────────────────────────────────────────────
+const encoder = new TextEncoder();
+
+const stream = new ReadableStream({
   async start(controller) {
     let lastResponseId: string | null = null;
     let fullText = "";
     let firstTokenTime: number | null = null;
 
     // buffer for a single tool call
-let pendingTools: { call_id: string; name: string; arguments: string }[] = [];
-      // track response id for tool follow-ups (stream returns an async iterable, not an object)
+    let pendingTools: { call_id: string; name: string; arguments: string }[] = [];
 
-// accumulate streamed function-call arguments (some SDKs send args in deltas)
-const toolArgsByCallId = new Map<string, string>();
+    // accumulate streamed function-call arguments
+    const toolArgsByCallId = new Map<string, string>();
 
-async function streamResponse(respStream: any) {
-      
-for await (const event of respStream) {
-  // 1) response id (must run for ALL events)
-  if (
-    (event.type === "response.created" || event.type === "response.in_progress") &&
-    event.response?.id
-  ) {
-    lastResponseId = event.response.id;
-  }
+    async function streamResponse(respStream: any, mode: "pass1" | "pass2") {
+      let sawToolsThisPass = false;
+      let sentAnyDelta = false;
+      let buffer = "";
 
-  // 2) function call item announced
-if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
-  const callId = event.item.call_id || event.item.id;
-  if (callId) {
-    toolArgsByCallId.set(callId, event.item.arguments ?? "");
-    pendingTools.push({
-      call_id: callId,
-      name: event.item.name,
-      arguments: event.item.arguments ?? "",
-    });
-    console.log("[tool] queued", { name: event.item.name, callId });
-  }
-}
+      for await (const event of respStream) {
+        const e: any = event;
 
-  // 3) arguments accumulation (SDKs differ: may be function_call_arguments.delta OR output_item.delta/done)
-  if (event.type === "response.function_call_arguments.delta") {
-    const callId = event.call_id || event.item_id;
-    if (callId) {
-      const prev = toolArgsByCallId.get(callId) ?? "";
-      const next = prev + (event.delta ?? "");
-      toolArgsByCallId.set(callId, next);
+        if (
+          (e.type === "response.created" || e.type === "response.in_progress") &&
+          e.response?.id
+        ) {
+          lastResponseId = e.response.id;
+        }
 
+        if (e.type === "response.output_item.added" && e.item?.type === "function_call") {
+          sawToolsThisPass = true;
+          const callId = e.item.call_id || e.item.id;
+          if (callId) {
+            toolArgsByCallId.set(callId, e.item.arguments ?? "");
+            pendingTools.push({
+              call_id: callId,
+              name: e.item.name,
+              arguments: e.item.arguments ?? "",
+            });
+            console.log("[tool] queued", { name: e.item.name, callId });
+          }
+          continue;
+        }
+
+        if (e.type === "response.function_call_arguments.delta") {
+          const callId = e.call_id || e.item_id;
+          if (callId) {
+            toolArgsByCallId.set(
+              callId,
+              (toolArgsByCallId.get(callId) ?? "") + (e.delta ?? "")
+            );
+          }
+          continue;
+        }
+
+        if (e.type === "response.output_text.delta") {
+          if (firstTokenTime === null) {
+            firstTokenTime = performance.now();
+            console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
+          }
+
+          sentAnyDelta = true;
+          const chunk = e.delta ?? "";
+
+          if (mode === "pass1") {
+            buffer += chunk;
+          } else {
+            fullText += chunk;
+            controller.enqueue(encoder.encode(chunk));
+          }
+          continue;
+        }
+
+        if (e.type === "response.output_text.done") {
+          if (sentAnyDelta) continue;
+          const txt = e.text ?? "";
+          if (!txt) continue;
+
+          if (firstTokenTime === null) {
+            firstTokenTime = performance.now();
+            console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
+          }
+
+          if (mode === "pass1") {
+            buffer += txt;
+          } else {
+            fullText += txt;
+            controller.enqueue(encoder.encode(txt));
+          }
+          continue;
+        }
+
+        if (e.type === "response.completed") break;
+      }
+
+      return { sawToolsThisPass, buffer };
     }
-  }
-
-  // 3b) some SDKs emit function_call argument deltas here
-  if (event.type === "response.output_item.delta" && event.item?.type === "function_call") {
-    const callId = event.item.call_id || event.item.id;
-    if (callId) {
-      const prev = toolArgsByCallId.get(callId) ?? "";
-      const delta = event.item.arguments_delta ?? event.item.arguments ?? "";
-      const next = prev + delta;
-      toolArgsByCallId.set(callId, next);
-
-    }
-  }
-
-  // 3c) some SDKs deliver the complete arguments on "done"
-  if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
-    const callId = event.item.call_id || event.item.id;
-    if (callId) {
-      const full = event.item.arguments ?? "";
-      toolArgsByCallId.set(callId, full);
-
-    }
-  }
-
-  // 5) text streaming
-  if (event.type === "response.output_text.delta") {
-    if (firstTokenTime === null) {
-      firstTokenTime = performance.now();
-      console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
-    }
-    fullText += event.delta;
-    controller.enqueue(encoder.encode(event.delta));
-  }
-if (event.type === "response.output_text.done") {
-  const txt = (event as any).text ?? "";
-  if (txt) {
-    if (firstTokenTime === null) {
-      firstTokenTime = performance.now();
-      console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
-    }
-    fullText += txt;
-    controller.enqueue(encoder.encode(txt));
-  }
-}
-  // 6) done
-  if (event.type === "response.completed") break;
-}
-}
 
     try {
       // PASS 1: normal streamed response with tools enabled
@@ -795,77 +1252,97 @@ if (event.type === "response.output_text.done") {
         tools: TOOLS,
         tool_choice: "auto",
         stream: true,
-        max_output_tokens: 220,
+        max_output_tokens: 180,
       });
 
-      await streamResponse(resp);
+      const pass1 = await streamResponse(resp, "pass1");
+      const initialHadTools = pendingTools.length > 0 || pass1.sawToolsThisPass;
 
-      
-      
-// TOOL FOLLOW-UP LOOP (bounded)
-for (let round = 0; round < 3; round++) {
-  if (pendingTools.length === 0) break;
+      if (!initialHadTools) {
+        const txt = (pass1.buffer || "").trim();
+        if (txt) {
+          const normalized = ensureTriplet(stripDuplicateTriplet(pass1.buffer || ""));
+          if (normalized) {
+            fullText += normalized;
+            controller.enqueue(encoder.encode(normalized));
+          }
+        }
+      } else {
+        fullText = ""; // tool path resets
+      }
 
-  const toolsToRun = pendingTools;
-  pendingTools = [];
+      console.log("[pass1] hadTools=", initialHadTools, "bufLen=", pass1.buffer?.length ?? 0);
 
-  const toolOutputs: any[] = [];
+      // TOOL FOLLOW-UP LOOP (bounded)
+      for (let round = 0; round < 3; round++) {
+        if (pendingTools.length === 0) break;
 
-  for (const tool of toolsToRun) {
-    const callId = tool.call_id;
-    const toolName = tool.name;
+        const toolsToRun = pendingTools;
+        pendingTools = [];
 
-    const argsJson = (toolArgsByCallId.get(callId) ?? tool.arguments ?? "").trim();
-    if (!argsJson) {
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ error: `Empty arguments for ${toolName}` }),
-      });
-      continue;
-    }
+        const toolOutputs: any[] = [];
 
-    let parsedArgs: any;
-    try {
-      parsedArgs = JSON.parse(argsJson);
-    } catch {
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify({ error: `Invalid JSON arguments for ${toolName}` }),
-      });
-      continue;
-    }
+        for (const tool of toolsToRun) {
+          const callId = tool.call_id;
+          const toolName = tool.name;
 
-    const out = await runTool(supabase, repoId, user.id, content, toolName, parsedArgs);
+          const argsJson = (toolArgsByCallId.get(callId) ?? tool.arguments ?? "").trim();
+          if (!argsJson) {
+            toolOutputs.push({
+              type: "function_call_output",
+              call_id: callId,
+              output: JSON.stringify({ error: `Empty arguments for ${toolName}` }),
+            });
+            continue;
+          }
 
-    // only emit proposal marker for propose_write outputs
-    if (toolName === "vault_propose_write" && out && !out.error) {
-      controller.enqueue(encoder.encode(`\n__PROPOSAL__:${JSON.stringify(out)}\n`));
-    }
+          let parsedArgs: any;
+          try {
+            parsedArgs = JSON.parse(argsJson);
+          } catch {
+            toolOutputs.push({
+              type: "function_call_output",
+              call_id: callId,
+              output: JSON.stringify({ error: `Invalid JSON arguments for ${toolName}` }),
+            });
+            continue;
+          }
 
-    toolOutputs.push({
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify(out),
-    });
-  }
+          const out = await runTool(supabase, repoId, user.id, content, toolName, parsedArgs);
 
-  if (!lastResponseId) throw new Error("Missing response id; cannot send tool output");
+          // emit proposal marker for propose outputs
+          if (
+            (toolName === "vault_propose_write" || toolName === "vault_propose_append") &&
+            out &&
+            !out.error
+          ) {
+            controller.enqueue(encoder.encode(`\n__PROPOSAL__:${JSON.stringify(out)}\n`));
+          }
 
-  resp = await openai.responses.create({
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-    instructions: SYSTEM_PROTECTOR,
-    previous_response_id: lastResponseId,
-    input: toolOutputs,
-    tools: TOOLS,
-    tool_choice: "none",
-    stream: true,
-    max_output_tokens: 220,
-  });
+          toolOutputs.push({
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify(out),
+          });
+        }
 
-  await streamResponse(resp);
-}
+        if (!lastResponseId) throw new Error("Missing response id; cannot send tool output");
+
+        resp = await openai.responses.create({
+          model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+          instructions: SYSTEM_PROTECTOR,
+          previous_response_id: lastResponseId,
+          input: toolOutputs,
+          tools: TOOLS,
+          tool_choice: "none",
+          stream: true,
+          max_output_tokens: 220,
+        });
+
+        // ✅ IMPORTANT: tool follow-up MUST stream to client
+        await streamResponse(resp, "pass2");
+      }
+
       // Hard fallback: never return empty
       if (!fullText.trim()) {
         const fallback =
@@ -875,25 +1352,35 @@ for (let round = 0; round < 3; round++) {
         fullText = fallback;
         controller.enqueue(encoder.encode(fallback));
       }
-function stripDuplicateTriplet(text: string) {
-  const first = text.indexOf("[Observation]");
-  if (first === -1) return text.trim();
 
-  const second = text.indexOf("[Observation]", first + 12);
-  if (second !== -1) {
-    return text.slice(0, second).trim();
-  }
+      function stripDuplicateTriplet(text: string) {
+        const first = text.indexOf("[Observation]");
+        if (first === -1) return text.trim();
 
-  return text.trim();
+        const second = text.indexOf("[Observation]", first + 12);
+        if (second !== -1) return text.slice(0, second).trim();
+
+        return text.trim();
+      }
+
+      fullText = stripDuplicateTriplet(fullText);
+      fullText = ensureTriplet(fullText);
+
+      // Persist assistant message
+const { error: aInsErr } = await supabase.from("repo_messages").insert({
+  repo_id: repoId,
+  user_id: user.id,
+  role: "assistant",
+  content: fullText.trim(),
+});
+
+if (aInsErr) {
+  console.log("[repo_messages] assistant insert failed:", aInsErr.message);
 }
 
-fullText = stripDuplicateTriplet(fullText);
-      // Persist assistant message
-      await supabase.from("repo_messages").insert({
-        repo_id: repoId,
-        user_id: user.id,
-        role: "assistant",
-        content: fullText.trim(),
+      // STEP 2: summarize+prune (fire-and-forget; never blocks stream close)
+      void maybeSummarizeAndPrune(supabase, repoId, user.id).catch((e: any) => {
+        console.log("[summary] skipped:", e?.message);
       });
 
       console.log("Total request time (ms):", Math.round(performance.now() - t0));
@@ -906,15 +1393,15 @@ fullText = stripDuplicateTriplet(fullText);
   },
 });
 
-  // ─────────────────────────────────────────────────────────────
-  // Response headers: prevent buffering
-  // ─────────────────────────────────────────────────────────────
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    },
-  });
+// ─────────────────────────────────────────────────────────────
+// Response headers: prevent buffering
+// ─────────────────────────────────────────────────────────────
+return new Response(stream, {
+  headers: {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  },
+});
 }

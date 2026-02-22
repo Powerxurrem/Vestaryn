@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ChatFrame from "@/components/chat/ChatFrame";
 import RepoVault from "@/components/RepoVault";
 import FileOverlay, { OpenTab } from "@/components/FileOverlay";
@@ -42,7 +42,16 @@ type RepoFile = {
   path: string;
   mime: string;
 };
+const storageKeyFor = (repoId: string) => `vestaryn:vaultTabs:${repoId}`;
 
+function safeJsonParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
 // ─────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────
@@ -52,14 +61,26 @@ export default function ChamberWithVault({ repoId }: { repoId: string }) {
   // ─────────────────────────────────────────────────────────────
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
 
   // Derived: quick lookup map (fileId -> tab)
-  const tabIndex = useMemo(() => {
-    const m = new Map<string, OpenTab>();
-    for (const t of tabs) m.set(t.fileId, t);
-    return m;
-  }, [tabs]);
+  useEffect(() => {
+  if (!repoId || repoId === "undefined") return;
 
+  const saved = safeJsonParse<{ tabs: OpenTab[]; activeFileId: string | null }>(
+    localStorage.getItem(storageKeyFor(repoId))
+  );
+
+  if (saved?.tabs?.length) {
+    setTabs(saved.tabs);
+    setActiveFileId(saved.activeFileId ?? saved.tabs[0]?.fileId ?? null);
+  } else {
+    setTabs([]);
+    setActiveFileId(null);
+  }
+
+  setHydrated(true);
+}, [repoId]);
   // ─────────────────────────────────────────────────────────────
   // Actions: open file (add tab if missing, activate)
   // ─────────────────────────────────────────────────────────────
@@ -67,23 +88,34 @@ export default function ChamberWithVault({ repoId }: { repoId: string }) {
     const next: OpenTab = { fileId: f.id, path: f.path, mime: f.mime };
 
     setTabs((prev) => {
-      if (tabIndex.has(f.id)) return prev;
+      if (prev.some((t) => t.fileId === f.id)) return prev;
       return [next, ...prev];
     });
 
     setActiveFileId(f.id);
   }
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!repoId || repoId === "undefined") return;
 
+    localStorage.setItem(
+      storageKeyFor(repoId),
+      JSON.stringify({ tabs, activeFileId })
+    );
+  }, [hydrated, repoId, tabs, activeFileId]);
   // ─────────────────────────────────────────────────────────────
   // Actions: close tab (remove + choose next active)
   // ─────────────────────────────────────────────────────────────
   function closeTab(fileId: string) {
-    setTabs((prev) => prev.filter((t) => t.fileId !== fileId));
+    setTabs((prev) => {
+      const nextTabs = prev.filter((t) => t.fileId !== fileId);
 
-    setActiveFileId((cur) => {
-      if (cur !== fileId) return cur;
-      const remaining = tabs.filter((t) => t.fileId !== fileId);
-      return remaining[0]?.fileId ?? null;
+      setActiveFileId((cur) => {
+        if (cur !== fileId) return cur;
+        return nextTabs[0]?.fileId ?? null;
+      });
+
+      return nextTabs;
     });
   }
 

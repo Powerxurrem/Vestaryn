@@ -20,6 +20,8 @@ export default function ChatFrame({ repoId }: Props) {
   const [thinking, setThinking] = useState(false);
   const [state, setState] = useState<ChamberState>("stable");
   const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
+  const loadSeqRef = useRef(0);
+  const loadAbortRef = useRef<AbortController | null>(null);
 
     const [lastProposal, setLastProposal] = useState<{
     fileId: string;
@@ -72,44 +74,88 @@ export default function ChatFrame({ repoId }: Props) {
   // ─────────────────────────────────────────────────────────────
   // Effects: load history
   // ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
+useEffect(() => {
+  if (!repoId || repoId === "undefined") return;
 
-    (async () => {
-      setLoading(true);
+  const seq = ++loadSeqRef.current;
 
-      const res = await fetch(`/api/repo/${repoId}/messages`);
-      const json = await res.json().catch(() => ({}));
+  // Abort any in-flight history load
+  loadAbortRef.current?.abort();
+  const controller = new AbortController();
+  loadAbortRef.current = controller;
 
-      if (!cancelled && res.ok) {
-        const loaded: Message[] = (json.messages ?? []).map((m: any) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          createdAt: new Date(m.created_at).getTime(),
-        }));
+  async function fetchOnce(): Promise<Message[]> {
+    const res = await fetch(`/api/repo/${repoId}/messages`, {
+      cache: "no-store",
+      credentials: "include",
+      signal: controller.signal,
+      headers: { "Cache-Control": "no-store" },
+    });
 
-        setMessages(
-          loaded.length > 0
-            ? loaded
-            : [
-                {
-                  id: makeId(),
-                  role: "system",
-                  content: "Vestaryn chamber initialized.",
-                  createdAt: Date.now(),
-                },
-              ]
-        );
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+
+    const loaded: Message[] = (json.messages ?? []).map((m: any) => {
+      const ts =
+        typeof m.createdAt === "number"
+          ? m.createdAt
+          : m.created_at
+          ? new Date(m.created_at).getTime()
+          : Date.now();
+
+      return {
+        id: String(m.id),
+        role: m.role,
+        content: String(m.content ?? ""),
+        createdAt: ts,
+      };
+    });
+
+    return loaded;
+  }
+
+  (async () => {
+    // Keep existing messages on screen; just show loader
+    setLoading(true);
+
+    try {
+      let loaded = await fetchOnce();
+
+      // Retry once if empty (covers transient auth/cookie readiness)
+      if (loaded.length === 0) {
+        await new Promise((r) => setTimeout(r, 150));
+        if (seq !== loadSeqRef.current) return;
+        loaded = await fetchOnce();
       }
 
-      if (!cancelled) setLoading(false);
-    })();
+      if (seq !== loadSeqRef.current) return;
 
-    return () => {
-      cancelled = true;
-    };
-  }, [repoId]);
+      // IMPORTANT: do not inject a fake "initialized" message
+      setMessages(loaded);
+    } catch (e: any) {
+      if (controller.signal.aborted) return;
+      if (seq !== loadSeqRef.current) return;
+
+      // If we already have messages, keep them; otherwise show deterministic error
+      setMessages((prev) =>
+        prev.length
+          ? prev
+          : [
+              {
+                id: makeId(),
+                role: "system",
+                content: `Chamber memory unavailable. ${e?.message ?? ""}`.trim(),
+                createdAt: Date.now(),
+              },
+            ]
+      );
+    } finally {
+      if (seq === loadSeqRef.current) setLoading(false);
+    }
+  })();
+
+  return () => controller.abort();
+}, [repoId]);
 
   // ─────────────────────────────────────────────────────────────
   // Effects: autoscroll
@@ -388,7 +434,50 @@ if (idx !== -1) {
 
           <div className="relative rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-md shadow-[0_-18px_45px_rgba(0,0,0,0.75),0_0_25px_rgba(59,130,246,0.08),inset_0_0_30px_rgba(59,130,246,0.05)]">
             <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-white/[0.06]" />
+            {lastProposal && pendingConfirm && !thinking && (
+              <div className="px-3 pt-3">
+                <div className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 p-3 text-xs text-emerald-100/90">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+                        Pending change
+                      </div>
+                      <div className="mt-1 truncate">
+                        File: <span className="text-emerald-100">{lastProposal.fileId}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLastProposal(null);
+                        setPendingConfirm(null);
+                      }}
+                      className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
 
+                  <div className="mt-2">
+                    <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+                      Confirmation phrase
+                    </div>
+                    <div className="mt-1 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-emerald-100 break-all">
+                    <div className="mt-2">
+  <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+    Proposed content (preview)
+  </div>
+  <div className="mt-1 max-h-[120px] overflow-auto rounded-md bg-black/30 p-2 font-mono text-[11px] text-white/80 whitespace-pre-wrap">
+    {lastProposal.content.slice(0, 800)}
+    {lastProposal.content.length > 800 ? "\n…(truncated)" : ""}
+  </div>
+</div>
+                      {pendingConfirm}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <div className="flex-1">
                 <ChatInput onSend={handleSend} />

@@ -1,25 +1,17 @@
 import { NextResponse } from "next/server";
 import { supabaseRouteHandler } from "../../../../../lib/supabase/server";
 
+// ✅ Canonical: never cache auth-bound responses
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate",
+  Pragma: "no-cache",
+  Vary: "Cookie",
+} as const;
+
 /**
  * @file app/api/repo/[repoId]/messages/route.ts
  * @purpose Repo message history read/write endpoint (non-streaming).
  * @exports GET, POST
- *
- * @sections
- * - Auth (Supabase route handler)
- * - GET: list messages (ordered ascending, capped)
- * - POST: insert message (role/content)
- *
- * @invariants
- * - Auth is required; RLS enforces repo access (this route never bypasses RLS).
- * - Ordering is explicit: GET returns oldest -> newest for deterministic render.
- * - Hard cap on history size (limit 200) to protect performance.
- * - This route does NOT enforce SYSTEM_PROTECTOR compliance; that filter lives in /chat.
- *
- * @touchpoints
- * - repo_messages: select(id, role, content, created_at), insert(repo_id, user_id, role, content)
- * - supabaseRouteHandler(): server auth context + RLS boundary
  */
 
 // ─────────────────────────────────────────────────────────────
@@ -36,7 +28,10 @@ export async function GET(
   // Auth
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData?.user) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    return NextResponse.json(
+      { error: "Not authenticated" },
+      { status: 401, headers: NO_STORE_HEADERS }
+    );
   }
 
   // Query
@@ -45,11 +40,19 @@ export async function GET(
     .select("id, role, content, created_at")
     .eq("repo_id", repoId)
     .order("created_at", { ascending: true })
-    .limit(200);
+    .limit(300);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500, headers: NO_STORE_HEADERS }
+    );
+  }
 
-  return NextResponse.json({ messages: data ?? [] });
+  return NextResponse.json(
+    { messages: data ?? [] },
+    { headers: NO_STORE_HEADERS }
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -66,7 +69,10 @@ export async function POST(
   // Auth
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData?.user) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    return NextResponse.json(
+      { error: "Not authenticated" },
+      { status: 401, headers: NO_STORE_HEADERS }
+    );
   }
 
   // Parse payload
@@ -75,7 +81,10 @@ export async function POST(
   const content = (body?.content as string | undefined)?.trim();
 
   if (!role || !content) {
-    return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid payload" },
+      { status: 400, headers: NO_STORE_HEADERS }
+    );
   }
 
   // Insert
@@ -90,7 +99,16 @@ export async function POST(
     .select("id, role, content, created_at")
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json(
+      { error: error.message },
+      { status: 500, headers: NO_STORE_HEADERS }
+    );
+  }
 
-  return NextResponse.json({ message: data });
+  // ✅ Return a single message (deterministic shape)
+  return NextResponse.json(
+    { message: data },
+    { headers: NO_STORE_HEADERS }
+  );
 }
