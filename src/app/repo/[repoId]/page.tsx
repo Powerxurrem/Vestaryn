@@ -1,5 +1,6 @@
 import ChamberWithVault from "@/components/ChamberWithVault";
 import { supabaseServerComponent } from "../../../lib/supabase/server";
+import RepoHud from "@/components/dev/RepoHud";
 
 type Props = {
   params: Promise<{ repoId: string }>;
@@ -24,10 +25,12 @@ export default async function RepoPage({ params }: Props) {
   if (error || !repo) return <div className="p-8">Repo not found</div>;
 
   return (
-    <div className="p-8 space-y-6">
-      <h1 className="text-2xl font-semibold">{repo.name}</h1>
-      <div className="text-sm opacity-70">Repo ID: {repo.id}</div>
-
+    
+    <div className="p-8 space-y-10">
+      <div className="relative pt-20">
+  <RepoHud repoId={repoId} repoName={null} />
+  {/* existing layout */}
+</div>
       <ChamberWithVault repoId={repoId} />
     </div>
   );

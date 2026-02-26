@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import ChatInput from "./ChatInput";
+import { flushSync } from "react-dom";
+import TierSwitcher from "@/components/dev/TierSwitcher";
 
 type Message = {
   id: string;
@@ -30,6 +32,7 @@ export default function ChatFrame({ repoId }: Props) {
     nextHash: string;
     confirm: string;
   } | null>(null);
+  const streamingAssistantIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   // hard lock to prevent double-submit / overlapping requests
@@ -45,24 +48,26 @@ export default function ChatFrame({ repoId }: Props) {
   // ─────────────────────────────────────────────────────────────
   // Helpers
   // ─────────────────────────────────────────────────────────────
-  function parseSections(content: string) {
-    const sections = { observation: "", assessment: "", action: "" };
+function parseSections(content: string) {
+  const sections = { observation: "", assessment: "", action: "" };
 
-    const obsMatch = content.match(
-      /\[Observation\]([\s\S]*?)(?=\[Assessment\]|\[Action\]|$)/
-    );
-    const assMatch = content.match(/\[Assessment\]([\s\S]*?)(?=\[Action\]|$)/);
-    const actMatch = content.match(/\[Action\]([\s\S]*)/);
-    if (sections.action.includes("[Observation]")) {
-  sections.action = sections.action.split("[Observation]")[0].trim();
-}
+  const obsMatch = content.match(
+    /\[Observation\]([\s\S]*?)(?=\[Assessment\]|\[Action\]|$)/
+  );
+  const assMatch = content.match(/\[Assessment\]([\s\S]*?)(?=\[Action\]|$)/);
+  const actMatch = content.match(/\[Action\]([\s\S]*)/);
 
-    if (obsMatch) sections.observation = obsMatch[1].trim();
-    if (assMatch) sections.assessment = assMatch[1].trim();
-    if (actMatch) sections.action = actMatch[1].trim();
+  if (obsMatch) sections.observation = obsMatch[1].trim();
+  if (assMatch) sections.assessment = assMatch[1].trim();
+  if (actMatch) sections.action = actMatch[1].trim();
 
-    return sections;
+  // Guard: if model repeats [Observation] inside [Action], trim it out
+  if (sections.action.includes("[Observation]")) {
+    sections.action = sections.action.split("[Observation]")[0].trim();
   }
+
+  return sections;
+}
 
   function extractConfirmPhrase(text: string) {
     const m = text.match(
@@ -70,6 +75,14 @@ export default function ChatFrame({ repoId }: Props) {
     );
     return m ? m[0].trim() : null;
   }
+
+function isContractComplete(t: string) {
+  return (
+    t.includes("[Observation]") &&
+    t.includes("[Assessment]") &&
+    t.includes("[Action]")
+  );
+}
 
   // ─────────────────────────────────────────────────────────────
   // Effects: load history
@@ -167,8 +180,10 @@ useEffect(() => {
   // ─────────────────────────────────────────────────────────────
   // Action: send message + stream assistant response
   // ─────────────────────────────────────────────────────────────
+
 const handleSend = async (text: string) => {
   const trimmed = text.trim();
+  console.log("[handleSend] sending:", trimmed);
   if (!trimmed) return;
 
   if (sendingRef.current) return;
@@ -185,6 +200,7 @@ const handleSend = async (text: string) => {
   setMessages((prev) => [...prev, userMsg]);
 
   const assistantId = makeId();
+  streamingAssistantIdRef.current = assistantId;
 
   setThinking(true);
   setState("analyzing");
@@ -194,17 +210,25 @@ const handleSend = async (text: string) => {
     {
       id: assistantId,
       role: "assistant",
-      content: ASSISTANT_PLACEHOLDER,
+      content: "",
       createdAt: Date.now(),
     },
   ]);
 
   try {
-    const res = await fetch(`/api/repo/${repoId}/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: trimmed }),
-    });
+const tier =
+  typeof window !== "undefined"
+    ? localStorage.getItem("vestaryn.tier") ?? "free"
+    : "free";
+
+const res = await fetch(`/api/repo/${repoId}/chat`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-vestaryn-tier": tier,
+  },
+  body: JSON.stringify({ content: trimmed }),
+});
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
@@ -220,6 +244,14 @@ const handleSend = async (text: string) => {
 
     while (true) {
       const { value, done } = await reader.read();
+      console.log("[stream] read", {
+      done,
+      bytes: value?.byteLength ?? 0,
+      t: performance.now().toFixed(0),
+    });
+      
+      console.log("[stream] chunk bytes:", value?.byteLength ?? 0);
+      
       if (done) break;
 
       const chunk = decoder.decode(value, { stream: true });
@@ -230,6 +262,10 @@ const handleSend = async (text: string) => {
       }
 
       accumulated += chunk;
+      if (accumulated.includes("__RESET__")) {
+        // wipe current assistant bubble and continue streaming fresh
+        accumulated = accumulated.replace(/\n__RESET__\n/g, "");
+      }
       const maybeConfirm = extractConfirmPhrase(accumulated);
         if (maybeConfirm) setPendingConfirm(maybeConfirm);  
 
@@ -273,11 +309,13 @@ if (idx !== -1) {
   }
 }
 
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId ? { ...m, content: accumulated } : m
-        )
-      );
+flushSync(() => {
+  setMessages((prev) =>
+    prev.map((m) =>
+      m.id === assistantId ? { ...m, content: accumulated } : m
+    )
+  );
+});
     } // ✅ closes while
 
     setThinking(false);
@@ -299,15 +337,20 @@ if (idx !== -1) {
     );
 
     console.error(e);
-  } finally {
-    sendingRef.current = false;
-  }
+    } finally {
+      streamingAssistantIdRef.current = null;
+      sendingRef.current = false;
+    }
 };
   // ─────────────────────────────────────────────────────────────
   // Render
   // ─────────────────────────────────────────────────────────────
   return (
+    
     <section className="relative h-[70vh] w-full rounded-xl overflow-hidden bg-gradient-to-b from-[#0a0f14] via-[#05080c] to-[#020304] shadow-[0_20px_40px_rgba(0,0,0,0.55),0_0_40px_rgba(59,130,246,0.12)] ring-1 ring-blue-500/25">
+<div className="fixed right-6 top-6 z-[999]">
+  <TierSwitcher />
+</div>
       <div
         className={`absolute top-0 left-0 right-0 z-20 h-[2px] transition-all duration-500 ${
           state === "stable"
@@ -358,6 +401,7 @@ if (idx !== -1) {
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.02] via-transparent to-black/35 shadow-[inset_0_0_90px_rgba(0,0,0,0.90)]" />
 
           <div className="relative space-y-4">
+
             {loading && messages.length === 0 && (
               <p className="text-white/30 text-sm">Loading memory…</p>
             )}
@@ -367,7 +411,9 @@ if (idx !== -1) {
             )}
 
             {messages.map((msg) => {
-              const isThinkingBubble = thinking && msg.role === "assistant";
+              const isThinkingBubble =
+          thinking && msg.role === "assistant" && streamingAssistantIdRef.current === msg.id;
+            streamingAssistantIdRef.current === msg.id;
 
               return (
                 <div
@@ -382,43 +428,55 @@ if (idx !== -1) {
                       : "bg-gradient-to-b from-white/[0.04] to-white/[0.02] border-white/[0.08] backdrop-blur-md text-white/80 shadow-[inset_0_0_30px_rgba(59,130,246,0.03)]"
                   }`}
                 >
-                  {msg.role === "assistant" ? (
-                    (() => {
-                      const s = parseSections(msg.content);
+                {msg.role === "assistant" ? (
+                  (() => {
+                    const isStreamingThis =
+                      thinking && streamingAssistantIdRef.current === msg.id;
+
+                    // While streaming, show raw text until the contract markers exist
+                    if (isStreamingThis && !isContractComplete(msg.content)) {
                       return (
-                        <div className="space-y-3">
-                          {s.observation && (
-                            <div className="border-l-2 border-white/20 pl-3">
-                              <div className="text-[10px] uppercase tracking-widest text-white/40 mb-1">
-                                Observation
-                              </div>
-                              <div className="text-white/80">{s.observation}</div>
-                            </div>
-                          )}
-                          <div className="h-px bg-white/5 my-2" />
-                          {s.assessment && (
-                            <div className="border-l-2 border-blue-400/40 pl-3">
-                              <div className="text-[10px] uppercase tracking-widest text-blue-300/60 mb-1">
-                                Assessment
-                              </div>
-                              <div className="text-white/85">{s.assessment}</div>
-                            </div>
-                          )}
-                          <div className="h-px bg-white/5 my-2" />
-                          {s.action && (
-                            <div className="border-l-2 border-emerald-400/50 pl-3">
-                              <div className="text-[10px] uppercase tracking-widest text-emerald-300/70 mb-1">
-                                Action
-                              </div>
-                              <div className="text-white/95">{s.action}</div>
-                            </div>
-                          )}
+                        <div className="whitespace-pre-wrap text-white/80">
+                          {msg.content}
                         </div>
                       );
-                    })()
-                  ) : (
-                    msg.content
-                  )}
+                    }
+
+                    const s = parseSections(msg.content);
+                    return (
+                      <div className="space-y-3">
+                        {s.observation && (
+                          <div className="border-l-2 border-white/20 pl-3">
+                            <div className="text-[10px] uppercase tracking-widest text-white/40 mb-1">
+                              Observation
+                            </div>
+                            <div className="text-white/80">{s.observation}</div>
+                          </div>
+                        )}
+                        <div className="h-px bg-white/5 my-2" />
+                        {s.assessment && (
+                          <div className="border-l-2 border-blue-400/40 pl-3">
+                            <div className="text-[10px] uppercase tracking-widest text-blue-300/60 mb-1">
+                              Assessment
+                            </div>
+                            <div className="text-white/85">{s.assessment}</div>
+                          </div>
+                        )}
+                        <div className="h-px bg-white/5 my-2" />
+                        {s.action && (
+                          <div className="border-l-2 border-emerald-400/50 pl-3">
+                            <div className="text-[10px] uppercase tracking-widest text-emerald-300/70 mb-1">
+                              Action
+                            </div>
+                            <div className="text-white/95">{s.action}</div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : (
+                  msg.content
+                )}
                 </div>
               );
             })}

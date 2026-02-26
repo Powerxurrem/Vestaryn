@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
+import { resolveTierPolicyWithMeta } from "@/lib/membership/tiers";
 
 /**
  * @file app/api/repos/[repoId]/files/[fileId]/route.ts
@@ -54,6 +55,39 @@ export async function PUT(req: Request, ctx: Ctx) {
   // Auth (keeps behavior consistent; RLS still enforces access)
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) return json({ error: "unauthorized" }, 401);
+
+// ─────────────────────────────────────────────────────────────
+// Tier clamp: exporting/downloading requires allowExport
+// Server is canonical; client headers are advisory and clamped.
+// ─────────────────────────────────────────────────────────────
+const requestedTier = req.headers.get("x-vestaryn-tier");
+
+const isAdminAllowed =
+  process.env.NODE_ENV !== "production" ||
+  process.env.VESTARYN_ALLOW_ADMIN_TIER === "1";
+
+const { policy: tierPolicy, meta: tierMeta } =
+  resolveTierPolicyWithMeta(requestedTier, { isAdminAllowed });
+
+// ✅ This line ensures tierMeta is "read" so TS is happy
+console.log("[tier]", tierMeta);
+
+console.log("[tier]", {
+  requested: tierMeta.requested,
+  effective: tierMeta.effective,
+  adminClamped: tierMeta.adminClamped,
+  forced: tierMeta.forced,
+  model: tierPolicy.model,
+  maxOutputTokens: tierPolicy.output.maxOutputTokens,
+  maxToolRounds: tierPolicy.tools.maxToolRounds,
+});
+
+if (!tierPolicy.capabilities.allowExport) {
+  return json(
+    { error: "Export requires Pro. Upgrade to unlock.", code: "TIER_EXPORT_BLOCKED" },
+    403
+  );
+}
 
   // Parse payload
   const body = await req.json().catch(() => ({}));

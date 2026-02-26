@@ -1,468 +1,195 @@
-Vestaryn
+🧠 MASTER HANDOVER — Vestaryn Canon v3
 
-Deterministic workspace-based AI cognition system.
+(Tier-Governed Deterministic Cognition Engine)
 
-Vestaryn combines a structured AI chat layer with a file-backed artifact vault under strict architectural boundaries.
+1️⃣ Core Invariants (Must Never Break)
 
-1. System Overview
+Authority
 
-Vestaryn is composed of three primary layers:
+Server is canonical.
 
-🧠 Cognitive Layer
+Client tier header is advisory only.
 
-Structured AI chamber per repository.
+All execution limits derive from resolved tierPolicy.
 
-Streaming responses via OpenAI Responses API
+Determinism
 
-Deterministic output contract:
+Vault writes are 2-step confirm.
 
-[Observation]
+Apply is hash-verified and stale-safe.
 
-[Assessment]
+Idempotent retries must no-op safely.
 
-[Action]
+Tool Discipline
 
-Assistant history filtered for contract compliance
+Tools must never fabricate state.
 
-Limited context window (performance-controlled)
+File operations require explicit identifiers.
 
-True streaming via ReadableStream
+Tool depth capped by tier policy.
 
-🗂 Vault Layer
+No duplicate PASS1/PASS2 streaming.
 
-Artifact management for repo-scoped files.
+Streaming Integrity
 
-Deterministic storage key format:
+Stream must close cleanly.
 
-repos/<repoId>/<fileId>/vN
+PASS1 text discarded if tools execute.
 
-Signed URL access (30 min expiry)
+Only tool-followup output is streamed when tools run.
 
-DB metadata is canonical
+Contract Enforcement
 
-Soft delete via deleted_at
+Assistant messages must start with [Observation].
 
-Version table present (v1 active model)
+Non-contract output is flagged, not silently accepted.
 
-🔐 Storage + Access Boundaries
+2️⃣ Tier Governance Layer (Server-Resolved)
 
-Postgres RLS controls access only
+Flow:
 
-Soft-delete visibility handled at API level
+Client → x-vestaryn-tier
+Server → resolveTierPolicy(requestedTier, { isAdminAllowed })
 
-Storage objects accessed via signed URLs only
+const tierPolicy = resolveTierPolicy(requestedTier, { isAdminAllowed });
 
-No blob proxying
+All runtime behavior derives from:
 
-2. Architectural Invariants (Critical)
+model
 
-These rules must not be violated.
+max_output_tokens
 
-RLS Canon
+maxToolRounds
 
-RLS policies control access only.
+capabilities
 
-deleted_at must NOT appear in SELECT RLS policies.
+No client authority.
+Production clamps admin escalation via env.
 
-Soft deletes are filtered at API/UI level.
+3️⃣ Capability Matrix (Concrete Levers)
+Tier	Model	Tokens	Tool Rounds	Arch Mode	Export	Multi-file
+Free	Mini	Low	Low	❌	❌	❌
+Builder	Mini	Medium	Medium	❌	Basic	❌
+Pro	Mini	High	Higher	❌	Yes	Yes
+Elite	Reasoning Default	Highest	Highest	✅	Multi	Yes
 
-Storage Key Canon
+Enterprise tier reserved above Elite.
 
-Format is deterministic and security-relevant:
+Capabilities enforced server-side:
 
-repos/<repoId>/<fileId>/vN
+allowExport
+allowMultiExport
+allowCreateFiles
+allowCreateTrees
+allowArchitectureMode
+4️⃣ Architecture Mode Resolver (Server Clamp)
 
-Never construct ad-hoc storage paths.
+Architecture Mode is:
 
-Metadata Canon
+Intent-detected
 
-repo_files is source-of-truth for metadata.
+Tier-gated
 
-UI trusts DB response, not local assumptions.
+Server-resolved
 
-PUT overwrites blob (v1 model), then DB is updated.
+Applied to both PASS1 + PASS2
 
-Signed URL Model
+const useArchitectureMode =
+  allowArchitecture && wantsArchitecture;
 
-30 minute expiry
+Protector selection:
 
-Generated per request
+const instructions =
+  useArchitectureMode
+    ? SYSTEM_PROTECTOR_ARCH
+    : SYSTEM_PROTECTOR_DEFAULT;
 
-Never stored client-side
+Client cannot force architecture mode.
 
-3. Vault File Lifecycle
-Create
+5️⃣ Export Enforcement (Dual Layer)
 
-Insert repo_files row
+Client:
 
-Upload storage object (v1)
+Button disabled if capability false.
 
-Rollback DB on upload failure
+Server:
 
-Upload
+Tier re-resolved.
 
-Upload storage object
+403 returned if not allowed.
 
-Insert repo_files
+Server is canonical.
 
-Insert repo_file_versions
+6️⃣ Vault Deterministic Apply Invariant
 
-Roll back in reverse order on failure
+Apply is valid only if:
 
-Edit (PUT)
+currentHash === prevHash
 
-Overwrite existing storage key (upsert)
+Proposed nextHash matches content hash
 
-Update metadata in DB
+Confirm phrase matches exactly
 
-Return canonical DB row
+Retry safe if currentHash === nextHash
 
-Read (GET)
+Collision safety enforced via:
 
-Load DB metadata
+Versioned storage key vN
 
-Resolve latest version storage_key (if present)
+DB constraints / transactional update
 
-Generate signed URL
+7️⃣ Credit System (Not Yet Enforced)
 
-Return metadata + signed URL
+HUD displays placeholder credits.
+Future enforcement must include:
 
-Delete
+Server-side credit ledger
 
-Soft delete only (deleted_at)
+Token usage accounting
 
-Storage object is not removed
+Per-period limits
 
-Visibility filtered by API
+Hard clamp on exhaustion
 
-4. Cognitive Flow
-Message Send
+Until then:
+Tier is policy enforcement, not economic enforcement.
 
-Insert user message
+8️⃣ Logging & Observability (Required)
 
-Fetch recent history (limited window)
+Each request must log:
 
-Filter assistant history to contract-compliant messages
+resolved tier
 
-Stream OpenAI response
+model
 
-Persist assistant message after stream completion
+maxOutputTokens
 
-Streaming Model
+maxToolRounds
 
-First token transitions UI to “deep”
+mode (default | arch)
 
-Placeholder bubble replaced on first chunk
+This prevents silent policy drift.
 
-Accumulate deltas
+9️⃣ System Identity
 
-Persist full text after completion
+Vestaryn is:
 
-5. UI Planes
-Chamber Layout
+A tier-governed deterministic cognition engine
+with structured output contracts
+capability-gated behavior
+server-enforced authority
+and tool-discipline guarantees.
 
-Left: RepoVault
+Not a chatbot.
+Not a UI wrapper.
+Not a toy.
 
-Right: ChatFrame
+🔟 Next Enforcement Layer (When Ready)
 
-Overlay: FileOverlay (tabs)
+Server-side credit ledger
 
-Tab Authority
+Storage quota enforcement
 
-ChamberWithVault owns open tabs + active tab
+Architecture-mode manual override toggle (Elite only)
 
-RepoVault emits file metadata
-
-FileOverlay handles fetch + save
-
-6. Current Model Status
-
-Stable:
-
-Streaming
-
-Signed URL model
-
-Soft-delete handling
-
-Deterministic storage key
-
-Metadata canonicalization
-
-Not yet active:
-
-Version bumping on edit
-
-Conflict detection
-
-Autosave
-
-Multi-tab editor layering
-
-Pagination for large chat histories
-
-7. Performance Principles
-
-Limit history window (chat)
-
-Avoid large context windows
-
-No proxying blobs
-
-Fetch signed URLs only when needed
-
-DB index on (repo_id, created_at)
-
-8. Design Philosophy
-
-Vestaryn prioritizes:
-
-Determinism over convenience
-
-Explicit boundaries over hidden behavior
-
-Clear separation of concerns
-
-Structural clarity over feature density
-
-Every new feature must respect:
-
-RLS Canon
-
-Storage Key Canon
-
-Metadata Canon
-
-
-
-///// chat handover
-🧠 MASTER HANDOVER — VESTARYN (Vault + Tooling Stabilization Phase)
-0️⃣ Context
-
-Vestaryn is a deterministic workspace-based AI cognition system.
-
-Architecture:
-
-Cognitive Layer — Structured chamber using OpenAI Responses API
-
-Vault Layer — File-backed artifact system (Supabase Storage + Postgres metadata)
-
-UI Layer — Obsidian-style chamber with overlay editor + streaming cognition
-
-Current state:
-Vault tool calls working. Versioned writes implemented. Proposal/apply model functioning.
-Remaining instability: chat memory hydration across refresh.
-
-1️⃣ Cognitive Layer (Stable Core)
-Streaming
-
-OpenAI Responses API
-
-True streaming via ReadableStream
-
-TTFT + total latency logging
-
-Placeholder bubble replaced on first chunk
-
-Output Contract (Protector)
-
-Assistant MUST return:
-
-[Observation]
-...
-[Assessment]
-...
-[Action]
-...
-
-Enforced via:
-
-History filter: only assistant messages starting with [Observation] are reused.
-
-Strip duplicate triplets safeguard.
-
-Tooling Layer
-
-Registered tools:
-
-vault_list_files
-
-vault_read_text
-
-vault_propose_write
-
-vault_apply_write
-
-Tool loop:
-
-Single pending tool per pass
-
-Bounded follow-up loop (max 3)
-
-Uses previous_response_id
-
-tool_choice: none after tool execution
-
-Handles streamed argument deltas correctly
-
-Explicit error logging
-
-Apply shortcut:
-
-__APPLY__:{json}
-
-Bypasses LLM
-
-Direct deterministic vault_apply_write
-
-2️⃣ Vault Layer (Operational)
-Storage Key Canon
-repos/<repoId>/<fileId>/vN
-
-Strict invariant.
-
-Write Model
-
-vault_propose_write → hash + confirmation phrase
-
-vault_apply_write:
-
-optimistic concurrency (prevHash check)
-
-new version upload (no overwrite)
-
-append repo_file_versions
-
-update canonical pointer in repo_files
-
-update version + size_bytes + updated_at
-
-Read Model
-
-Resolve by UUID OR filename
-
-Ignore soft-deleted rows
-
-MIME filter for text-read
-
-MAX_READ_BYTES guard
-
-Download from storage
-
-Empty file returns empty string (not error)
-
-3️⃣ UI Layer
-ChamberWithVault
-
-Tabs persisted in localStorage:
-
-vestaryn:vaultTabs:<repoId>
-
-Hydrates on repoId change
-
-Active tab restored
-
-RepoVault
-
-Create
-
-Upload
-
-Export via signed URL
-
-Soft delete
-
-Refresh
-
-ChatFrame
-
-Streams assistant output
-
-Detects __PROPOSAL__: marker
-
-Stores proposal hashes
-
-Confirm & Apply button
-
-Hydrates history via:
-
-GET /api/repo/[repoId]/messages
-4️⃣ Current Problem
-
-After full refresh:
-
-Vault files load correctly.
-
-Chat history sometimes appears empty.
-
-/api/repo/[repoId]/messages returns 200.
-
-Supabase RLS active.
-
-No-store headers added.
-
-ChatFrame loader hardened.
-
-Suspected remaining causes:
-
-Supabase auth cookie not present on first load.
-
-supabaseRouteHandler session mismatch.
-
-Race condition: ChatFrame loads before auth context stabilizes.
-
-Edge caching at platform layer.
-
-Inserted messages using different route path (repo vs repos mismatch).
-
-This is now the primary debugging focus.
-
-5️⃣ Architectural Invariants (Do Not Break)
-
-DB is metadata canon.
-
-Storage keys deterministic.
-
-RLS never filters by deleted_at.
-
-Soft-delete handled at API layer.
-
-Tools never fabricate filenames.
-
-Assistant history must be contract-compliant only.
-
-No blob proxying.
-
-No silent tool auto-apply.
-
-Version bump on every mutation.
-
-6️⃣ Performance Principles
-
-Limit history window (16 for LLM, 200 for UI)
-
-No large context windows
-
-Avoid blob proxying
-
-Signed URLs only
-
-Index on (repo_id, created_at)
-
-Stream always, never buffer
-
-7️⃣ Next Focus Options
-
-You can choose direction in the new chat:
-
-🔍 Fix chat memory hydration fully (auth/session deep inspection)
-
-🔒 Add advisory lock to apply_write (concurrency hardening)
-
-🧠 Add vault diff preview before apply
-
-⚙ Activate full version browsing in UI
-
-📜 Add deterministic message pagination
-
-🚀 Optimize TTFT (<1.8s target)
+Multi-instance atomic safety (DB-level)

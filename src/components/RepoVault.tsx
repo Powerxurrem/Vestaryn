@@ -3,6 +3,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+type Tier = "free" | "builder" | "pro" | "elite";
+const TIER_KEY = "vestaryn.tier";
+
+const ALLOW_EXPORT_UI: Record<Tier, boolean> = {
+  free: false,
+  builder: false,
+  pro: true,
+  elite: true,
+};
+
+function getTier(): Tier {
+  const v = typeof window !== "undefined" ? localStorage.getItem(TIER_KEY) : null;
+  return v === "builder" || v === "pro" || v === "elite" ? v : "free";
+}
+
 /**
  * @file RepoVault.tsx
  * @purpose Vault sidebar UI for repo files: list, upload, create, export, soft-delete.
@@ -96,6 +111,14 @@ export default function RepoVault({
     y: 0,
   });
 
+const [tier, setTier] = useState<Tier>("free");
+
+useEffect(() => {
+  setTier(getTier());
+  const onFocus = () => setTier(getTier());
+  window.addEventListener("focus", onFocus);
+  return () => window.removeEventListener("focus", onFocus);
+}, []);
   // ─────────────────────────────────────────────────────────────
   // Effects: mount gate for portals
   // ─────────────────────────────────────────────────────────────
@@ -204,32 +227,58 @@ async function refresh() {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Data ops: export/download via signed URL
-  // ─────────────────────────────────────────────────────────────
-  async function exportFile(f: RepoFile) {
-    if (!validRepoId) {
+// ─────────────────────────────────────────────────────────────
+// Data ops: export/download (force download, no new tab)
+// ─────────────────────────────────────────────────────────────
+async function exportFile(f: RepoFile) {
+  if (!validRepoId) {
     setError(`invalid repoId: ${repoId}`);
     return;
-}
-    setError(null);
-
-    try {
-      const r = await fetch(`/api/repos/${repoId}/files/${f.id}`, {
-        cache: "no-store",
-      });
-
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
-
-      const signedUrl: string | undefined = j.signed_url;
-      if (!signedUrl) throw new Error("Missing signed_url");
-
-      window.open(signedUrl, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      setError(e?.message ?? "Export failed");
-    }
   }
+  setError(null);
+
+  try {
+    const tier =
+      typeof window !== "undefined"
+        ? localStorage.getItem("vestaryn.tier") ?? "free"
+        : "free";
+
+    const r = await fetch(`/api/repos/${repoId}/files/${f.id}`, {
+      cache: "no-store",
+      headers: {
+        "x-vestaryn-tier": tier,
+      },
+    });
+
+    const j = await r.json();
+    if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
+
+    const signedUrl: string | undefined = j.signed_url;
+    if (!signedUrl) throw new Error("Missing signed_url");
+
+    // Download the signed URL as a blob so we can force "Save as..."
+    const fileRes = await fetch(signedUrl, { cache: "no-store" });
+    if (!fileRes.ok) throw new Error(`Download failed (${fileRes.status})`);
+
+    const blob = await fileRes.blob();
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    // prefer path/name if available; fall back to id
+    const filename =
+      (f.path?.split("/").pop() || f.name || `${f.id}`).replace(/[^\w.\-]+/g, "_");
+    a.download = filename;
+
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(url);
+  } catch (e: any) {
+    setError(e?.message ?? "Export failed");
+  }
+}
 
   // ─────────────────────────────────────────────────────────────
   // Data ops: delete (soft-delete via API)
@@ -496,15 +545,29 @@ async function refresh() {
               Open
             </button>
 
-            <button
-              className="w-full text-left px-3 py-2 text-sm text-white/80 hover:bg-white/10"
-              onClick={async () => {
-                await exportFile(menu.file!);
-                setMenu({ open: false, x: 0, y: 0, file: null });
-              }}
-            >
-              Export / Download
-            </button>
+            {(() => {
+              const canExport = ALLOW_EXPORT_UI[tier];
+
+              return (
+                <button
+                  className={`w-full text-left px-3 py-2 text-sm ${
+                    canExport
+                      ? "text-white/80 hover:bg-white/10"
+                      : "text-white/30 cursor-not-allowed"
+                  }`}
+                  disabled={!canExport}
+                  title={canExport ? "Download file" : "Export requires Pro. Upgrade to unlock."}
+                  onClick={async () => {
+                    if (!canExport) return;
+
+                    await exportFile(menu.file!);
+                    setMenu({ open: false, x: 0, y: 0, file: null });
+                  }}
+                >
+                  Export / Download
+                </button>
+              );
+            })()}
 
             <div className="h-px bg-white/10" />
 
