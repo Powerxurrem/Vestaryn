@@ -1025,10 +1025,22 @@ console.log("[policy]", {
 // 🔒 Runner connectivity test (deterministic, bypass LLM)
 if (content.trim() === "__RUNNER_PING__") {
   try {
+    console.log("[runner_ping] calling runnerRun", {
+      base: (process.env.RUNNER_URL ?? "").trim(),
+      secretLen: ((process.env.RUNNER_SECRET ?? "").trim()).length,
+      repoId,
+    });
+
     const result = await runnerRun({
       jobId: `ping-${repoId}-${Date.now()}`,
       commandId: "ping",
-      timeoutMs: 10000,
+      timeoutMs: 30_000,
+    });
+
+    console.log("[runner_ping] runnerRun returned", {
+      ok: result.ok,
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
     });
 
     const txt =
@@ -1037,14 +1049,27 @@ if (content.trim() === "__RUNNER_PING__") {
       `[Action]\nstdout:\n${(result.stdout ?? "").slice(0, 1000)}\n\n` +
       `stderr:\n${(result.stderr ?? "").slice(0, 1000)}\n`;
 
-    return new Response(txt, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    return new Response(txt, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
   } catch (e: any) {
+    console.log("[runner_ping] error", {
+      name: e?.name,
+      message: e?.message,
+      code: e?.code,
+    });
+    console.log("[runner_ping] message:", e?.message);
+    console.log("[runner_ping] cause:", e?.cause);
+
     const txt =
       `[Observation]\nRunner ping failed.\n\n` +
       `[Assessment]\n${e?.message ?? "Unknown error"}\n\n` +
       `[Action]\nCheck RUNNER_URL/RUNNER_SECRET and Fly app status.\n`;
 
-    return new Response(txt, { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    return new Response(txt, {
+      status: 500,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
   }
 }
 

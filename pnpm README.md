@@ -1,195 +1,210 @@
-🧠 MASTER HANDOVER — Vestaryn Canon v3
+🧠 MASTER HANDOVER — Vestaryn Runner Integration (Execution Sandbox Phase v1)
+Goal
 
-(Tier-Governed Deterministic Cognition Engine)
+Integrate a remote execution sandbox (“runner”) so Vestaryn can verify code changes (tests/lint/typecheck) deterministically via HTTP, instead of guessing. Runner is deployed on Fly; Vestaryn runs on Vercel/local.
 
-1️⃣ Core Invariants (Must Never Break)
+✅ What’s Done
+1) Runner Service (Fly)
 
-Authority
+Runner is an Express service with:
 
-Server is canonical.
+GET /health → { ok: true }
 
-Client tier header is advisory only.
+POST /run → executes allowlisted commands in an isolated temp dir
 
-All execution limits derive from resolved tierPolicy.
+Auth:
 
-Determinism
+Requires header: Authorization: Bearer <RUNNER_SECRET>
 
-Vault writes are 2-step confirm.
+Supports:
 
-Apply is hash-verified and stale-safe.
+snapshotUrl (optional): downloads zip, extracts into workDir, then runs command
 
-Idempotent retries must no-op safely.
+Captures stdout/stderr and returns them inline (snippets)
 
-Tool Discipline
+Zip extraction uses unzipper (and @types/unzipper installed)
 
-Tools must never fabricate state.
+Tested locally with a dummy zip served via python -m http.server:
 
-File operations require explicit identifiers.
+snapshotUrl worked
 
-Tool depth capped by tier policy.
+npm test printed TEST_OK
 
-No duplicate PASS1/PASS2 streaming.
+Deployed to Fly under stable app name:
 
-Streaming Integrity
+Base URL: https://vestaryn-runner.fly.dev
 
-Stream must close cleanly.
+GET /health returns ok:true
 
-PASS1 text discarded if tools execute.
+2) Vestaryn (Main App) — Runner Client + Ping Route Shortcut
 
-Only tool-followup output is streamed when tools run.
+Added src/lib/runner/client.ts with runnerRun():
 
-Contract Enforcement
+Reads RUNNER_URL and RUNNER_SECRET from env
 
-Assistant messages must start with [Observation].
+Calls ${RUNNER_URL}/run
 
-Non-contract output is flagged, not silently accepted.
+Throws error on non-200 (includes HTTP status + body)
 
-2️⃣ Tier Governance Layer (Server-Resolved)
+Added deterministic command in the chat route:
 
-Flow:
+If chat content is __RUNNER_PING__, Vestaryn calls runner with commandId: "ping" and returns a triplet response.
 
-Client → x-vestaryn-tier
-Server → resolveTierPolicy(requestedTier, { isAdminAllowed })
+Placement is correct:
 
-const tierPolicy = resolveTierPolicy(requestedTier, { isAdminAllowed });
+After tier policy resolution
 
-All runtime behavior derives from:
+Before credits, sacred/profile reads, and LLM stream
 
-model
+3) Dev Productivity
 
-max_output_tokens
+Added a Windows .bat launcher to open two terminals:
 
-maxToolRounds
+Terminal A → Vestaryn main pnpm dev
 
-capabilities
+Terminal B → runner npm start
 
-No client authority.
-Production clamps admin escalation via env.
+❌ Current Blocking Issue (Must Fix Next)
 
-3️⃣ Capability Matrix (Concrete Levers)
-Tier	Model	Tokens	Tool Rounds	Arch Mode	Export	Multi-file
-Free	Mini	Low	Low	❌	❌	❌
-Builder	Mini	Medium	Medium	❌	Basic	❌
-Pro	Mini	High	Higher	❌	Yes	Yes
-Elite	Reasoning Default	Highest	Highest	✅	Multi	Yes
+__RUNNER_PING__ returns:
 
-Enterprise tier reserved above Elite.
+Runner HTTP 401 Unauthorized
 
-Capabilities enforced server-side:
+Meaning:
 
-allowExport
-allowMultiExport
-allowCreateFiles
-allowCreateTrees
-allowArchitectureMode
-4️⃣ Architecture Mode Resolver (Server Clamp)
+Vestaryn can reach runner (network OK)
 
-Architecture Mode is:
+But the Bearer token Vestaryn sends does not match the runner’s RUNNER_SECRET on Fly.
 
-Intent-detected
+This is NOT a fetch/network issue anymore; it’s strictly auth/secret sync.
 
-Tier-gated
+🔒 Intended Secret Locations (Only These Matter)
 
-Server-resolved
+Per environment, there are only two places:
 
-Applied to both PASS1 + PASS2
+Runner (Fly)
 
-const useArchitectureMode =
-  allowArchitecture && wantsArchitecture;
+RUNNER_SECRET stored as Fly secret
 
-Protector selection:
+Runner process reads it at startup
 
-const instructions =
-  useArchitectureMode
-    ? SYSTEM_PROTECTOR_ARCH
-    : SYSTEM_PROTECTOR_DEFAULT;
+Vestaryn server runtime
 
-Client cannot force architecture mode.
+Local dev: .env.local in Vestaryn project root
 
-5️⃣ Export Enforcement (Dual Layer)
+Vercel prod: Vercel env vars for Vestaryn project
 
-Client:
+No .env.local needed in runner repo unless running runner locally.
 
-Button disabled if capability false.
+✅ Next Steps (Do These in Order)
+Step 1 — Make secret mismatch impossible to hide (fingerprint logs)
 
-Server:
+Add temporary logs (no full secret leaks):
 
-Tier re-resolved.
+In Vestaryn src/lib/runner/client.ts before fetch:
 
-403 returned if not allowed.
+log:
 
-Server is canonical.
+RUNNER_URL
 
-6️⃣ Vault Deterministic Apply Invariant
+secretLen
 
-Apply is valid only if:
+secretHead (first 6)
 
-currentHash === prevHash
+secretTail (last 6)
 
-Proposed nextHash matches content hash
+In Runner server.ts on boot:
 
-Confirm phrase matches exactly
+log:
 
-Retry safe if currentHash === nextHash
+secretLen
 
-Collision safety enforced via:
+secretHead
 
-Versioned storage key vN
+secretTail
 
-DB constraints / transactional update
+Then compare. They must match.
 
-7️⃣ Credit System (Not Yet Enforced)
+Step 2 — Rotate secret from single source of truth
 
-HUD displays placeholder credits.
-Future enforcement must include:
+Generate new secret S locally:
 
-Server-side credit ledger
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-Token usage accounting
+Set it:
 
-Per-period limits
+Fly
 
-Hard clamp on exhaustion
+flyctl secrets set RUNNER_SECRET=S -a vestaryn-runner
 
-Until then:
-Tier is policy enforcement, not economic enforcement.
+Vestaryn local
 
-8️⃣ Logging & Observability (Required)
+.env.local:
 
-Each request must log:
+RUNNER_URL=https://vestaryn-runner.fly.dev
 
-resolved tier
+RUNNER_SECRET=S
 
-model
+Restart pnpm dev (env loads only on boot)
 
-maxOutputTokens
+Vercel (Vestaryn project)
 
-maxToolRounds
+Set same:
 
-mode (default | arch)
+RUNNER_URL
 
-This prevents silent policy drift.
+RUNNER_SECRET
 
-9️⃣ System Identity
+Redeploy
 
-Vestaryn is:
+Also add .trim() on both sides:
 
-A tier-governed deterministic cognition engine
-with structured output contracts
-capability-gated behavior
-server-enforced authority
-and tool-discipline guarantees.
+runner: (process.env.RUNNER_SECRET ?? "").trim()
 
-Not a chatbot.
-Not a UI wrapper.
-Not a toy.
+vestaryn client: (process.env.RUNNER_SECRET ?? "").trim()
 
-🔟 Next Enforcement Layer (When Ready)
+Step 3 — Confirm __RUNNER_PING__ returns ok:true
 
-Server-side credit ledger
+Expected:
 
-Storage quota enforcement
+[Observation] Runner ping executed
 
-Architecture-mode manual override toggle (Elite only)
+stdout contains pong
 
-Multi-instance atomic safety (DB-level)
+After Ping Is Green (Next Feature Work)
+
+Implement “verify loop” with real repo snapshot:
+
+Build repo snapshot zip from Vault (Supabase storage / repo_files)
+
+Upload zip to storage
+
+Create signed URL (10 min)
+
+Call runner with commandId: node_test and snapshotUrl
+
+Return stdout/stderr to user
+
+Later: tier-gate + credit-charge runner usage
+
+Runner Allowlist Commands (Current)
+
+ping (should print pong)
+
+node_test
+
+node_lint
+
+node_typecheck
+
+(Exact mapping exists in runner COMMANDS.)
+
+Known Notes / Past Issues Resolved
+
+Earlier “fetch failed” was due to missing env or wrong secret; now it’s consistently a 401 mismatch.
+
+Fly initially had multiple apps and multiple machines; cleaned up to a single app and single machine.
+
+Fly UI hides secret values after setting; use rotation via CLI to ensure correctness.
+
+Runner local npm run dev with ts-node ESM is annoying; recommended path is build + start. (Optional: use tsx for dev.)

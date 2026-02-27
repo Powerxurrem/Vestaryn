@@ -13,25 +13,42 @@ export async function runnerRun(args: {
   snapshotUrl?: string;
   timeoutMs?: number;
 }): Promise<RunnerResult> {
-  const base = process.env.RUNNER_URL;
-  const secret = process.env.RUNNER_SECRET;
+  const baseRaw = (process.env.RUNNER_URL ?? "").trim();
+  const secret = (process.env.RUNNER_SECRET ?? "").trim();
+  const base = baseRaw.replace(/\/+$/, "");
 
-  if (!base) throw new Error("RUNNER_URL not set");
-  if (!secret) throw new Error("RUNNER_SECRET not set");
-
-  const resp = await fetch(`${base}/run`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${secret}`,
-    },
-    body: JSON.stringify(args),
+  console.log("[runner_client]", {
+    base,
+    secretLen: secret.length,
+    secretHead: secret.slice(0, 6),
+    secretTail: secret.slice(-6),
   });
 
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => "");
-    throw new Error(`Runner HTTP ${resp.status}: ${txt}`);
-  }
+  if (!base) throw new Error("RUNNER_URL missing/empty");
+  if (!secret) throw new Error("RUNNER_SECRET missing/empty");
 
-  return (await resp.json()) as RunnerResult;
+  const timeoutMs = args.timeoutMs ?? 30_000;
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(`${base}/run`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${secret}`,
+      },
+      body: JSON.stringify(args),
+      signal: ac.signal,
+    });
+
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      throw new Error(`Runner HTTP ${resp.status}: ${txt}`);
+    }
+
+    return (await resp.json()) as RunnerResult;
+  } finally {
+    clearTimeout(t);
+  }
 }
