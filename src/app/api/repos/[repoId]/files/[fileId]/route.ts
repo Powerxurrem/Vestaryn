@@ -82,11 +82,11 @@ console.log("[tier]", {
   maxToolRounds: tierPolicy.tools.maxToolRounds,
 });
 
-if (!tierPolicy.capabilities.allowExport) {
-  return json(
-    { error: "Export requires Pro. Upgrade to unlock.", code: "TIER_EXPORT_BLOCKED" },
-    403
-  );
+const url = new URL(req.url);
+const mode = (url.searchParams.get("mode") ?? "open").toLowerCase();
+
+if (mode === "export" && !tierPolicy.capabilities.allowExport) {
+  return new NextResponse("Export is not available on your tier. Upgrade to Pro.", { status: 403 });
 }
 
   // Parse payload

@@ -225,7 +225,7 @@ All enforcement happens server-side.
 
 UI reflects policy but never grants authority.
 
-4) API Map (Current)
+4) API Map (Updated)
 Repo Registry
 
 GET/POST /api/repos
@@ -240,13 +240,31 @@ POST /api/repos/[repoId]/files/upload
 
 GET/PUT/DELETE /api/repos/[repoId]/files/[fileId]
 
-Export enforcement:
+Open vs Export (Tier-Gated)
 
-GET /api/repos/[repoId]/files/[fileId]
+File GET now supports modes:
 
-Signed URL only returned if allowExport === true
+GET /api/repos/[repoId]/files/[fileId]?mode=open (default)
+
+Returns signed URL for editor/open (not export-gated)
+
+GET /api/repos/[repoId]/files/[fileId]?mode=export
+
+Export-gated (allowExport === true)
 
 Otherwise 403
+
+✅ This prevents “edit/save” from being blocked by export tier gates.
+
+(New) Vault Import
+
+POST /api/repos/[repoId]/files/import-zip
+
+Imports a zip into repo_files.path tree
+
+Writes versions with sha256
+
+Uses admin client for bulk storage/DB writes (server-authoritative)
 
 Chamber
 
@@ -254,13 +272,11 @@ POST /api/repo/[repoId]/chat
 
 GET /api/repo/[repoId]/messages
 
-Note the namespace split:
+Namespace split (unchanged)
 
 /api/repos/... → Vault + registry
 
 /api/repo/... → Chamber cognition
-
-This separation is intentional.
 
 5) Visual Planes (Current Model)
 System Layer

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
 
 /**
@@ -63,6 +63,8 @@ export async function POST(req: Request, ctx: Ctx) {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) return json({ error: "unauthorized" }, 401);
 
+  const vaultBucket = process.env.VAULT_BUCKET ?? "vestaryn-files";
+
   // Parse payload
   const body = await req.json().catch(() => ({}));
   const name = String(body?.name ?? "").trim();
@@ -79,7 +81,7 @@ export async function POST(req: Request, ctx: Ctx) {
   const fileId = randomUUID();
   const bytes = new TextEncoder().encode(content);
   const buf = Buffer.from(bytes);
-
+  const sha256 = createHash("sha256").update(buf).digest("hex");  
   // Mime inference
   const mime = inferMime(name);
 
@@ -109,7 +111,7 @@ export async function POST(req: Request, ctx: Ctx) {
 
   // 2) Upload storage object (initial v1)
   const { error: upErr } = await supabase.storage
-    .from("vestaryn-files")
+    .from(vaultBucket)
     .upload(storageKey, buf, {
       contentType: mime,
       upsert: false,
@@ -118,12 +120,31 @@ export async function POST(req: Request, ctx: Ctx) {
   // Rollback on upload failure (hard delete DB row)
   if (upErr) {
     await supabase
-      .from("repo_files")
+      .from(process.env.VAULT_BUCKET ?? "repo_files")
       .delete()
       .eq("id", fileId)
       .eq("repo_id", repoId);
     return json({ error: upErr.message }, 400);
   }
+
+// 3) Insert version row (v1) so snapshots can find this file later
+const { error: verErr } = await supabase.from("repo_file_versions").insert({
+  file_id: fileId,
+  version: 1,
+  actor: "user",
+  note: "create",
+  storage_key: storageKey,
+  size_bytes: buf.byteLength,
+  sha256,
+  mime,
+});
+
+if (verErr) {
+  // rollback DB + storage
+  await supabase.from("repo_files").delete().eq("id", fileId).eq("repo_id", repoId);
+  await supabase.storage.from(vaultBucket).remove([storageKey]);
+  return json({ error: verErr.message }, 400);
+}
 
   return json({ file: fileRow }, 200);
 }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -83,7 +83,8 @@ export async function POST(req: Request, ctx: Ctx) {
   const storageKey = `repos/${repoId}/${fileId}/v${version}`;
 
   const buf = Buffer.from(await file.arrayBuffer());
-
+  const sha256 = createHash("sha256").update(buf).digest("hex");
+  
   // 1) Upload to storage first
   const { error: upErr } = await supabase.storage
     .from("vestaryn-files")
@@ -125,6 +126,8 @@ export async function POST(req: Request, ctx: Ctx) {
     note: "upload",
     storage_key: storageKey,
     size_bytes: sizeBytes,
+    sha256,
+    mime,
   });
 
   if (verErr) {

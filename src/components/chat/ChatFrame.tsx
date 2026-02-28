@@ -24,6 +24,7 @@ export default function ChatFrame({ repoId }: Props) {
   const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
   const loadSeqRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
+  const [lastEngraving, setLastEngraving] = useState<any | null>(null);
 
     const [lastProposal, setLastProposal] = useState<{
     fileId: string;
@@ -32,6 +33,7 @@ export default function ChatFrame({ repoId }: Props) {
     nextHash: string;
     confirm: string;
   } | null>(null);
+  const [lastVerify, setLastVerify] = useState<any | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -269,17 +271,22 @@ const res = await fetch(`/api/repo/${repoId}/chat`, {
       const maybeConfirm = extractConfirmPhrase(accumulated);
         if (maybeConfirm) setPendingConfirm(maybeConfirm);  
 
-      const marker = "__PROPOSAL__:";
-const idx = accumulated.indexOf(marker);
+ // ─────────────────────────────────────────────
+// Marker extraction (proposal + verify)
+// Markers are injected as standalone lines:
+//   __PROPOSAL__:{json}\n
+//   __VERIFY__:{json}\n
+// We strip them out so they never render as chat text.
+// ─────────────────────────────────────────────
+const lines = accumulated.split("\n");
+let changed = false;
 
-if (idx !== -1) {
-  const after = accumulated.slice(idx + marker.length);
+for (let i = 0; i < lines.length; i++) {
+  const line = lines[i] ?? "";
 
-  // assume marker is sent as a single line ending in newline
-  const end = after.indexOf("\n");
-  if (end !== -1) {
-    const jsonStr = after.slice(0, end).trim();
-
+  // Proposal marker
+  if (line.startsWith("__PROPOSAL__:")) {
+    const jsonStr = line.slice("__PROPOSAL__:".length).trim();
     try {
       const proposal = JSON.parse(jsonStr);
 
@@ -304,9 +311,58 @@ if (idx !== -1) {
       }
     } catch {}
 
-    // strip that line from the rendered text
-    accumulated = accumulated.slice(0, idx) + after.slice(end + 1);
+    lines[i] = ""; // strip line
+    changed = true;
   }
+
+  // Verify marker
+  if (line.startsWith("__VERIFY__:")) {
+    const jsonStr = line.slice("__VERIFY__:".length).trim();
+    try {
+      const verify = JSON.parse(jsonStr);
+      setLastVerify(verify);
+    } catch {}
+
+    lines[i] = ""; // strip line
+    changed = true;
+  }
+
+  // Engraving marker
+  if (line.startsWith("__ENGRAVING__:")) {
+    const jsonStr = line.slice("__ENGRAVING__:".length).trim();
+    try {
+      const engr = JSON.parse(jsonStr);
+      setLastEngraving(engr);
+
+      // Reuse existing proposal UX: engr.proposal is a vault proposal
+      const p = engr?.proposal;
+      if (
+        p?.fileId &&
+        p?.content &&
+        p?.prevHash &&
+        p?.nextHash &&
+        (p?.confirm || p?.pendingConfirmPhrase)
+      ) {
+        const confirm = String(p.confirm || p.pendingConfirmPhrase);
+
+        setLastProposal({
+          fileId: p.fileId,
+          content: p.content,
+          prevHash: p.prevHash,
+          nextHash: p.nextHash,
+          confirm,
+        });
+
+        setPendingConfirm(confirm);
+      }
+    } catch {}
+
+    lines[i] = ""; // strip line
+    changed = true;
+  }
+}
+if (changed) {
+  accumulated = lines.filter((l) => l !== "").join("\n");
 }
 
 flushSync(() => {
@@ -492,6 +548,44 @@ flushSync(() => {
 
           <div className="relative rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-md shadow-[0_-18px_45px_rgba(0,0,0,0.75),0_0_25px_rgba(59,130,246,0.08),inset_0_0_30px_rgba(59,130,246,0.05)]">
             <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-white/[0.06]" />
+            
+            {lastVerify && !thinking && (
+              <div className="px-3 pt-3">
+                <div
+                  className={`rounded-lg border p-3 text-xs ${
+                    lastVerify.ok
+                      ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
+                      : "border-rose-400/25 bg-rose-500/10 text-rose-100/90"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase tracking-widest opacity-80">
+                        Verification
+                      </div>
+                      <div className="mt-1 truncate">
+                        {lastVerify.ok ? "PASS" : "FAIL"} · {String(lastVerify.command ?? "")}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setLastVerify(null)}
+                      className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+
+                  <div className="mt-2 text-[11px] opacity-80 flex flex-wrap gap-x-3 gap-y-1">
+                    <span>exit {Number(lastVerify.exitCode ?? -1)}</span>
+                    <span>{Number(lastVerify.durationMs ?? 0)}ms</span>
+                    {lastVerify.failureKind ? <span>{String(lastVerify.failureKind)}</span> : null}
+                    {lastVerify.failedStep ? <span>({String(lastVerify.failedStep)})</span> : null}
+                    {lastVerify.fingerprint ? <span>{String(lastVerify.fingerprint)}</span> : null}
+                  </div>
+                </div>
+              </div>
+            )}
             {lastProposal && pendingConfirm && !thinking && (
               <div className="px-3 pt-3">
                 <div className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 p-3 text-xs text-emerald-100/90">

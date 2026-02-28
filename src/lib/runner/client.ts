@@ -1,10 +1,15 @@
 export type RunnerResult = {
   ok: boolean;
-  exitCode: number | null;
+  exitCode: number;
   durationMs: number;
   stdout?: string;
   stderr?: string;
+  error?: string;
+
   fingerprint?: string;
+  failedStep?: "install" | "exec" | null;
+  failureKind?: string | null;
+  timedOut?: boolean;
 };
 
 export async function runnerRun(args: {
@@ -17,37 +22,110 @@ export async function runnerRun(args: {
   const secret = (process.env.RUNNER_SECRET ?? "").trim();
   const base = baseRaw.replace(/\/+$/, "");
 
+  if (!base) throw new Error("RUNNER_URL not set");
+  if (!secret) throw new Error("RUNNER_SECRET not set");
+
+  const timeoutMs = Number(args.timeoutMs ?? 60_000);
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), Math.max(1_000, timeoutMs + 5_000)); // small cushion
+
   console.log("[runner_client]", {
     base,
+    commandId: args.commandId,
+    timeoutMs,
+    hasSnapshot: Boolean(args.snapshotUrl),
     secretLen: secret.length,
     secretHead: secret.slice(0, 6),
     secretTail: secret.slice(-6),
   });
 
-  if (!base) throw new Error("RUNNER_URL missing/empty");
-  if (!secret) throw new Error("RUNNER_SECRET missing/empty");
-
-  const timeoutMs = args.timeoutMs ?? 30_000;
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
-
-  try {
-    const resp = await fetch(`${base}/run`, {
+   try {
+    const res = await fetch(`${base}/run`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${secret}`,
       },
-      body: JSON.stringify(args),
-      signal: ac.signal,
+      body: JSON.stringify({
+        jobId: args.jobId,
+        commandId: args.commandId,
+        timeoutMs,
+        snapshotUrl: args.snapshotUrl,
+      }),
+      signal: ctl.signal,
     });
 
-    if (!resp.ok) {
-      const txt = await resp.text().catch(() => "");
-      throw new Error(`Runner HTTP ${resp.status}: ${txt}`);
+    // If runner returns non-2xx, read text for debugging
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return {
+        ok: false,
+        exitCode: -1,
+        durationMs: 0,
+        error: `Runner HTTP ${res.status}: ${txt.slice(0, 500)}`,
+        fingerprint: "runner_client:v2",
+        failedStep: null,
+        failureKind: "runner_http_error",
+        timedOut: false,
+      };
     }
 
-    return (await resp.json()) as RunnerResult;
+    const data: any = await res.json().catch(() => null);
+    if (!data || typeof data !== "object") {
+      return {
+        ok: false,
+        exitCode: -1,
+        durationMs: 0,
+        error: "Runner returned invalid JSON",
+        fingerprint: "runner_client:v2",
+        failedStep: null,
+        failureKind: "runner_invalid_json",
+        timedOut: false,
+      };
+    }
+
+    // Normalize fields
+    const ok = Boolean(data.ok);
+    const exitCode =
+      typeof data.exitCode === "number" ? data.exitCode : ok ? 0 : -1;
+    const durationMs =
+      typeof data.durationMs === "number" ? data.durationMs : 0;
+
+    const failedStep =
+      data.failedStep === "install" || data.failedStep === "exec"
+        ? data.failedStep
+        : null;
+
+    return {
+      ok,
+      exitCode,
+      durationMs,
+      stdout: typeof data.stdout === "string" ? data.stdout : "",
+      stderr: typeof data.stderr === "string" ? data.stderr : "",
+      error: typeof data.error === "string" ? data.error : undefined,
+
+      fingerprint:
+        typeof data.fingerprint === "string" ? data.fingerprint : "runner:v?",
+      failedStep,
+      failureKind: typeof data.failureKind === "string" ? data.failureKind : null,
+      timedOut: Boolean(data.timedOut),
+    };
+  } catch (e: any) {
+    const isTimeout = e?.name === "AbortError";
+    const msg = isTimeout
+      ? `Runner request timed out after ~${timeoutMs}ms`
+      : (e?.message ?? String(e));
+
+    return {
+      ok: false,
+      exitCode: -1,
+      durationMs: 0,
+      error: msg,
+      fingerprint: "runner_client:v2",
+      failedStep: null,
+      failureKind: isTimeout ? "runner_request_timeout" : "runner_request_error",
+      timedOut: isTimeout,
+    };
   } finally {
     clearTimeout(t);
   }

@@ -4,6 +4,8 @@ import { randomUUID, randomBytes, createHash } from "crypto";
 import { resolveTierPolicy, resolveTierPolicyWithMeta } from "@/lib/membership/tiers";
 import type { TierPolicy } from "@/lib/membership/tiers";
 import { runnerRun } from "@/lib/runner/client";
+import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
+import { createSupabaseAdmin } from "@/lib/supabase/admin";
 
 
 
@@ -840,7 +842,12 @@ type RepoMessageRow = {
   created_at: string;
 };
 
-async function maybeSummarizeAndPrune(supabase: any, repoId: string, userId: string) {
+async function maybeSummarizeAndEngraveProposal(
+  supabase: any,
+  repoId: string,
+  userId: string,
+  opts?: { force?: boolean }
+) {
   const SUMMARY_TABLE = "repo_chat_summaries";
 
   // 1) count messages
@@ -850,11 +857,12 @@ async function maybeSummarizeAndPrune(supabase: any, repoId: string, userId: str
     .eq("repo_id", repoId);
 
   if (countErr) {
-    console.log("[summary] count failed:", countErr.message);
+    console.log("[engraving] count failed:", countErr.message);
     return null;
   }
 
-  if ((count ?? 0) < SUMMARY_TRIGGER_MSGS) return null;
+  const force = Boolean(opts?.force);
+    if (!force && (count ?? 0) < SUMMARY_TRIGGER_MSGS) return null;
 
   // 2) fetch recent messages to summarize
   const { data: recent, error: recentErr } = await supabase
@@ -865,7 +873,7 @@ async function maybeSummarizeAndPrune(supabase: any, repoId: string, userId: str
     .limit(SUMMARY_TARGET_MSGS);
 
   if (recentErr) {
-    console.log("[summary] recent fetch failed:", recentErr.message);
+    console.log("[engraving] recent fetch failed:", recentErr.message);
     return null;
   }
 
@@ -876,21 +884,32 @@ async function maybeSummarizeAndPrune(supabase: any, repoId: string, userId: str
     .map((m: { role: string; content: string }) => `${m.role.toUpperCase()}: ${clip(m.content)}`)
     .join("\n\n");
 
-  const summaryPrompt = `
-Summarize this repo chat into a compact "handover" for future context.
+const summaryPrompt = `
+You are updating the repository's sacred memory file: memory/chamber-state.md.
 
-Output STRICT markdown with these sections:
+This file represents LONG-TERM PROJECT STATE, not temporary user tasks.
+
+Rewrite it as STRICT markdown using exactly this structure:
+
 # Handover Summary
-## Current Goal
-## Decisions / Invariants
-## What Works (confirmed)
-## Open Problems
-## Next Actions
-## Risk Notes
+## Current Focus
+## Architectural Decisions / Invariants
+## Confirmed Working Systems
+## Active Problems
+## Next Engineering Actions
+## Risk Surface
 
-Do NOT include raw chat logs. Be concise but specific.
+Rules:
+- Capture durable project state (architecture, runner behavior, UI markers, vault rules).
+- Ignore short-lived user tasks unless they affect core system design.
+- Prefer concrete references (routes, markers, runner behavior, invariants).
+- Be concise but specific.
+- Do NOT include raw logs or conversational fluff.
+- Do NOT invent features that were not discussed.
+- If something was confirmed working, mark it clearly.
+- If something was experimental, mark it clearly.
 
-CHAT:
+CHAT CONTEXT:
 ${toSummarize}
 `.trim();
 
@@ -902,6 +921,8 @@ ${toSummarize}
 
   const summaryText = (resp.output_text || "").trim() || "# Handover Summary\n\n(Empty summary produced)";
 
+  // OPTIONAL: keep your summary table insert (fine), but this should NOT prune.
+  // If you want engraving to replace summaries entirely, you can delete this block later.
   const { data: inserted, error: insErr } = await supabase
     .from(SUMMARY_TABLE)
     .insert({ repo_id: repoId, created_by: userId, summary_md: summaryText })
@@ -911,13 +932,15 @@ ${toSummarize}
   if (insErr) {
     const msg = insErr.message || "";
     if (msg.includes("schema cache") || msg.includes("Could not find the table")) {
-      console.log("[summary] disabled (table missing in schema cache)");
-      return null;
+      console.log("[engraving] disabled (table missing in schema cache)");
+      // do NOT bail; you can still propose engraving even if table missing
+    } else {
+      console.log("[engraving] insert failed:", msg);
+      // also do NOT bail; still propose engraving
     }
-    console.log("[summary] insert failed:", msg);
-    return null;
   }
 
+  // 3) compute prune plan (same logic), BUT DO NOT DELETE HERE
   const { data: keep, error: keepErr } = await supabase
     .from("repo_messages")
     .select("id")
@@ -926,26 +949,34 @@ ${toSummarize}
     .limit(SUMMARY_KEEP_LAST);
 
   if (keepErr) {
-    console.log("[summary] keep fetch failed:", keepErr.message);
-  } else {
-    const keepIds = (keep ?? []).map((x: any) => x.id).filter(Boolean);
-
-    if (keepIds.length > 0) {
-      const keepIdsCsv = keepIds.map((id: string) => `"${id}"`).join(",");
-
-      const { error: delErr } = await supabase
-        .from("repo_messages")
-        .delete()
-        .eq("repo_id", repoId)
-        .not("id", "in", `(${keepIdsCsv})`);
-
-      if (delErr) console.log("[summary] prune failed:", delErr.message);
-    }
+    console.log("[engraving] keep fetch failed:", keepErr.message);
+    return null; // pruning plan is required for safe apply->prune
   }
 
-  return { summaryId: inserted.id, summaryPath: null };
-}
+  const keepIds = (keep ?? []).map((x: any) => x.id).filter(Boolean);
+  if (keepIds.length === 0) return null;
 
+// 4) Build engraving marker using a REAL vault proposal (so __APPLY__ works)
+const sacred = await ensureSacredMemoryFile(supabase, repoId, userId);
+const sacredFileId = sacred.id;
+
+// Make a normal vault proposal (contains fileId/prevHash/nextHash/confirm/content)
+const proposal = await vault_propose_write(supabase, repoId, sacredFileId, summaryText);
+
+// Attach prune plan into proposal.meta so APPLY can prune after success
+(proposal as any).meta = { kind: "engraving", keepIds };
+
+const marker = {
+  kind: "engraving",
+  reason: `Message threshold reached (${count}). Suggest engraving into sacred memory.`,
+  stats: { messageCount: count },
+  proposal, // ✅ vault proposal shape
+  prune: { keepIds },
+  summaryId: inserted?.id ?? null,
+};
+
+return { marker };
+}
 function ensureTriplet(text: string) {
   const t = (text || "").trim();
   if (!t) return "";
@@ -980,11 +1011,20 @@ export async function POST(req: Request, context: { params: Promise<{ repoId: st
 
   if (!user) return new Response("Unauthorized", { status: 401 });
 
-  const { data: isMember, error: memErr } = await supabase.rpc("is_repo_member", { _repo_id: repoId });
-  console.log("[is_repo_member]", { userId: user.id, repoId, isMember, memErr: memErr?.message });
+const { data: isMember, error: memErr } = await supabase.rpc("is_repo_member", { _repo_id: repoId });
+console.log("[is_repo_member]", { userId: user.id, repoId, isMember, memErr: memErr?.message });
 
+if (memErr) {
+  return new Response("Membership check failed", { status: 500 });
+}
+
+if (!isMember) {
+  return new Response("Forbidden", { status: 403 });
+}
   const { content } = await req.json();
   if (!content?.trim()) return new Response("Missing content", { status: 400 });
+
+  console.log("[chat] content_head:", content.slice(0, 40));
 
   // ─────────────────────────────────────────────────────────────
   // Membership tier policy (server clamp)
@@ -1022,6 +1062,119 @@ console.log("[policy]", {
   mode: resolvedMode,
 });
 
+console.log("[policy]", {
+  tier: tierPolicy.tier,
+  model: tierPolicy.model,
+  maxOutputTokens: tierPolicy.output.maxOutputTokens,
+  maxToolRounds: tierPolicy.tools.maxToolRounds,
+  mode: resolvedMode,
+});
+
+console.log("[verify_probe] content:", JSON.stringify(content));
+
+const verifyCmd =
+  content.trim() === "__VERIFY_TEST__" ? "node_test" :
+  content.trim() === "__VERIFY_LINT__" ? "node_lint" :
+  content.trim() === "__VERIFY_TYPECHECK__" ? "node_typecheck" :
+  null;
+
+console.log("[verify_probe] verifyCmd:", verifyCmd);
+
+if (verifyCmd) {
+  const jobId = `verify-${repoId}-${Date.now()}`;
+  try {
+    console.log("[verify] building snapshot", { repoId, jobId, verifyCmd });
+
+
+    const supabaseAdmin = createSupabaseAdmin();
+    const snap = await buildRepoSnapshotSignedUrl(supabaseAdmin, repoId, jobId, {
+      signedUrlTtlSec: 600,
+    });
+
+    console.log("[verify] snapshot ready", {
+      fileCount: snap.fileCount,
+      zipBytes: snap.zipBytes,
+      snapshotObjectPath: snap.snapshotObjectPath,
+    });
+
+    const result = await runnerRun({
+      jobId,
+      commandId: verifyCmd,
+      snapshotUrl: snap.snapshotSignedUrl,
+      timeoutMs: 120_000,
+    });
+
+await supabaseAdmin.from("repo_runs").insert({
+  repo_id: repoId,
+  change_id: null,
+  command: verifyCmd,
+  ok: Boolean(result.ok),
+  exit_code: Number(result.exitCode ?? -1),
+  duration_ms: Number(result.durationMs ?? 0),
+  stdout: (result.stdout ?? "").slice(0, 8000),
+  stderr: (result.stderr ?? "").slice(0, 8000),
+
+  job_id: jobId,
+  runner_fingerprint: result.fingerprint ?? null,
+  failed_step: result.failedStep ?? null,
+  failure_kind: result.failureKind ?? null,
+  timed_out: Boolean(result.timedOut),
+});
+
+console.log("[verify] runner returned", {
+  ok: result.ok,
+  exitCode: result.exitCode,
+  durationMs: result.durationMs,
+  error: result.error ?? null,
+  stdoutLen: (result.stdout ?? "").length,
+  stderrLen: (result.stderr ?? "").length,
+});
+
+const verifyPayload = {
+  command: verifyCmd,
+  ok: Boolean(result.ok),
+  exitCode: Number(result.exitCode ?? -1),
+  durationMs: Number(result.durationMs ?? 0),
+  stdout: String(result.stdout ?? ""),
+  stderr: String(result.stderr ?? ""),
+  error: result.error ?? null,
+
+  jobId,
+  fingerprint: result.fingerprint ?? null,
+  failedStep: result.failedStep ?? null,
+  failureKind: result.failureKind ?? null,
+  timedOut: Boolean(result.timedOut),
+};
+
+// Stream structured marker for UI (same pattern as __PROPOSAL__)
+const marker = `\n__VERIFY__:${JSON.stringify(verifyPayload)}\n`;
+
+const txt =
+  `[Observation]\nVerification executed.\n\n` +
+  `[Assessment]\ncommand=${verifyCmd}\nok=${result.ok} exitCode=${result.exitCode} durationMs=${result.durationMs}\n\n` +
+  `[Action]\nstdout:\n${(result.stdout ?? "").slice(0, 3000)}\n\n` +
+  `stderr:\n${(result.stderr ?? "").slice(0, 3000)}\n` +
+  marker;
+
+    return new Response(txt, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  } catch (e: any) {
+    console.log("[verify] error", { message: e?.message, name: e?.name });
+
+    const txt =
+      `[Observation]\nVerification failed.\n\n` +
+      `[Assessment]\n${e?.message ?? "Unknown error"}\n\n` +
+      `[Action]\nCheck server logs for [verify] and runner logs.\n`;
+
+    return new Response(txt, {
+      status: 500,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+}
+
+
 // 🔒 Runner connectivity test (deterministic, bypass LLM)
 if (content.trim() === "__RUNNER_PING__") {
   try {
@@ -1041,13 +1194,17 @@ if (content.trim() === "__RUNNER_PING__") {
       ok: result.ok,
       exitCode: result.exitCode,
       durationMs: result.durationMs,
+      error: result.error ?? null
     });
 
     const txt =
-      `[Observation]\nRunner ping executed.\n\n` +
-      `[Assessment]\nok=${result.ok} exitCode=${result.exitCode}\n\n` +
-      `[Action]\nstdout:\n${(result.stdout ?? "").slice(0, 1000)}\n\n` +
-      `stderr:\n${(result.stderr ?? "").slice(0, 1000)}\n`;
+      `[Observation]\nVerification executed.\n\n` +
+      `[Assessment]\n` +
+      `command=${verifyCmd}\n` +
+      `ok=${result.ok} exitCode=${result.exitCode} durationMs=${result.durationMs}\n` +
+      `error=${result.error ?? "null"}\n\n` +
+      `[Action]\nstdout:\n${(result.stdout ?? "").slice(0, 3000)}\n\n` +
+      `stderr:\n${(result.stderr ?? "").slice(0, 3000)}\n`;
 
     return new Response(txt, {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -1086,27 +1243,88 @@ if (content.trim() === "__RUNNER_PING__") {
   }
 
   // 🔒 APPLY SHORT-CIRCUIT (deterministic apply, bypass LLM)
-  if (content.startsWith("__APPLY__:")) {
-    const raw = content.slice("__APPLY__:".length);
+if (content.startsWith("__APPLY__:")) {
+  const raw = content.slice("__APPLY__:".length);
 
-    try {
-      const proposal = JSON.parse(raw);
-      const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
+  try {
+    const proposal = JSON.parse(raw);
+console.log("[apply] keys=", Object.keys(proposal || {}));
+console.log("[apply] meta=", proposal?.meta ?? null);
+    const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
 
-      await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
+    await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
 
-      return new Response(
-        `[Observation]\nWrite applied.\n\n[Assessment]\nVersion advanced.\n\n[Action]\nFile updated deterministically.`,
-        { headers: { "Content-Type": "text/plain; charset=utf-8" } }
-      );
-    } catch (e: any) {
-      return new Response(
-        `[Observation]\nApply failed.\n\n[Assessment]\n${e?.message ?? "Unknown error"}\n\n[Action]\nRecreate proposal.`,
-        { headers: { "Content-Type": "text/plain; charset=utf-8" } }
-      );
+    // ✅ Engraving prune happens ONLY after apply succeeds
+    if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepIds)) {
+      const keepIds = proposal.meta.keepIds.map((x: any) => String(x)).filter(Boolean);
+
+      if (keepIds.length > 0) {
+        const keepIdsCsv = keepIds.map((id: string) => `"${id}"`).join(",");
+
+        const { error: delErr } = await supabase
+          .from("repo_messages")
+          .delete()
+          .eq("repo_id", repoId)
+          .not("id", "in", `(${keepIdsCsv})`);
+
+        if (delErr) console.log("[engraving] prune failed:", delErr.message);
+      }
     }
-  }
 
+const didEngraving = proposal?.meta?.kind === "engraving";
+
+const txt =
+  `[Observation]\nWrite applied.\n\n` +
+  `[Assessment]\nVersion advanced.\n\n` +
+  `[Action]\nFile updated deterministically.\n` +
+  (didEngraving ? `\n__RESET__\n` : "");
+
+  console.log("[apply] didEngraving=", didEngraving);
+return new Response(txt, {
+  headers: { "Content-Type": "text/plain; charset=utf-8" },
+});
+
+  } catch (e: any) {
+    return new Response(
+      `[Observation]\nApply failed.\n\n[Assessment]\n${e?.message ?? "Unknown error"}\n\n[Action]\nRecreate proposal.`,
+      { headers: { "Content-Type": "text/plain; charset=utf-8" } }
+    );
+  }
+}
+
+// 🔒 Engraving probe (deterministic, bypass LLM)
+if (content.trim() === "__ENGRAVE__") {
+  try {
+    console.log("[engrave_probe] hit", { repoId, userId: user.id });
+
+    const engraving = await maybeSummarizeAndEngraveProposal(
+      supabase,
+      repoId,
+      user.id,
+      { force: true }
+    );
+
+    const markerLine = engraving?.marker
+      ? `\n__ENGRAVING__:${JSON.stringify(engraving.marker)}\n`
+      : "";
+
+    const txt =
+      `[Observation]\nEngraving probe executed.\n\n` +
+      `[Assessment]\nmarker=${Boolean(engraving?.marker)}\n\n` +
+      `[Action]\nIf marker=true, UI should render the Engraving panel.\n` +
+      markerLine;
+
+    return new Response(txt, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  } catch (e: any) {
+    console.log("[engrave_probe] error", e?.message);
+    return new Response(
+      `[Observation]\nEngraving probe failed.\n\n[Assessment]\n${e?.message ?? "Unknown error"}\n\n[Action]\nCheck server logs.\n`,
+      { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8" } }
+    );
+  }
+}
 // ─────────────────────────────────────────────
 // Credits preflight (workspace pool, server-canonical)
 // ─────────────────────────────────────────────
@@ -1724,29 +1942,34 @@ if (toolName === "export_multi" && !tierPolicy.capabilities.allowMultiExport) {
 
         fullText = ensureTriplet(stripDuplicateTriplet(fullText));
 
-        const { error: aInsErr } = await supabase.from("repo_messages").insert({
-          repo_id: repoId,
-          user_id: user.id,
-          role: "assistant",
-          content: fullText,
-        });
+const { error: aInsErr } = await supabase.from("repo_messages").insert({
+    repo_id: repoId,
+    user_id: user.id,
+    role: "assistant",
+    content: fullText,
+  });
 
-        if (aInsErr) console.log("[repo_messages] assistant insert failed:", aInsErr.message);
+  if (aInsErr) console.log("[repo_messages] assistant insert failed:", aInsErr.message);
 
-        void maybeSummarizeAndPrune(supabase, repoId, user.id).catch((e: any) => {
-          console.log("[summary] skipped:", e?.message);
-        });
+  // 🔥 Engraving marker (best-effort; do NOT kill stream)
+  try {
+    const engraving = await maybeSummarizeAndEngraveProposal(supabase, repoId, user.id);
+    if (engraving?.marker) {
+      controller.enqueue(encoder.encode(`\n__ENGRAVING__:${JSON.stringify(engraving.marker)}\n`));
+    }
+  } catch (e: any) {
+    console.log("[engraving] skipped:", e?.message);
+  }
 
-        console.log("Total request time (ms):", Math.round(performance.now() - t0));
-        controller.close();
-      } catch (err: any) {
-        console.error("LLM error:", err?.message);
-        controller.enqueue(encoder.encode("System: LLM unavailable. Check billing/quota."));
-        controller.close();
-      }
-    },
-});
-
+} catch (err: any) {
+  console.error("LLM error:", err?.message);
+  controller.enqueue(encoder.encode("System: LLM unavailable. Check billing/quota."));
+} finally {
+  console.log("Total request time (ms):", Math.round(performance.now() - t0));
+  controller.close();
+}
+    },   // <-- closes start(controller)
+  });    // <-- closes new ReadableStream
 
   return new Response(stream, {
     headers: {

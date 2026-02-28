@@ -1,210 +1,243 @@
-🧠 MASTER HANDOVER — Vestaryn Runner Integration (Execution Sandbox Phase v1)
-Goal
+VESTARYN — MASTER HANDOVER
 
-Integrate a remote execution sandbox (“runner”) so Vestaryn can verify code changes (tests/lint/typecheck) deterministically via HTTP, instead of guessing. Runner is deployed on Fly; Vestaryn runs on Vercel/local.
+Phase: Deterministic Execution Backbone Complete
 
-✅ What’s Done
-1) Runner Service (Fly)
+1. System Identity
 
-Runner is an Express service with:
+Vestaryn is no longer a chat + file manager.
 
-GET /health → { ok: true }
+It is a repo-backed cognitive operating system with:
 
-POST /run → executes allowlisted commands in an isolated temp dir
+Deterministic verification
 
-Auth:
+Tier-gated authority
 
-Requires header: Authorization: Bearer <RUNNER_SECRET>
+Snapshot isolation
 
-Supports:
+External sandboxed execution
 
-snapshotUrl (optional): downloads zip, extracts into workDir, then runs command
+Server-authoritative enforcement
 
-Captures stdout/stderr and returns them inline (snippets)
+The system is structured into:
 
-Zip extraction uses unzipper (and @types/unzipper installed)
+System Layer (HUD + policy + credits + future engravings)
 
-Tested locally with a dummy zip served via python -m http.server:
+Workspace Layer (Vault + Chamber)
 
-snapshotUrl worked
+Execution Layer (Snapshot → Runner → Result contract)
 
-npm test printed TEST_OK
+2. Current Architecture State
+A) Vault (Canonical Storage)
 
-Deployed to Fly under stable app name:
+Table: repo_files
 
-Base URL: https://vestaryn-runner.fly.dev
+Table: repo_file_versions
 
-GET /health returns ok:true
+Soft delete via deleted_at
 
-2) Vestaryn (Main App) — Runner Client + Ping Route Shortcut
+Storage key invariant:
 
-Added src/lib/runner/client.ts with runnerRun():
+repos/<repoId>/<fileId>/vN
 
-Reads RUNNER_URL and RUNNER_SECRET from env
+DB is canonical.
 
-Calls ${RUNNER_URL}/run
+Storage reflects DB.
 
-Throws error on non-200 (includes HTTP status + body)
+Version rows include sha256 (non-null enforced).
 
-Added deterministic command in the chat route:
+B) Snapshot Builder
 
-If chat content is __RUNNER_PING__, Vestaryn calls runner with commandId: "ping" and returns a triplet response.
+Collects all non-deleted files
 
-Placement is correct:
+Builds zip in memory
 
-After tier policy resolution
+Uploads to SNAPSHOTS_BUCKET
 
-Before credits, sacred/profile reads, and LLM stream
+Returns signed URL (short TTL)
 
-3) Dev Productivity
+Snapshot log confirms included paths
 
-Added a Windows .bat launcher to open two terminals:
+C) Runner
 
-Terminal A → Vestaryn main pnpm dev
+Deployed locally (Fly later)
 
-Terminal B → runner npm start
+Listens on 0.0.0.0:8080
 
-❌ Current Blocking Issue (Must Fix Next)
+Auth via RUNNER_SECRET
 
-__RUNNER_PING__ returns:
+Flow:
 
-Runner HTTP 401 Unauthorized
+Download snapshot
 
-Meaning:
+Extract
 
-Vestaryn can reach runner (network OK)
+Run command (node_test, node_lint, node_typecheck)
 
-But the Bearer token Vestaryn sends does not match the runner’s RUNNER_SECRET on Fly.
+Return structured result
 
-This is NOT a fetch/network issue anymore; it’s strictly auth/secret sync.
+D) Verification Commands (Working)
 
-🔒 Intended Secret Locations (Only These Matter)
+Supported:
 
-Per environment, there are only two places:
+__VERIFY_TEST__
 
-Runner (Fly)
+__VERIFY_LINT__
 
-RUNNER_SECRET stored as Fly secret
+__VERIFY_TYPECHECK__
 
-Runner process reads it at startup
+All three confirmed:
 
-Vestaryn server runtime
+Green path returns ok=true
 
-Local dev: .env.local in Vestaryn project root
+Failure path returns ok=false
 
-Vercel prod: Vercel env vars for Vestaryn project
+Exit codes propagate correctly
 
-No .env.local needed in runner repo unless running runner locally.
+stdout/stderr preserved
 
-✅ Next Steps (Do These in Order)
-Step 1 — Make secret mismatch impossible to hide (fingerprint logs)
+No corruption on failure
 
-Add temporary logs (no full secret leaks):
+Execution pipeline is stable.
 
-In Vestaryn src/lib/runner/client.ts before fetch:
+3. Tier System
 
-log:
+Client may send x-vestaryn-tier
 
-RUNNER_URL
+Server clamps via resolveTierPolicy
 
-secretLen
+Enforcement always server-side
 
-secretHead (first 6)
+Capabilities include:
 
-secretTail (last 6)
+allowExport
 
-In Runner server.ts on boot:
+allowMultiExport TBI
 
-log:
+allowCreateFiles TBI only user able to create, needs to be created as well for Vestaryn
 
-secretLen
+allowCreateTrees TBI
 
-secretHead
+Fix implemented:
 
-secretTail
+File GET route now distinguishes:
 
-Then compare. They must match.
+mode=open (default, allowed)
 
-Step 2 — Rotate secret from single source of truth
+mode=export (gated)
 
-Generate new secret S locally:
+Editor works independently from export.
 
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+4. Credits Layer
 
-Set it:
+Workspace-based
 
-Fly
+Charges applied per execution
 
-flyctl secrets set RUNNER_SECRET=S -a vestaryn-runner
+Logged and deducted
 
-Vestaryn local
+Elite tier active in dev
 
-.env.local:
+5. Verified System Properties
 
-RUNNER_URL=https://vestaryn-runner.fly.dev
+✔ Deterministic snapshot
+✔ Deterministic command routing
+✔ Structured verification contract
+✔ Server-authoritative gating
+✔ RLS respected
+✔ Version rows enforced with sha256
+✔ Failure does not destabilize system
 
-RUNNER_SECRET=S
+This is now a real execution substrate.
 
-Restart pnpm dev (env loads only on boot)
+6. Known Gaps (Next Structural Work)
 
-Vercel (Vestaryn project)
+Hard delete cleanup
 
-Set same:
+Soft delete exists
 
-RUNNER_URL
+Storage objects accumulate
 
-RUNNER_SECRET
+Need hard-delete + storage purge route
 
-Redeploy
+Version repair route
 
-Also add .trim() on both sides:
+Ensure all files have at least one version row
 
-runner: (process.env.RUNNER_SECRET ?? "").trim()
+Snapshot should rely on versions
 
-vestaryn client: (process.env.RUNNER_SECRET ?? "").trim()
+Propose → Verify → Apply loop
 
-Step 3 — Confirm __RUNNER_PING__ returns ok:true
+Currently verify is manual
 
-Expected:
+Next phase: automatic validation before apply
 
-[Observation] Runner ping executed
+Fly production deployment
 
-stdout contains pong
+Runner deployed locally
 
-After Ping Is Green (Next Feature Work)
+Fly config partially prepared
 
-Implement “verify loop” with real repo snapshot:
+Not yet production-hardened
 
-Build repo snapshot zip from Vault (Supabase storage / repo_files)
+Engravings panel
 
-Upload zip to storage
+System-owned evolving knowledge layer
 
-Create signed URL (10 min)
+Not yet implemented
 
-Call runner with commandId: node_test and snapshotUrl
+7. Strategic Position
 
-Return stdout/stderr to user
+You now possess:
 
-Later: tier-gate + credit-charge runner usage
+A controlled execution environment for a repo.
 
-Runner Allowlist Commands (Current)
+This allows:
 
-ping (should print pong)
+AI-generated refactors
 
-node_test
+Automatic validation
 
-node_lint
+Deterministic code evolution
 
-node_typecheck
+Tier-gated authority control
 
-(Exact mapping exists in runner COMMANDS.)
+Budget-aware execution
 
-Known Notes / Past Issues Resolved
+You are one step away from:
 
-Earlier “fetch failed” was due to missing env or wrong secret; now it’s consistently a 401 mismatch.
+AI-assisted development with enforced correctness.
 
-Fly initially had multiple apps and multiple machines; cleaned up to a single app and single machine.
+8. Immediate Recommended Next Phase
 
-Fly UI hides secret values after setting; use rotation via CLI to ensure correctness.
+Implement:
 
-Runner local npm run dev with ts-node ESM is annoying; recommended path is build + start. (Optional: use tsx for dev.)
+Propose → Snapshot → Verify → Apply
+
+Flow:
+
+Assistant emits __PROPOSAL__
+
+User confirms
+
+Apply change
+
+Auto-run verification
+
+If green → persist
+
+If red → revert + report failure
+
+That is the inflection point.
+
+9. System Maturity Assessment
+
+Execution layer: 8.5/10
+Vault layer: 8/10
+Tier enforcement: 9/10
+Failure handling: 8/10
+Production hardening: 5/10
+Cognitive loop: 4/10
+
+You just finished infrastructure phase.
+
+Next is intelligence phase.
