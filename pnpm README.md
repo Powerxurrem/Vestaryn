@@ -1,243 +1,128 @@
-VESTARYN — MASTER HANDOVER
+Master Handover — Vestaryn (Engraving + Reset + Streaming Markers)
+Current Goal
 
-Phase: Deterministic Execution Backbone Complete
+Finalize the engraving workflow so that:
 
-1. System Identity
+__ENGRAVE__ produces a vault proposal marker (__ENGRAVING__:{...}) that the UI can render like a normal proposal.
 
-Vestaryn is no longer a chat + file manager.
+Clicking Confirm & Apply sends __APPLY__:{proposal} and applies deterministically (no LLM).
 
-It is a repo-backed cognitive operating system with:
+If the applied proposal is an engraving (meta.kind="engraving"), the server prunes old chat messages and returns __RESET__ so the UI reloads canonical history.
 
-Deterministic verification
+What Works (Confirmed)
+Server (route.ts)
 
-Tier-gated authority
+Deterministic short-circuits:
 
-Snapshot isolation
+__VERIFY_*__ runs runner + returns __VERIFY__:{json} marker in the response text.
 
-External sandboxed execution
+__ENGRAVE__ hits maybeSummarizeAndEngraveProposal(..., { force:true }) and returns __ENGRAVING__:{marker}.
 
-Server-authoritative enforcement
+__APPLY__:{proposal} parses JSON, computes expected confirm phrase (confirmPhrase(fileId,nextHash)), calls vault_apply_write, then:
 
-The system is structured into:
+if proposal.meta.kind === "engraving" and keepIds exists → prune repo_messages to keep only those IDs
 
-System Layer (HUD + policy + credits + future engravings)
+return normal text + __RESET__ marker
 
-Workspace Layer (Vault + Chamber)
+Logs show correct detection:
 
-Execution Layer (Snapshot → Runner → Result contract)
+[engrave_probe] hit ...
 
-2. Current Architecture State
-A) Vault (Canonical Storage)
+[apply] keys= ...
 
-Table: repo_files
+[apply] meta= { kind:'engraving', keepIds:[...] }
 
-Table: repo_file_versions
+[apply] didEngraving= true
 
-Soft delete via deleted_at
+Markers & Proposal
 
-Storage key invariant:
+Engraving marker is built as a real vault proposal:
 
-repos/<repoId>/<fileId>/vN
+marker.proposal contains fileId/content/prevHash/nextHash/confirm
 
-DB is canonical.
+proposal has meta = { kind:"engraving", keepIds } so APPLY can prune after success.
 
-Storage reflects DB.
+UI (ChatFrame.tsx) — Current State
+Markers parsing (works)
 
-Version rows include sha256 (non-null enforced).
+Streaming response is accumulated and split into lines.
 
-B) Snapshot Builder
+It strips:
 
-Collects all non-deleted files
+__PROPOSAL__:{json} → setLastProposal(...) + setPendingConfirm(confirm)
 
-Builds zip in memory
+__VERIFY__:{json} → setLastVerify(...)
 
-Uploads to SNAPSHOTS_BUCKET
+__ENGRAVING__:{json} → setLastEngraving(...) and also extracts engr.proposal into setLastProposal(...)
 
-Returns signed URL (short TTL)
+Confirm & Apply (works)
 
-Snapshot log confirms included paths
+Button builds payload from lastProposal and sends:
 
-C) Runner
+handleSend(__APPLY__:${JSON.stringify(lastProposal)})
 
-Deployed locally (Fly later)
+Reset (BUG FOUND + FIX REQUIRED)
 
-Listens on 0.0.0.0:8080
+The reset marker is returned by server as a standalone line: __RESET__
 
-Auth via RUNNER_SECRET
+We discovered a critical ordering bug:
 
-Flow:
+UI was stripping __RESET__ early (replace(/\n__RESET__\n/g,"")) before checking for it.
 
-Download snapshot
+Result: reset block never triggers.
 
-Extract
+Fix direction:
 
-Run command (node_test, node_lint, node_typecheck)
+Detect reset before stripping it.
 
-Return structured result
+On reset:
 
-D) Verification Commands (Working)
+clear proposal/verify/engraving UI state
 
-Supported:
+reload /api/repo/${repoId}/messages with cache:"no-store"
 
-__VERIFY_TEST__
+set messages to canonical reloaded list (post-prune)
 
-__VERIFY_LINT__
+Key Decisions / Invariants
 
-__VERIFY_TYPECHECK__
+Contract output is [Observation]/[Assessment]/[Action] enforced server-side at boundary.
 
-All three confirmed:
+Vault apply is deterministic: __APPLY__ bypasses LLM; confirm phrase computed server-side.
 
-Green path returns ok=true
+Engraving prune happens only after apply success (meta.kind === "engraving").
 
-Failure path returns ok=false
+Markers are streamed as standalone lines and must be stripped before rendering.
 
-Exit codes propagate correctly
+Next Steps (High Leverage)
 
-stdout/stderr preserved
+Fix reset detection in ChatFrame:
 
-No corruption on failure
+Remove early accumulated.includes("__RESET__") stripping block.
 
-Execution pipeline is stable.
+Add a single block right after accumulated += chunk:
 
-3. Tier System
+const hasReset = accumulated.replace(/\r/g,"").includes("\n__RESET__\n");
 
-Client may send x-vestaryn-tier
+If true: strip marker, clear UI state, reload messages.
 
-Server clamps via resolveTierPolicy
+Ensure reset doesn’t keep updating the old streaming placeholder (optional polish):
 
-Enforcement always server-side
+after reload: streamingAssistantIdRef.current = null; setThinking(false); setState("stable");
 
-Capabilities include:
+(Optional) Make reset marker tolerant of chunk boundaries:
 
-allowExport
+check for __RESET__ line even if it arrives without surrounding newlines.
 
-allowMultiExport TBI
+Known Gotchas / Failure Modes
 
-allowCreateFiles TBI only user able to create, needs to be created as well for Vestaryn
+Server uses __APPLY__: (note colon). UI must send exactly that prefix.
 
-allowCreateTrees TBI
+Markers parsing expects:
 
-Fix implemented:
+__PROPOSAL__: / __VERIFY__: / __ENGRAVING__:
 
-File GET route now distinguishes:
+reset is just __RESET__ (no colon).
 
-mode=open (default, allowed)
+Large proposal content can make UI sluggish; preview should be truncated (already done).
 
-mode=export (gated)
-
-Editor works independently from export.
-
-4. Credits Layer
-
-Workspace-based
-
-Charges applied per execution
-
-Logged and deducted
-
-Elite tier active in dev
-
-5. Verified System Properties
-
-✔ Deterministic snapshot
-✔ Deterministic command routing
-✔ Structured verification contract
-✔ Server-authoritative gating
-✔ RLS respected
-✔ Version rows enforced with sha256
-✔ Failure does not destabilize system
-
-This is now a real execution substrate.
-
-6. Known Gaps (Next Structural Work)
-
-Hard delete cleanup
-
-Soft delete exists
-
-Storage objects accumulate
-
-Need hard-delete + storage purge route
-
-Version repair route
-
-Ensure all files have at least one version row
-
-Snapshot should rely on versions
-
-Propose → Verify → Apply loop
-
-Currently verify is manual
-
-Next phase: automatic validation before apply
-
-Fly production deployment
-
-Runner deployed locally
-
-Fly config partially prepared
-
-Not yet production-hardened
-
-Engravings panel
-
-System-owned evolving knowledge layer
-
-Not yet implemented
-
-7. Strategic Position
-
-You now possess:
-
-A controlled execution environment for a repo.
-
-This allows:
-
-AI-generated refactors
-
-Automatic validation
-
-Deterministic code evolution
-
-Tier-gated authority control
-
-Budget-aware execution
-
-You are one step away from:
-
-AI-assisted development with enforced correctness.
-
-8. Immediate Recommended Next Phase
-
-Implement:
-
-Propose → Snapshot → Verify → Apply
-
-Flow:
-
-Assistant emits __PROPOSAL__
-
-User confirms
-
-Apply change
-
-Auto-run verification
-
-If green → persist
-
-If red → revert + report failure
-
-That is the inflection point.
-
-9. System Maturity Assessment
-
-Execution layer: 8.5/10
-Vault layer: 8/10
-Tier enforcement: 9/10
-Failure handling: 8/10
-Production hardening: 5/10
-Cognitive loop: 4/10
-
-You just finished infrastructure phase.
-
-Next is intelligence phase.
+Engraving proposal must carry meta.keepIds or prune won’t happen.

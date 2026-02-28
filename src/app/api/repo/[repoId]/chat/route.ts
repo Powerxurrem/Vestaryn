@@ -1255,21 +1255,69 @@ console.log("[apply] meta=", proposal?.meta ?? null);
     await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
 
     // ✅ Engraving prune happens ONLY after apply succeeds
-    if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepIds)) {
-      const keepIds = proposal.meta.keepIds.map((x: any) => String(x)).filter(Boolean);
+if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepIds)) {
+  const keepIds = proposal.meta.keepIds.map((x: any) => String(x)).filter(Boolean);
+  
+  if (keepIds.length > 0) {
+  const supabaseAdmin = createSupabaseAdmin();
 
-      if (keepIds.length > 0) {
-        const keepIdsCsv = keepIds.map((id: string) => `"${id}"`).join(",");
+  // Count before (admin)
+  const { count: beforeCount, error: beforeErr } = await supabaseAdmin
+    .from("repo_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("repo_id", repoId);
 
-        const { error: delErr } = await supabase
-          .from("repo_messages")
-          .delete()
-          .eq("repo_id", repoId)
-          .not("id", "in", `(${keepIdsCsv})`);
+  if (beforeErr) console.log("[engraving] count(before) failed:", beforeErr.message);
 
-        if (delErr) console.log("[engraving] prune failed:", delErr.message);
+  // Step 1: fetch ids to delete (admin, avoids RLS weirdness)
+  const { data: delRows, error: listErr } = await supabaseAdmin
+    .from("repo_messages")
+    .select("id")
+    .eq("repo_id", repoId)
+    .not("id", "in", `(${keepIds.map((id: string) => `"${id}"`).join(",")})`);
+
+  if (listErr) {
+    console.log("[engraving] prune list failed:", listErr.message);
+  } else {
+    const deleteIds = (delRows ?? []).map((r: any) => String(r.id)).filter(Boolean);
+
+    let actualDeleted = 0;
+
+    if (deleteIds.length > 0) {
+      const { data: deletedRows, error: delErr } = await supabaseAdmin
+        .from("repo_messages")
+        .delete()
+        .eq("repo_id", repoId)
+        .in("id", deleteIds)
+        .select("id");
+
+      if (delErr) {
+        console.log("[engraving] prune delete failed:", delErr.message);
+      } else {
+        actualDeleted = deletedRows?.length ?? 0;
+        console.log("[engraving] prune deleted rows:", actualDeleted);
       }
     }
+
+    // Count after (admin)
+    const { count: afterCount, error: afterErr } = await supabaseAdmin
+      .from("repo_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("repo_id", repoId);
+
+    if (afterErr) console.log("[engraving] count(after) failed:", afterErr.message);
+
+    console.log("[engraving] prune result", {
+      repoId,
+      keep: keepIds.length,
+      candidates: deleteIds.length,
+      deleted: actualDeleted,
+      before: beforeCount ?? null,
+      after: afterCount ?? null,
+    });
+  }
+}
+}
 
 const didEngraving = proposal?.meta?.kind === "engraving";
 

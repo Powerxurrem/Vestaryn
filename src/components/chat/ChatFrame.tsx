@@ -25,6 +25,7 @@ export default function ChatFrame({ repoId }: Props) {
   const loadSeqRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
   const [lastEngraving, setLastEngraving] = useState<any | null>(null);
+  const RESET_LINE_RE = /(?:^|\n)\s*__RESET__\s*(?=\n|$)/;
 
     const [lastProposal, setLastProposal] = useState<{
     fileId: string;
@@ -32,6 +33,7 @@ export default function ChatFrame({ repoId }: Props) {
     prevHash: string;
     nextHash: string;
     confirm: string;
+    meta?: any;
   } | null>(null);
   const [lastVerify, setLastVerify] = useState<any | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
@@ -184,13 +186,14 @@ useEffect(() => {
   // ─────────────────────────────────────────────────────────────
 
 const handleSend = async (text: string) => {
+  
   const trimmed = text.trim();
   console.log("[handleSend] sending:", trimmed);
   if (!trimmed) return;
 
   if (sendingRef.current) return;
   sendingRef.current = true;
-
+  const assistantId = makeId();
   setPendingConfirm(null);
 
   const userMsg: Message = {
@@ -201,7 +204,7 @@ const handleSend = async (text: string) => {
   };
   setMessages((prev) => [...prev, userMsg]);
 
-  const assistantId = makeId();
+  
   streamingAssistantIdRef.current = assistantId;
 
   setThinking(true);
@@ -212,7 +215,7 @@ const handleSend = async (text: string) => {
     {
       id: assistantId,
       role: "assistant",
-      content: "",
+      content: ASSISTANT_PLACEHOLDER,
       createdAt: Date.now(),
     },
   ]);
@@ -264,10 +267,48 @@ const res = await fetch(`/api/repo/${repoId}/chat`, {
       }
 
       accumulated += chunk;
-      if (accumulated.includes("__RESET__")) {
-        // wipe current assistant bubble and continue streaming fresh
-        accumulated = accumulated.replace(/\n__RESET__\n/g, "");
-      }
+// ✅ RESET: detect before any stripping/parsing
+const normalized = accumulated.replace(/\r/g, "");
+if (RESET_LINE_RE.test(normalized)) {
+  // Remove reset marker so it never renders
+  accumulated = normalized.replace(RESET_LINE_RE, "\n");
+
+  // Stop streaming UI updates immediately
+  try { await reader.cancel(); } catch {}
+
+  streamingAssistantIdRef.current = null;
+  setThinking(false);
+  setState("stable");
+
+  // Clear transient proposal/verify/engraving UI state
+  setLastProposal(null);
+  setPendingConfirm(null);
+  setLastVerify(null);
+  setLastEngraving(null);
+
+  // Reload canonical history (post-prune)
+  try {
+    const res2 = await fetch(`/api/repo/${repoId}/messages`, { cache: "no-store" });
+    if (res2.ok) {
+      const data = await res2.json();
+      const rows = Array.isArray(data?.messages) ? data.messages : [];
+      setMessages(
+        rows.map((m: any) => ({
+          id: String(m.id),
+          role: m.role,
+          content: String(m.content ?? ""),
+          createdAt: m.created_at ? new Date(m.created_at).getTime() : Date.now(),
+        }))
+      );
+    }
+  } catch (e) {
+    console.log("[reset] reload failed", e);
+  }
+
+  break; // 🔥 hard interrupt: do NOT continue parsing/updating placeholder
+}
+
+
       const maybeConfirm = extractConfirmPhrase(accumulated);
         if (maybeConfirm) setPendingConfirm(maybeConfirm);  
 
@@ -305,6 +346,7 @@ for (let i = 0; i < lines.length; i++) {
           prevHash: proposal.prevHash,
           nextHash: proposal.nextHash,
           confirm,
+          meta: proposal.meta ?? null,
         });
 
         setPendingConfirm(confirm);
@@ -351,6 +393,7 @@ for (let i = 0; i < lines.length; i++) {
           prevHash: p.prevHash,
           nextHash: p.nextHash,
           confirm,
+          meta: p.meta ?? null,
         });
 
         setPendingConfirm(confirm);
@@ -469,7 +512,6 @@ flushSync(() => {
             {messages.map((msg) => {
               const isThinkingBubble =
           thinking && msg.role === "assistant" && streamingAssistantIdRef.current === msg.id;
-            streamingAssistantIdRef.current === msg.id;
 
               return (
                 <div
@@ -614,8 +656,11 @@ flushSync(() => {
                     <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
                       Confirmation phrase
                     </div>
-                    <div className="mt-1 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-emerald-100 break-all">
-                    <div className="mt-2">
+<div className="mt-1 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-emerald-100 break-all">
+  {pendingConfirm}
+</div>
+
+<div className="mt-2">
   <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
     Proposed content (preview)
   </div>
@@ -624,8 +669,6 @@ flushSync(() => {
     {lastProposal.content.length > 800 ? "\n…(truncated)" : ""}
   </div>
 </div>
-                      {pendingConfirm}
-                    </div>
                   </div>
                 </div>
               </div>
