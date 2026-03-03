@@ -1,18 +1,92 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { supabaseBrowser } from "@/lib/supabase/client";
+
 
 type Tier = "free" | "builder" | "pro" | "elite";
 
 const TIER_KEY = "vestaryn.tier";
 
 function getTier(): Tier {
-  const v = typeof window !== "undefined" ? localStorage.getItem(TIER_KEY) : null;
+  const v =
+    typeof window !== "undefined" ? localStorage.getItem(TIER_KEY) : null;
   return v === "builder" || v === "pro" || v === "elite" ? v : "free";
 }
 
 function titleCase(s: string) {
   return s.slice(0, 1).toUpperCase() + s.slice(1);
+}
+
+function MenuItem({
+  children,
+  onClick,
+  danger,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "w-full text-left px-3 py-2 rounded-lg text-sm",
+        danger
+          ? "text-rose-200/90 hover:bg-rose-500/10"
+          : "text-white/75 hover:bg-white/5",
+      ].join(" ")}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function VestarynFrame({
+  repoId,
+  repoName,
+  right,
+  children,
+}: {
+  repoId: string;
+  repoName?: string | null;
+  right?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="relative z-[1000] w-full h-full flex flex-col min-w-0">
+      {/* Top rail */}
+      <div className="relative z-[1000] h-12 shrink-0 px-3 flex items-center gap-3 border-b border-white/10 bg-black/35 backdrop-blur-md overflow-visible">
+        <RepoHud repoId={repoId} repoName={repoName} />
+
+        {/* Center nav placeholder */}
+        <div className="mx-auto flex items-center gap-2">
+          <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
+            Chamber
+          </button>
+          <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
+            Vault
+          </button>
+          <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
+            Verify
+          </button>
+        </div>
+
+        {/* Right slot */}
+        <div className="ml-auto flex items-center gap-2">{right}</div>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 min-h-0 min-w-0">{children}</div>
+    </div>
+  );
 }
 
 export default function RepoHud({
@@ -22,74 +96,186 @@ export default function RepoHud({
   repoId: string;
   repoName?: string | null;
 }) {
-  const [tier, setTier] = useState<Tier>("free");
+  const supabase = supabaseBrowser();
 
-  useEffect(() => {
-    // initial
-    setTier(getTier());
+  const [tierDb, setTierDb] = useState<Tier>("free");
+  const [credits, setCredits] = useState<number | null>(null);
+  const shownCredits = credits === null ? "…" : credits.toLocaleString();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  
 
-    // dev switcher updates localStorage; we can poll-on-focus cheaply
-    const onFocus = () => setTier(getTier());
-    window.addEventListener("focus", onFocus);
+useEffect(() => {
+  let cancelled = false;
 
-    // cross-tab changes
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === TIER_KEY) setTier(getTier());
-    };
-    window.addEventListener("storage", onStorage);
+  async function load() {
+    try {
+      const res = await fetch(`/api/credits/balance?repoId=${encodeURIComponent(repoId)}`, {
+        cache: "no-store",
+        headers: {
+          // optional but useful to keep tier consistent with what you’re using elsewhere
+          "x-vestaryn-tier": tierDb,
+        },
+      });
+      if (!res.ok) return;
 
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
+      const j = await res.json();
+      if (cancelled) return;
 
-  // placeholder credits for now (we’ll wire real accounting later)
-  const credits =
-    tier === "free"
-      ? 50_000
-      : tier === "builder"
-      ? 200_000
-      : tier === "pro"
-      ? 600_000
-      : 1_500_000;
+      setTierDb(
+        j.tier === "builder" || j.tier === "pro" || j.tier === "elite" ? j.tier : "free"
+      );
+      setCredits(typeof j.credits === "number" ? j.credits : Number(j.credits));
+    } catch {
+      // ignore for now
+    }
+  }
 
-return (
-  <div className="w-full">
-    <div className="relative w-full rounded-xl overflow-hidden bg-gradient-to-b from-[#0a0f14] via-[#05080c] to-[#020304] shadow-[0_20px_40px_rgba(0,0,0,0.55),0_0_40px_rgba(59,130,246,0.12)] ring-1 ring-blue-500/25">
-      {/* subtle grid like chamber */}
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.06]"
-        style={{
-          backgroundImage:
-            "linear-gradient(to right, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.08) 1px, transparent 1px)",
-          backgroundSize: "48px 48px",
-          maskImage: "radial-gradient(circle at 30% 20%, black 0%, transparent 70%)",
-          WebkitMaskImage:
-            "radial-gradient(circle at 30% 20%, black 0%, transparent 70%)",
-        }}
-      />
+  load();
+  window.addEventListener("focus", load);
+  return () => {
+    cancelled = true;
+    window.removeEventListener("focus", load);
+  };
+}, []);
 
-      <div className="relative z-10 p-4">
-        <div className="text-white/90 text-sm font-semibold leading-tight">
-          {repoName?.trim() ? repoName : "Repo"}
+const [copied, setCopied] = useState(false);
+
+async function copyRepoId() {
+  try {
+    await navigator.clipboard.writeText(repoId);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  } catch {}
+}
+
+useEffect(() => {
+  function onDown(e: PointerEvent) {
+    if (!open) return;
+    const el = rootRef.current;
+    if (!el) return;
+    if (!el.contains(e.target as Node)) setOpen(false);
+  }
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape") setOpen(false);
+  }
+
+  document.addEventListener("pointerdown", onDown, true); // capture
+  document.addEventListener("keydown", onKey);
+
+  return () => {
+    document.removeEventListener("pointerdown", onDown, true);
+    document.removeEventListener("keydown", onKey);
+  };
+}, [open]);
+
+useEffect(() => {
+  function onCredits(e: Event) {
+    const ce = e as CustomEvent<any>;
+    const remaining = Number(ce.detail?.remaining);
+    if (Number.isFinite(remaining)) setCredits(remaining);
+  }
+
+  window.addEventListener("vestaryn:credits", onCredits as any);
+  return () => window.removeEventListener("vestaryn:credits", onCredits as any);
+}, []);
+
+async function onLogout() {
+  setOpen(false);
+  const supabase = supabaseBrowser();
+  await supabase.auth.signOut();
+  window.location.href = "/";
+}
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-3 max-w-[420px] rounded-lg px-2 py-1 hover:bg-white/5 focus:outline-none focus:ring-1 focus:ring-blue-400/40"
+        title="Account / Repo menu"
+      >
+        {/* Repo identity */}
+        <div className="flex flex-col leading-tight min-w-0 text-left">
+          <div className="text-sm font-semibold text-white truncate">
+            {repoName?.trim() ? repoName : "Repo"}
+          </div>
+          <div className="text-[10px] font-mono text-white/40 truncate">
+            {repoId.slice(0, 8)}…
+          </div>
         </div>
 
-        <div className="mt-1 text-[11px] text-white/55 font-mono leading-tight break-all">
-          {repoId}
-        </div>
+        {/* Divider */}
+        <div className="h-6 w-px bg-white/10" />
 
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
-          <span className="rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-white/70">
-            Tier: {titleCase(tier)}
-          </span>
+        {/* Tier */}
+        <span className="text-[11px] rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-white/70 whitespace-nowrap">
+          {titleCase(tierDb)}
+        </span>
 
-          <span className="rounded-md border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 text-amber-100/80">
-            Credits: {credits.toLocaleString()}
-          </span>
+        {/* Credits */}
+        <span className="text-[11px] rounded-md border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 text-amber-100/80 whitespace-nowrap">
+          {shownCredits}
+        </span>
+
+        <span className="ml-1 text-white/30 text-xs">▾</span>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 mt-2 w-[260px] rounded-xl border border-white/10 bg-black/95 backdrop-blur-md shadow-[0_20px_50px_rgba(0,0,0,0.55)] p-1 z-50 ring-1 ring-white/10 border border-white/15" >
+<div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-white/40">
+  Account
+</div>
+
+<MenuItem
+  onClick={() => {
+    setOpen(false);
+    // later: route to account/profile page
+  }}
+>
+  Profile (soon)
+</MenuItem>
+
+<MenuItem
+  onClick={() => {
+    setOpen(false);
+    // later: route to usage/billing
+  }}
+>
+  Usage (soon)
+</MenuItem>
+
+<MenuItem
+  onClick={() => {
+    setOpen(false);
+    window.location.href = "/pricing";
+  }}
+>
+  Pricing
+</MenuItem>
+
+          <div className="my-1 h-px bg-white/10" />
+
+          <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-widest text-white/40">
+            Repo
+          </div>
+
+          <MenuItem
+            onClick={() => {
+              copyRepoId();
+              setOpen(false);
+            }}
+          >
+            {copied ? "Copied ✓" : "Copy repo id"}
+          </MenuItem>
+
+          <div className="my-1 h-px bg-white/10" />
+
+          <MenuItem danger onClick={onLogout}>
+            Log out
+          </MenuItem>
         </div>
-      </div>
+      )}
     </div>
-  </div>
-);
+  );
 }

@@ -1,128 +1,218 @@
-Master Handover — Vestaryn (Engraving + Reset + Streaming Markers)
-Current Goal
+🧠 Vestaryn – Master Handover (Phase: Pricing + Credits Integrated)
+1️⃣ System State Overview
 
-Finalize the engraving workflow so that:
+Vestaryn is a workspace-based AI coding system with:
 
-__ENGRAVE__ produces a vault proposal marker (__ENGRAVING__:{...}) that the UI can render like a normal proposal.
+Obsidian Chamber (structured AI interaction contract)
 
-Clicking Confirm & Apply sends __APPLY__:{proposal} and applies deterministically (no LLM).
+Deterministic Vault (repo_files + repo_file_versions canonical)
 
-If the applied proposal is an engraving (meta.kind="engraving"), the server prunes old chat messages and returns __RESET__ so the UI reloads canonical history.
+Snapshot-based Verify Runner
 
-What Works (Confirmed)
-Server (route.ts)
+Workspace-scoped credit accounting
 
-Deterministic short-circuits:
+Tier-enforced policy gating
 
-__VERIFY_*__ runs runner + returns __VERIFY__:{json} marker in the response text.
+Pricing page generated directly from TIER_POLICIES
 
-__ENGRAVE__ hits maybeSummarizeAndEngraveProposal(..., { force:true }) and returns __ENGRAVING__:{marker}.
+All core subsystems are operational.
 
-__APPLY__:{proposal} parses JSON, computes expected confirm phrase (confirmPhrase(fileId,nextHash)), calls vault_apply_write, then:
+2️⃣ Auth & Workspace
 
-if proposal.meta.kind === "engraving" and keepIds exists → prune repo_messages to keep only those IDs
+Auth: Google, GitHub, Magic Link via Supabase
 
-return normal text + __RESET__ marker
+workspace_members determines user → workspace
 
-Logs show correct detection:
+repos belong to workspace
 
-[engrave_probe] hit ...
+Credits are workspace-scoped
 
-[apply] keys= ...
+Current balance source of truth:
+workspace_credit_balances (workspace_id, period_start)
 
-[apply] meta= { kind:'engraving', keepIds:[...] }
+3️⃣ Tier Policy Engine
 
-[apply] didEngraving= true
+Single source of truth:
+lib/membership/tiers.ts
 
-Markers & Proposal
+Tiers:
 
-Engraving marker is built as a real vault proposal:
+free
 
-marker.proposal contains fileId/content/prevHash/nextHash/confirm
+builder
 
-proposal has meta = { kind:"engraving", keepIds } so APPLY can prune after success.
+pro
 
-UI (ChatFrame.tsx) — Current State
-Markers parsing (works)
+elite
 
-Streaming response is accumulated and split into lines.
+admin (internal)
 
-It strips:
+Each tier defines:
 
-__PROPOSAL__:{json} → setLastProposal(...) + setPendingConfirm(confirm)
+model + modelClass
 
-__VERIFY__:{json} → setLastVerify(...)
+output caps (tokens, verbosity, detail ceiling)
 
-__ENGRAVING__:{json} → setLastEngraving(...) and also extracts engr.proposal into setLastProposal(...)
+tool limits (rounds, calls)
 
-Confirm & Apply (works)
+budget (credits/month, soft reserve, grace mode)
 
-Button builds payload from lastProposal and sends:
+capability flags (export, createFiles, createTrees, architectureMode, etc.)
 
-handleSend(__APPLY__:${JSON.stringify(lastProposal)})
+Pricing page renders directly from this.
 
-Reset (BUG FOUND + FIX REQUIRED)
+No marketing drift possible.
 
-The reset marker is returned by server as a standalone line: __RESET__
+4️⃣ Credits System
 
-We discovered a critical ordering bug:
+Tables in use:
 
-UI was stripping __RESET__ early (replace(/\n__RESET__\n/g,"")) before checking for it.
+workspace_credit_balances
 
-Result: reset block never triggers.
+workspace_credit_charges
 
-Fix direction:
+workspace_credit_events
 
-Detect reset before stripping it.
+Balance endpoint:
+/api/credits/balance
 
-On reset:
+Returns:
 
-clear proposal/verify/engraving UI state
+tier
 
-reload /api/repo/${repoId}/messages with cache:"no-store"
+remaining credits
 
-set messages to canonical reloaded list (post-prune)
+HUD now shows:
 
-Key Decisions / Invariants
+Tier (from DB)
 
-Contract output is [Observation]/[Assessment]/[Action] enforced server-side at boundary.
+Live credits (from API + event listener)
 
-Vault apply is deterministic: __APPLY__ bypasses LLM; confirm phrase computed server-side.
+Grace modes:
 
-Engraving prune happens only after apply success (meta.kind === "engraving").
+clamp
 
-Markers are streamed as standalone lines and must be stripped before rendering.
+downgrade
 
-Next Steps (High Leverage)
+System is functional and green.
 
-Fix reset detection in ChatFrame:
+5️⃣ Vault & Verify
 
-Remove early accumulated.includes("__RESET__") stripping block.
+Vault:
 
-Add a single block right after accumulated += chunk:
+Deterministic storage key: repos/<repoId>/<fileId>/vN
 
-const hasReset = accumulated.replace(/\r/g,"").includes("\n__RESET__\n");
+repo_files is metadata canonical
 
-If true: strip marker, clear UI state, reload messages.
+sha256 NOT NULL
 
-Ensure reset doesn’t keep updating the old streaming placeholder (optional polish):
+soft delete via deleted_at
 
-after reload: streamingAssistantIdRef.current = null; setThinking(false); setState("stable");
+version integer tracked
 
-(Optional) Make reset marker tolerant of chunk boundaries:
+signed URL model stable
 
-check for __RESET__ line even if it arrives without surrounding newlines.
+Verify:
 
-Known Gotchas / Failure Modes
+Snapshot-based
 
-Server uses __APPLY__: (note colon). UI must send exactly that prefix.
+VERIFY marker extraction
 
-Markers parsing expects:
+Structured result pipeline
 
-__PROPOSAL__: / __VERIFY__: / __ENGRAVING__:
+npm wrapper (Windows safe)
 
-reset is just __RESET__ (no colon).
+ESLint v9 flat config
 
-Large proposal content can make UI sluggish; preview should be truncated (already done).
+End-to-end working
 
-Engraving proposal must carry meta.keepIds or prune won’t happen.
+Next planned:
+
+Auto-verify after APPLY
+
+File-level status tracking gating
+
+6️⃣ Pricing Page
+
+Route:
+/pricing
+
+Features:
+
+Plan cards (Free, Builder, Pro, Elite)
+
+Current plan detection via workspace_credit_balances
+
+Full comparison matrix auto-generated from TIER_POLICIES
+
+Linked from RepoHud → Account → Pricing
+
+No billing integration yet (Stripe not added).
+
+7️⃣ Known Clean State
+
+Build: green
+
+Credits: decrementing
+
+Pricing: rendering
+
+Auth: working
+
+No active 500 errors
+
+Tier enforcement live
+
+8️⃣ Next Direction Options (To Decide Tomorrow)
+
+A. Usage Page
+
+Show credit ledger
+
+Pull from workspace_credit_charges
+
+B. Auto-Verify After APPLY
+
+Runner trigger integration
+
+Status propagation to fileStatusById
+
+C. Tier Upgrade UX
+
+Soft gate messaging
+
+Upgrade nudges inside blocked actions
+
+D. Workspace Tier Persistence Outside Billing Period
+
+Add workspaces.tier column?
+
+Or keep billing table as canonical?
+
+E. Architecture Mode Hard Gate Enforcement
+
+Ensure SYSTEM_PROTECTOR_ARCH fully tier-gated
+
+9️⃣ Open Architectural Questions
+
+Should tier be derived only from billing?
+
+Should admin tier remain invisible in pricing?
+
+Should downgrade grace auto-switch model caps?
+
+10️⃣ Mental Context
+
+Current build phase:
+"Feature integration & structural coherence"
+
+Not:
+
+UI polish
+
+Marketing optimization
+
+Billing monetization
+
+Primary goal:
+System solidity.

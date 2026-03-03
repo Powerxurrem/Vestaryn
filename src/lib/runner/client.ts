@@ -14,7 +14,7 @@ export type RunnerResult = {
 
 export async function runnerRun(args: {
   jobId: string;
-  commandId: "ping" | "node_test" | "node_lint" | "node_typecheck";
+  commandId: "ping" | "node_test" | "node_lint" | "node_typecheck" | "node_verify";
   snapshotUrl?: string;
   timeoutMs?: number;
 }): Promise<RunnerResult> {

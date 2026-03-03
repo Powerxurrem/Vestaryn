@@ -191,8 +191,8 @@ export default function FileOverlay({
   return (
     <div className="rounded-xl overflow-hidden ring-1 ring-blue-500/20 bg-black/30 backdrop-blur-md shadow-[0_12px_30px_rgba(0,0,0,0.5)]">
       {/* Tab Strip */}
-      <div className="flex items-center gap-2 px-2 py-2 border-b border-white/10">
-        <div className="flex items-center gap-2 overflow-auto flex-1">
+      <div className="flex items-center gap-2 px-2 py-2 border-b border-white/10 overflow-hidden">
+        <div className="flex items-center gap-2 overflow-x-auto overflow-y-hidden whitespace-nowrap flex-1 ide-scroll">
           {tabs.map((t) => {
             const active = t.fileId === activeFileId;
 

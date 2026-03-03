@@ -12,20 +12,42 @@ type Message = {
   createdAt: number;
 };
 
-type Props = { repoId: string };
+type ChatFrameProps = {
+  repoId: string;
+  onFileUpdated?: (fileId: string) => void;
+  onFileStatus?: (fileId: string, status: "ok" | "error", reason?: string) => void;
+
+  refreshFiles?: () => void | Promise<void>;
+  openFileById?: (fileId: string) => void;
+};
+
+type Props = {
+  repoId: string;
+
+  onFileUpdated?: (fileId: string) => void;
+  onFileStatus?: (fileId: string, status: "ok" | "warn" | "error" | "pending", reason?: string) => void;
+
+  refreshFiles?: () => void | Promise<void>;
+  openFileById?: (fileId: string) => void;
+};
 
 type ChamberState = "stable" | "analyzing" | "deep" | "archive";
 
-export default function ChatFrame({ repoId }: Props) {
+export default function ChatFrame({ repoId, onFileUpdated, onFileStatus,refreshFiles, openFileById }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [thinking, setThinking] = useState(false);
   const [state, setState] = useState<ChamberState>("stable");
   const [pendingConfirm, setPendingConfirm] = useState<string | null>(null);
+  const [pendingConfirmMsgId, setPendingConfirmMsgId] = useState<string | null>(null);
   const loadSeqRef = useRef(0);
   const loadAbortRef = useRef<AbortController | null>(null);
   const [lastEngraving, setLastEngraving] = useState<any | null>(null);
   const RESET_LINE_RE = /(?:^|\n)\s*__RESET__\s*(?=\n|$)/;
+  const [lastVerifyMsgId, setLastVerifyMsgId] = useState<string | null>(null);
+
+  // when user clicks “Confirm & Apply”, we remember which assistant bubble it belonged to
+  const applyOriginMsgIdRef = useRef<string | null>(null);
 
     const [lastProposal, setLastProposal] = useState<{
     fileId: string;
@@ -34,6 +56,9 @@ export default function ChatFrame({ repoId }: Props) {
     nextHash: string;
     confirm: string;
     meta?: any;
+    path?: string;
+    name?: string,
+    mime?: string,
   } | null>(null);
   const [lastVerify, setLastVerify] = useState<any | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
@@ -73,12 +98,103 @@ function parseSections(content: string) {
   return sections;
 }
 
-  function extractConfirmPhrase(text: string) {
-    const m = text.match(
-      /APPLY\s+[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\s+[0-9a-f]{64}/i
-    );
-    return m ? m[0].trim() : null;
+function stripMarkersForRender(s: string) {
+  return (s || "")
+    .split("\n")
+    .filter(
+      (l) =>
+        !l.trim().startsWith("__CREDITS__:") &&
+        !l.trim().startsWith("__PROPOSAL__:") &&
+        !l.trim().startsWith("__VERIFY__:") &&
+        !l.trim().startsWith("__ENGRAVING__:") &&
+        !l.trim().startsWith("__APPLY__:") &&
+        !l.trim().startsWith("__APPLIED__:") &&
+        !l.trim().startsWith("__RESET__")
+    )
+    .join("\n");
+}
+
+function extractConfirmPhrase(text: string) {
+  const m = text.match(/\b(APPLY|CREATE)\s+[0-9a-f-]{8,}\s+[0-9a-f]{32,}\b/i);
+  return m ? m[0].trim() : null;
+}
+
+async function runVerify(changeId: string, touchedFileIds: string[], originMsgId?: string) {
+  try {
+    // mark touched files as verifying/pending immediately
+    if (typeof onFileStatus === "function") {
+      for (const fid of touchedFileIds) {
+        onFileStatus(fid, "pending", "verifying");
+      }
+    }
+
+    const res = await fetch(`/api/repo/${repoId}/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        commandId: "node_verify",
+        ...(changeId ? { changeId } : {}),
+        touchedFileIds,
+      }),
+    });   
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(errText || `verify failed (${res.status})`);
+    }
+    if (!res.body) throw new Error("verify: no response body");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      // Verify route emits a single marker line: __VERIFY__:{json}
+      const idx = buf.lastIndexOf("\n__VERIFY__:");
+      const alt = buf.lastIndexOf("__VERIFY__:");
+      const start = idx !== -1 ? idx + 1 : alt; // tolerate no leading newline
+      if (start !== -1) {
+        const line = buf.slice(start).split("\n")[0] ?? "";
+        const jsonStr = line.slice("__VERIFY__:".length).trim();
+        try {
+          const verify = JSON.parse(jsonStr);
+          setLastVerify(verify);
+          setLastVerifyMsgId(originMsgId ?? null);
+          setLastVerifyMsgId(originMsgId ?? null);
+          const ok = Boolean(verify?.ok);
+          const reason =
+            (verify?.failureKind ? String(verify.failureKind) : "") ||
+            (verify?.error ? String(verify.error) : "") ||
+            (verify?.stderr ? String(verify.stderr).slice(0, 200) : "") ||
+            (verify?.stdout ? String(verify.stdout).slice(0, 200) : "");
+
+          const ids =
+            Array.isArray(verify?.touchedFileIds) && verify.touchedFileIds.length
+              ? verify.touchedFileIds
+              : touchedFileIds;
+
+          if (typeof onFileStatus === "function") {
+            for (const fid of ids) {
+              onFileStatus(fid, ok ? "ok" : "error", ok ? undefined : reason);
+            }
+          }
+        } catch {}
+        break; // we got the marker; we're done
+      }
+    }
+  } catch (e: any) {
+    console.log("[auto-verify] failed", e?.message ?? e);
+    if (typeof onFileStatus === "function") {
+      for (const fid of touchedFileIds) {
+        onFileStatus(fid, "error", String(e?.message ?? "auto-verify failed"));
+      }
+    }
   }
+}
 
 function isContractComplete(t: string) {
   return (
@@ -190,12 +306,13 @@ const handleSend = async (text: string) => {
   const trimmed = text.trim();
   console.log("[handleSend] sending:", trimmed);
   if (!trimmed) return;
-
+  const isApplyCommand = trimmed.startsWith("__APPLY__:");
   if (sendingRef.current) return;
   sendingRef.current = true;
   const assistantId = makeId();
   setPendingConfirm(null);
 
+if (!isApplyCommand) {
   const userMsg: Message = {
     id: makeId(),
     role: "user",
@@ -203,6 +320,7 @@ const handleSend = async (text: string) => {
     createdAt: Date.now(),
   };
   setMessages((prev) => [...prev, userMsg]);
+}
 
   
   streamingAssistantIdRef.current = assistantId;
@@ -309,8 +427,12 @@ if (RESET_LINE_RE.test(normalized)) {
 }
 
 
-      const maybeConfirm = extractConfirmPhrase(accumulated);
-        if (maybeConfirm) setPendingConfirm(maybeConfirm);  
+const maybeConfirm = extractConfirmPhrase(accumulated);
+if (maybeConfirm) {
+  setPendingConfirm(maybeConfirm);
+  setPendingConfirmMsgId(assistantId); // ✅ anchor to this assistant message
+  
+}
 
  // ─────────────────────────────────────────────
 // Marker extraction (proposal + verify)
@@ -325,49 +447,139 @@ let changed = false;
 for (let i = 0; i < lines.length; i++) {
   const line = lines[i] ?? "";
 
-  // Proposal marker
-  if (line.startsWith("__PROPOSAL__:")) {
-    const jsonStr = line.slice("__PROPOSAL__:".length).trim();
-    try {
-      const proposal = JSON.parse(jsonStr);
+// Proposal marker
+if (line.startsWith("__PROPOSAL__:")) {
+  const jsonStr = line.slice("__PROPOSAL__:".length).trim();
 
-      if (
-        proposal?.fileId &&
-        proposal?.content &&
-        proposal?.prevHash &&
-        proposal?.nextHash &&
-        (proposal?.confirm || proposal?.pendingConfirmPhrase)
-      ) {
-        const confirm = String(proposal.confirm || proposal.pendingConfirmPhrase);
+  try {
+    const proposal = JSON.parse(jsonStr);
+    const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
+    const op = String(proposal?.meta?.op ?? "");
 
-        setLastProposal({
-          fileId: proposal.fileId,
-          content: proposal.content,
-          prevHash: proposal.prevHash,
-          nextHash: proposal.nextHash,
-          confirm,
-          meta: proposal.meta ?? null,
-        });
+    const isConfirmable =
+      confirm.startsWith("APPLY ") ||
+      confirm.startsWith("CREATE ") ||
+      op === "create";
 
-        setPendingConfirm(confirm);
-      }
-    } catch {}
+    if (
+      isConfirmable &&
+      proposal?.fileId &&
+      proposal?.content &&
+      proposal?.prevHash &&
+      proposal?.nextHash &&
+      confirm
+    ) {
+      setLastProposal({
+        fileId: proposal.fileId,
+        content: proposal.content,
+        prevHash: proposal.prevHash,
+        nextHash: proposal.nextHash,
+        confirm,
+        meta: proposal.meta ?? null,
+        path: proposal.path ?? proposal.meta?.path ?? null,
+        name: proposal.name ?? null,
+        mime: proposal.mime ?? proposal.meta?.mime ?? null,
+      });
 
-    lines[i] = ""; // strip line
-    changed = true;
+      setPendingConfirm(confirm);
+      setPendingConfirmMsgId(assistantId); // or msg.id depending where you parse
+    }
+  } catch {}
+
+  lines[i] = "";
+  changed = true;
+}
+
+// Apply marker (REQUEST or RESULT) — strip always; auto-verify only on RESULT.
+if (line.startsWith("__APPLY__:") || line.startsWith("__APPLIED__:")) {
+  const jsonStr = line
+    .slice(line.startsWith("__APPLIED__:") ? "__APPLIED__:".length : "__APPLY__:".length)
+    .trim();
+
+  try {
+    const payload = JSON.parse(jsonStr);
+
+    // Detect request-shape (proposal) vs result-shape (apply response)
+    const looksLikeRequest =
+      payload &&
+      typeof payload === "object" &&
+      typeof payload.fileId === "string" &&
+      typeof payload.prevHash === "string" &&
+      typeof payload.nextHash === "string";
+
+    if (!looksLikeRequest) {
+      // result shape
+      const ok = Boolean(payload?.ok);
+      const changeId = typeof payload?.changeId === "string" ? payload.changeId : "";
+      const touchedFileIds = Array.isArray(payload?.touchedFileIds)
+        ? payload.touchedFileIds.filter((x: any) => typeof x === "string")
+        : [];
+
+if (ok) {
+  setPendingConfirm(null);
+  setPendingConfirmMsgId(null);
+  setLastProposal(null);
+
+  const firstId = touchedFileIds[0];
+
+  // Refresh first, then open.
+  Promise.resolve(refreshFiles?.()).finally(() => {
+    if (firstId) openFileById?.(firstId);
+  });
+
+  runVerify(changeId, touchedFileIds, applyOriginMsgIdRef.current ?? assistantId);
+  applyOriginMsgIdRef.current = null;
+}
+    }
+  } catch {}
+
+  lines[i] = ""; // strip marker from rendering
+  changed = true;
+}
+
+// Verify marker
+if (line.startsWith("__VERIFY__:")) {
+  const jsonStr = line.slice("__VERIFY__:".length).trim();
+  try {
+    const verify = JSON.parse(jsonStr);
+    setLastVerify(verify);
+
+    // ✅ Bridge into file status (best-effort)
+    // We attribute the verify result to the "last proposal file" if we have one.
+    const ok = Boolean(verify?.ok);
+    const reason =
+      (verify?.failureKind ? String(verify.failureKind) : "") ||
+      (verify?.error ? String(verify.error) : "") ||
+      (verify?.stderr ? String(verify.stderr).slice(0, 200) : "") ||
+      (verify?.stdout ? String(verify.stdout).slice(0, 200) : "");
+
+    // lastProposal is already in your state (you set it in __PROPOSAL__ / __ENGRAVING__)
+const ids =
+  Array.isArray(verify?.touchedFileIds) && verify.touchedFileIds.length
+    ? verify.touchedFileIds
+    : (lastProposal?.fileId ? [lastProposal.fileId] : []);
+console.log("VERIFY payload", verify);
+if (typeof onFileStatus === "function") {
+  for (const fid of ids) {
+    onFileStatus(fid, ok ? "ok" : "error", ok ? undefined : reason);
   }
+}
+  } catch {}
 
-  // Verify marker
-  if (line.startsWith("__VERIFY__:")) {
-    const jsonStr = line.slice("__VERIFY__:".length).trim();
-    try {
-      const verify = JSON.parse(jsonStr);
-      setLastVerify(verify);
-    } catch {}
+  lines[i] = ""; // strip line
+  changed = true;
+}
 
-    lines[i] = ""; // strip line
-    changed = true;
-  }
+if (line.startsWith("__CREDITS__:")) {
+  try {
+    const payload = JSON.parse(line.slice("__CREDITS__:".length));
+    window.dispatchEvent(new CustomEvent("vestaryn:credits", { detail: payload }));
+  } catch {}
+
+  lines[i] = "";     // ✅ strip it
+  changed = true;    // ✅ ensure accumulated gets rebuilt
+  continue;
+}
 
   // Engraving marker
   if (line.startsWith("__ENGRAVING__:")) {
@@ -441,106 +653,117 @@ flushSync(() => {
       sendingRef.current = false;
     }
 };
-  // ─────────────────────────────────────────────────────────────
-  // Render
-  // ─────────────────────────────────────────────────────────────
-  return (
-    
-    <section className="relative h-[70vh] w-full rounded-xl overflow-hidden bg-gradient-to-b from-[#0a0f14] via-[#05080c] to-[#020304] shadow-[0_20px_40px_rgba(0,0,0,0.55),0_0_40px_rgba(59,130,246,0.12)] ring-1 ring-blue-500/25">
-<div className="fixed right-6 top-6 z-[999]">
-  <TierSwitcher />
-</div>
-      <div
-        className={`absolute top-0 left-0 right-0 z-20 h-[2px] transition-all duration-500 ${
-          state === "stable"
-            ? "bg-white/15"
-            : state === "analyzing"
-            ? "bg-blue-400/40 shadow-[0_0_12px_rgba(59,130,246,0.6)]"
-            : state === "deep"
-            ? "bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.9)]"
-            : "bg-purple-400/50 shadow-[0_0_15px_rgba(168,85,247,0.6)]"
-        }`}
-      />
 
+
+ // ─────────────────────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────────────────────
+return (
+  <section className="relative h-[70vh] w-full rounded-xl overflow-hidden bg-gradient-to-b from-[#0a0f14] via-[#05080c] to-[#020304] shadow-[0_20px_40px_rgba(0,0,0,0.55),0_0_40px_rgba(59,130,246,0.12)] ring-1 ring-blue-500/15">
+    <div className="fixed right-6 top-6 z-[10001]">
+      <TierSwitcher />
+    </div>
+
+    <div
+      className={`absolute top-0 left-0 right-0 z-20 h-[2px] transition-all duration-500 ${
+        state === "stable"
+          ? "bg-white/15"
+          : state === "analyzing"
+          ? "bg-blue-400/40 shadow-[0_0_12px_rgba(59,130,246,0.6)]"
+          : state === "deep"
+          ? "bg-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.9)]"
+          : "bg-purple-400/50 shadow-[0_0_15px_rgba(168,85,247,0.6)]"
+      }`}
+    />
+
+    <div
+      className="pointer-events-none absolute inset-0 z-0"
+      style={{
+        background:
+          "linear-gradient(to bottom, rgba(59,130,246,0.10) 0%, rgba(59,130,246,0.04) 18%, transparent 55%)",
+      }}
+    />
+
+    <div className="pointer-events-none absolute inset-0 z-0 flex items-end justify-center">
       <div
-        className="pointer-events-none absolute inset-0 z-0"
+        className={`w-[55%] h-[85%] transition-opacity duration-700 ${
+          thinking ? "opacity-100" : "opacity-70"
+        }`}
         style={{
           background:
-            "linear-gradient(to bottom, rgba(59,130,246,0.10) 0%, rgba(59,130,246,0.04) 18%, transparent 55%)",
+            "linear-gradient(to top, rgba(59,130,246,0.26) 0%, rgba(59,130,246,0.12) 25%, rgba(59,130,246,0.06) 45%, transparent 75%)",
+          filter: "blur(60px)",
         }}
       />
+    </div>
 
-      <div className="pointer-events-none absolute inset-0 z-0 flex items-end justify-center">
-        <div
-          className={`w-[55%] h-[85%] transition-opacity duration-700 ${
-            thinking ? "opacity-100" : "opacity-70"
-          }`}
-          style={{
-            background:
-              "linear-gradient(to top, rgba(59,130,246,0.26) 0%, rgba(59,130,246,0.12) 25%, rgba(59,130,246,0.06) 45%, transparent 75%)",
-            filter: "blur(60px)",
-          }}
-        />
-      </div>
+    <div
+      className="pointer-events-none absolute inset-0 z-0 opacity-[0.06]"
+      style={{
+        backgroundImage:
+          "linear-gradient(to right, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.08) 1px, transparent 1px)",
+        backgroundSize: "48px 48px",
+        maskImage: "radial-gradient(circle at 50% 20%, black 0%, transparent 70%)",
+        WebkitMaskImage:
+          "radial-gradient(circle at 50% 20%, black 0%, transparent 70%)",
+      }}
+    />
 
-      <div
-        className="pointer-events-none absolute inset-0 z-0 opacity-[0.06]"
-        style={{
-          backgroundImage:
-            "linear-gradient(to right, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.08) 1px, transparent 1px)",
-          backgroundSize: "48px 48px",
-          maskImage: "radial-gradient(circle at 50% 20%, black 0%, transparent 70%)",
-          WebkitMaskImage:
-            "radial-gradient(circle at 50% 20%, black 0%, transparent 70%)",
-        }}
-      />
+    <div className="relative z-10 flex h-full flex-col">
+      <div className="relative flex-1 overflow-y-auto px-6 py-5">
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.02] via-transparent to-black/35 shadow-[inset_0_0_90px_rgba(0,0,0,0.90)]" />
 
-      <div className="relative z-10 flex h-full flex-col">
-        <div className="relative flex-1 overflow-y-auto px-6 py-5">
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.02] via-transparent to-black/35 shadow-[inset_0_0_90px_rgba(0,0,0,0.90)]" />
+        <div className="relative space-y-4">
+          {loading && messages.length === 0 && (
+            <p className="text-white/30 text-sm">Loading memory…</p>
+          )}
 
-          <div className="relative space-y-4">
+          {!loading && messages.length === 0 && (
+            <p className="text-white/40 text-sm">The chamber is ready.</p>
+          )}
 
-            {loading && messages.length === 0 && (
-              <p className="text-white/30 text-sm">Loading memory…</p>
-            )}
+          {messages.map((msg) => {
+            console.log("CONFIRM DEBUG", {
+              pendingConfirm,
+              hasLastProposal: Boolean(lastProposal),
+              thinking,
+              pendingConfirmMsgId,
+              msgId: msg.id,
+            });
+            const isThinkingBubble =
+              thinking &&
+              msg.role === "assistant" &&
+              streamingAssistantIdRef.current === msg.id;
 
-            {!loading && messages.length === 0 && (
-              <p className="text-white/40 text-sm">The chamber is ready.</p>
-            )}
-
-            {messages.map((msg) => {
-              const isThinkingBubble =
-          thinking && msg.role === "assistant" && streamingAssistantIdRef.current === msg.id;
-
-              return (
-                <div
-                  key={msg.id}
-                  className={`max-w-[80%] rounded-lg px-4 py-3 text-sm border ${
-                    msg.role === "user"
-                      ? "ml-auto bg-white/[0.04] border-blue-500/15 text-white/90 shadow-[inset_0_0_20px_rgba(255,255,255,0.03)]"
-                      : msg.role === "system"
-                      ? "mx-auto bg-black/20 border-white/10 text-white/50 text-xs"
-                      : isThinkingBubble
-                      ? "bg-white/[0.04] border-blue-400/25 text-white/90 animate-[pulse_3s_ease-in-out_infinite] shadow-[0_0_25px_rgba(59,130,246,0.25)] backdrop-blur-md"
-                      : "bg-gradient-to-b from-white/[0.04] to-white/[0.02] border-white/[0.08] backdrop-blur-md text-white/80 shadow-[inset_0_0_30px_rgba(59,130,246,0.03)]"
-                  }`}
-                >
+            return (
+              <div
+                key={msg.id}
+                className={`max-w-[80%] rounded-lg px-4 py-3 text-sm border ${
+                  msg.role === "user"
+                    ? "ml-auto bg-white/[0.04] border-blue-500/15 text-white/90 shadow-[inset_0_0_20px_rgba(255,255,255,0.03)]"
+                    : msg.role === "system"
+                    ? "mx-auto bg-black/20 border-white/10 text-white/50 text-xs"
+                    : isThinkingBubble
+                    ? "bg-white/[0.04] border-blue-400/25 text-white/90 animate-[pulse_3s_ease-in-out_infinite] shadow-[0_0_25px_rgba(59,130,246,0.25)] backdrop-blur-md"
+                    : "bg-gradient-to-b from-white/[0.04] to-white/[0.02] border-white/[0.08] backdrop-blur-md text-white/80 shadow-[inset_0_0_30px_rgba(59,130,246,0.03)]"
+                }`}
+              >
                 {msg.role === "assistant" ? (
                   (() => {
                     const isStreamingThis =
                       thinking && streamingAssistantIdRef.current === msg.id;
 
-                    // While streaming, show raw text until the contract markers exist
                     if (isStreamingThis && !isContractComplete(msg.content)) {
                       return (
                         <div className="whitespace-pre-wrap text-white/80">
-                          {msg.content}
+                          {stripMarkersForRender(msg.content)}
                         </div>
                       );
                     }
 
-                    const s = parseSections(msg.content);
+                    const safe = stripMarkersForRender(msg.content);
+                    const s = parseSections(safe);
+
                     return (
                       <div className="space-y-3">
                         {s.observation && (
@@ -551,7 +774,9 @@ flushSync(() => {
                             <div className="text-white/80">{s.observation}</div>
                           </div>
                         )}
+
                         <div className="h-px bg-white/5 my-2" />
+
                         {s.assessment && (
                           <div className="border-l-2 border-blue-400/40 pl-3">
                             <div className="text-[10px] uppercase tracking-widest text-blue-300/60 mb-1">
@@ -560,7 +785,9 @@ flushSync(() => {
                             <div className="text-white/85">{s.assessment}</div>
                           </div>
                         )}
+
                         <div className="h-px bg-white/5 my-2" />
+
                         {s.action && (
                           <div className="border-l-2 border-emerald-400/50 pl-3">
                             <div className="text-[10px] uppercase tracking-widest text-emerald-300/70 mb-1">
@@ -569,133 +796,163 @@ flushSync(() => {
                             <div className="text-white/95">{s.action}</div>
                           </div>
                         )}
+
+                        {/* ✅ Anchored VERIFY (inside the bubble) */}
+                        {lastVerify &&
+                          !thinking &&
+                          lastVerifyMsgId === msg.id && (
+                            <div
+                              className={`mt-3 rounded-lg border p-3 text-xs ${
+                                lastVerify.ok
+                                  ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
+                                  : "border-rose-400/25 bg-rose-500/10 text-rose-100/90"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-[10px] uppercase tracking-widest opacity-80">
+                                    Verification
+                                  </div>
+                                  <div className="mt-1 truncate">
+                                    {lastVerify.ok ? "PASS" : "FAIL"} ·{" "}
+                                    {String(lastVerify.command ?? "")}
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setLastVerify(null);
+                                    setLastVerifyMsgId(null);
+                                  }}
+                                  className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+
+                              <div className="mt-2 text-[11px] opacity-80 flex flex-wrap gap-x-3 gap-y-1">
+                                <span>exit {Number(lastVerify.exitCode ?? -1)}</span>
+                                <span>{Number(lastVerify.durationMs ?? 0)}ms</span>
+                                {lastVerify.failureKind ? (
+                                  <span>{String(lastVerify.failureKind)}</span>
+                                ) : null}
+                                {lastVerify.failedStep ? (
+                                  <span>({String(lastVerify.failedStep)})</span>
+                                ) : null}
+                                {lastVerify.fingerprint ? (
+                                  <span>{String(lastVerify.fingerprint)}</span>
+                                ) : null}
+                              </div>
+                            </div>
+                          )}
+
+                        {/* ✅ Anchored PROPOSAL (inside the bubble) */}
+                        {pendingConfirm &&
+                          lastProposal &&
+                          !thinking &&
+                          pendingConfirmMsgId === msg.id && (
+                            <div className="mt-3 rounded-lg border border-emerald-400/25 bg-emerald-500/10 p-3 text-xs text-emerald-100/90">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+                                    Pending change
+                                  </div>
+                                  <div className="mt-1 truncate">
+                                    File:{" "}
+                                    <span className="text-emerald-100">
+                                      {lastProposal.fileId}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setLastProposal(null);
+                                    setPendingConfirm(null);
+                                    setPendingConfirmMsgId(null);
+                                  }}
+                                  className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+
+                              <div className="mt-2">
+                                <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+                                  Confirmation phrase
+                                </div>
+                                <div className="mt-1 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-emerald-100 break-all">
+                                  {pendingConfirm}
+                                </div>
+
+                                <div className="mt-2">
+                                  <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+                                    Proposed content (preview)
+                                  </div>
+                                  <div className="mt-1 max-h-[120px] overflow-auto rounded-md bg-black/30 p-2 font-mono text-[11px] text-white/80 whitespace-pre-wrap">
+                                    {lastProposal.content.slice(0, 800)}
+                                    {lastProposal.content.length > 800
+                                      ? "\n…(truncated)"
+                                      : ""}
+                                  </div>
+                                </div>
+
+                                <div className="mt-3 flex justify-end">
+                                  <button
+                                    onClick={() => {
+                                      if (!lastProposal) return;
+
+                                      // remember which bubble this apply belongs to
+                                      applyOriginMsgIdRef.current = pendingConfirmMsgId;
+
+                                      onFileUpdated?.(lastProposal.fileId);
+
+                                      const payload = JSON.stringify(lastProposal);
+                                      setPendingConfirm(null);
+                                      setPendingConfirmMsgId(null);
+                                      handleSend(`__APPLY__:${payload}`);
+                                    }}
+                                    className="h-[36px] rounded-lg px-3 text-[12px] font-medium bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300/40 active:scale-[0.99] transition"
+                                  >
+                                    Confirm &amp; Apply
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                       </div>
                     );
                   })()
                 ) : (
-                  msg.content
+                  stripMarkersForRender(msg.content)
                 )}
-                </div>
-              );
-            })}
+              </div>
+            );
+          })}
 
-            <div ref={bottomRef} />
-          </div>
+          <div ref={bottomRef} />
         </div>
+      </div>
 
-        <div className="relative px-6 pb-5 pt-4">
-          <div className="pointer-events-none absolute -top-6 left-0 right-0 h-6 bg-gradient-to-b from-transparent to-black/60" />
-          <div className="pointer-events-none absolute top-0 left-6 right-6 h-px bg-gradient-to-r from-transparent via-blue-400/50 to-transparent" />
-          <div className="pointer-events-none absolute top-0 left-6 right-6 h-10 bg-gradient-to-b from-blue-400/12 to-transparent" />
+      {/* Footer: only input */}
+      <div className="relative px-6 pb-5 pt-4">
+        <div className="pointer-events-none absolute -top-6 left-0 right-0 h-6 bg-gradient-to-b from-transparent to-black/60" />
+        <div className="pointer-events-none absolute top-0 left-6 right-6 h-px bg-gradient-to-r from-transparent via-blue-400/50 to-transparent" />
+        <div className="pointer-events-none absolute top-0 left-6 right-6 h-10 bg-gradient-to-b from-blue-400/12 to-transparent" />
 
-          <div className="relative rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-md shadow-[0_-18px_45px_rgba(0,0,0,0.75),0_0_25px_rgba(59,130,246,0.08),inset_0_0_30px_rgba(59,130,246,0.05)]">
-            <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-white/[0.06]" />
-            
-            {lastVerify && !thinking && (
-              <div className="px-3 pt-3">
-                <div
-                  className={`rounded-lg border p-3 text-xs ${
-                    lastVerify.ok
-                      ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
-                      : "border-rose-400/25 bg-rose-500/10 text-rose-100/90"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[10px] uppercase tracking-widest opacity-80">
-                        Verification
-                      </div>
-                      <div className="mt-1 truncate">
-                        {lastVerify.ok ? "PASS" : "FAIL"} · {String(lastVerify.command ?? "")}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setLastVerify(null)}
-                      className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
+        <div className="relative rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-md shadow-[0_-18px_45px_rgba(0,0,0,0.75),0_0_25px_rgba(59,130,246,0.08),inset_0_0_30px_rgba(59,130,246,0.05)]">
+          <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-white/[0.06]" />
 
-                  <div className="mt-2 text-[11px] opacity-80 flex flex-wrap gap-x-3 gap-y-1">
-                    <span>exit {Number(lastVerify.exitCode ?? -1)}</span>
-                    <span>{Number(lastVerify.durationMs ?? 0)}ms</span>
-                    {lastVerify.failureKind ? <span>{String(lastVerify.failureKind)}</span> : null}
-                    {lastVerify.failedStep ? <span>({String(lastVerify.failedStep)})</span> : null}
-                    {lastVerify.fingerprint ? <span>{String(lastVerify.fingerprint)}</span> : null}
-                  </div>
-                </div>
-              </div>
-            )}
-            {lastProposal && pendingConfirm && !thinking && (
-              <div className="px-3 pt-3">
-                <div className="rounded-lg border border-emerald-400/25 bg-emerald-500/10 p-3 text-xs text-emerald-100/90">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
-                        Pending change
-                      </div>
-                      <div className="mt-1 truncate">
-                        File: <span className="text-emerald-100">{lastProposal.fileId}</span>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLastProposal(null);
-                        setPendingConfirm(null);
-                      }}
-                      className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-
-                  <div className="mt-2">
-                    <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
-                      Confirmation phrase
-                    </div>
-<div className="mt-1 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-emerald-100 break-all">
-  {pendingConfirm}
-</div>
-
-<div className="mt-2">
-  <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
-    Proposed content (preview)
-  </div>
-  <div className="mt-1 max-h-[120px] overflow-auto rounded-md bg-black/30 p-2 font-mono text-[11px] text-white/80 whitespace-pre-wrap">
-    {lastProposal.content.slice(0, 800)}
-    {lastProposal.content.length > 800 ? "\n…(truncated)" : ""}
-  </div>
-</div>
-                  </div>
-                </div>
-              </div>
-            )}
-            <div className="flex items-center gap-2">
-              <div className="flex-1">
-                <ChatInput onSend={handleSend} />
-              </div>
-                {pendingConfirm && !thinking && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!lastProposal) return;
-                      const payload = JSON.stringify(lastProposal);
-                      setPendingConfirm(null);
-                      handleSend(`__APPLY__:${payload}`);
-                    }}
-                    className="h-[40px] rounded-lg px-4 text-sm font-medium bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300/40 active:scale-[0.99] transition"
-                    title="Send the exact confirmation phrase"
-                  >
-                    Confirm &amp; Apply
-                  </button>
-                )}
+          <div className="flex items-center gap-2 p-3">
+            <div className="flex-1">
+              <ChatInput onSend={handleSend} />
             </div>
           </div>
         </div>
       </div>
-    </section>
-  );
+    </div>
+  </section>
+);
 }

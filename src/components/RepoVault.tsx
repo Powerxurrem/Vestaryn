@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
 
 type Tier = "free" | "builder" | "pro" | "elite";
@@ -66,16 +66,19 @@ function isUuid(v: string) {
 // ─────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────
-export default function RepoVault({
-  repoId,
-  onOpenFile,
-}: {
+export type RepoVaultHandle = {
+  refresh: () => Promise<void>;
+  openFileById: (fileId: string) => void;
+};
+
+const RepoVault = forwardRef<RepoVaultHandle, {
   repoId: string;
   onOpenFile: (file: RepoFile) => void;
-}) {
+}>(function RepoVault({ repoId, onOpenFile }, ref) {
   // ─────────────────────────────────────────────────────────────
   // State
   // ─────────────────────────────────────────────────────────────
+ 
   const [files, setFiles] = useState<RepoFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -153,7 +156,23 @@ async function refresh() {
     setLoading(false);
   }
 }
+function openFileById(fileId: string) {
+  const f = files.find((x) => x.id === fileId);
+  if (!f) return;
 
+  setSelectedId(f.id);
+  onOpenFile(f);
+}
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      refresh,
+      openFileById,
+    }),
+    [files, repoId, onOpenFile]
+  );
+  
   // ─────────────────────────────────────────────────────────────
   // Data ops: create file (empty v1)
   // ─────────────────────────────────────────────────────────────
@@ -641,5 +660,7 @@ async function exportFile(f: RepoFile) {
           document.body
         )}
     </div>
-  );
-}
+   );
+}); // ← closes forwardRef(function RepoVault...)
+
+export default RepoVault;

@@ -19,10 +19,10 @@ import { runnerRun } from "@/lib/runner/client";                   // src/lib/ru
 
 export const runtime = "nodejs";
 
-type VerifyCmd = "node_typecheck"; // v0: keep it simple
+type VerifyCmd = "node_typecheck" | "node_lint" | "node_test" | "node_verify";
 
 export async function POST(
-  _req: Request,
+  req: Request,
   context: { params: Promise<{ repoId: string; changeId: string }> }
 ) {
   const requestId = crypto.randomUUID();
@@ -86,7 +86,14 @@ export async function POST(
   // ─────────────────────────────────────────────
   // 4) Snapshot + runner execution
   // ─────────────────────────────────────────────
-  const verifyCmd: VerifyCmd = "node_typecheck";
+  const body = await req.json().catch(() => ({} as any));
+  const verifyCmd: VerifyCmd =
+    body?.commandId === "node_verify" ||
+    body?.commandId === "node_typecheck" ||
+    body?.commandId === "node_lint" ||
+    body?.commandId === "node_test"
+      ? body.commandId
+      : "node_verify"; // ✅ default to full verify
   const jobId = `verify-${repoId}-${changeId}-${Date.now()}`;
 
   console.log("[change_verify] start", { requestId, repoId, changeId, jobId, verifyCmd });

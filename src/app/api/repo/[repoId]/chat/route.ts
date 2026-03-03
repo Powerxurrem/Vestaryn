@@ -31,6 +31,10 @@ export const SYSTEM_PROTECTOR_DEFAULT = `
 You are Vestaryn: a deterministic cognition chamber.
 
 OUTPUT FORMAT (mandatory):
+
+MARKER LINES (non-visible transport):
+- You may append standalone marker lines used by the system (e.g. __PROPOSAL__:{json}, __VERIFY__:{json}, __CREDITS__:{json}).
+- Marker lines must never be described or referenced in visible text.
 [Observation]
 ...
 [Assessment]
@@ -63,6 +67,23 @@ VAULT RULES (tools are the only file access):
 - If user asks to append: call vault_propose_append directly (do NOT call vault_read_text first).
   Always pass: { path: "<path or name>", content: "<text to append>" }.
 - If a vault/tool returns data: treat it as verified. If a tool fails: report the tool error plainly.
+- Any request that reads/writes/creates vault files is a systems question.
+
+APPLY / CONFIRMATION RULES:
+- Never print any confirmation phrase or hashes in visible [Observation]/[Assessment]/[Action].
+  (Forbidden examples: "Reply exactly with: APPLY ...", or any line starting with "APPLY " followed by ids/hashes.)
+- If a deterministic confirmation is required, emit it ONLY via marker lines (e.g. __PROPOSAL__:{json}).
+- In visible [Action], refer to confirmation generically (e.g. "A staged change is ready. Confirm to apply.") without including ids.
+
+PROPOSAL / TOOL PAYLOAD VISIBILITY:
+- Never include tool arguments, tool outputs, JSON payloads, hashes, fileId/path blobs, or "prevHash/nextHash/content" objects in visible text.
+- If you need to indicate a staged change exists, say only: "A staged change is ready. Confirm to apply."
+- All structured data MUST be emitted only via marker lines (e.g. __PROPOSAL__:{json}).
+
+FILE CREATION:
+- If the user requests a new file and the tier allows file creation, call vault_propose_write with a new path and full content.
+- If the file does not exist and creation is allowed, this is valid.
+- Do not assume that files must pre-exist.
 
 USER PROFILE:
 - USER_PROFILE is at memory/user-profile.md. Use it to tune verbosity/style.
@@ -74,6 +95,10 @@ export const SYSTEM_PROTECTOR_ARCH = `
 You are Vestaryn: a deterministic cognition chamber operating in ARCHITECTURE MODE.
 
 OUTPUT FORMAT (mandatory):
+
+MARKER LINES (non-visible transport):
+- You may append standalone marker lines used by the system (e.g. __PROPOSAL__:{json}, __VERIFY__:{json}, __CREDITS__:{json}).
+- Marker lines must never be described or referenced in visible text.
 [Observation]
 ...
 [Assessment]
@@ -114,6 +139,23 @@ VAULT RULES (tools are the only file access):
 - If user asks to append: call vault_propose_append directly (do NOT call vault_read_text first).
   Always pass: { path: "<path or name>", content: "<text to append>" }.
 - If a vault/tool returns data: treat it as verified. If a tool fails: report the tool error plainly.
+- Any request that reads/writes/creates vault files is a systems question.
+
+APPLY / CONFIRMATION RULES:
+- Never print any confirmation phrase or hashes in visible [Observation]/[Assessment]/[Action].
+  (Forbidden examples: "Reply exactly with: APPLY ...", or any line starting with "APPLY " followed by ids/hashes.)
+- If a deterministic confirmation is required, emit it ONLY via marker lines (e.g. __PROPOSAL__:{json}).
+- In visible [Action], refer to confirmation generically (e.g. "A staged change is ready. Confirm to apply.") without including ids.
+
+PROPOSAL / TOOL PAYLOAD VISIBILITY:
+- Never include tool arguments, tool outputs, JSON payloads, hashes, fileId/path blobs, or "prevHash/nextHash/content" objects in visible text.
+- If you need to indicate a staged change exists, say only: "A staged change is ready. Confirm to apply."
+- All structured data MUST be emitted only via marker lines (e.g. __PROPOSAL__:{json}).
+
+FILE CREATION:
+- If the user requests a new file and the tier allows file creation, call vault_propose_write with a new path and full content.
+- If the file does not exist and creation is allowed, this is valid.
+- Do not assume that files must pre-exist.
 
 USER PROFILE:
 - USER_PROFILE is at memory/user-profile.md. Use it to tune verbosity/style.
@@ -197,6 +239,185 @@ function sha256(text: string) {
 
 function confirmPhrase(fileId: string, nextHash: string) {
   return `APPLY ${fileId} ${nextHash}`;
+}
+
+function confirmCreatePhrase(fileId: string, nextHash: string) {
+  return `CREATE ${fileId} ${nextHash}`;
+}
+
+function normalizePath(p: string) {
+  const s = (p || "").trim().replace(/^["'`]+|["'`]+$/g, "");
+  // prevent accidental leading slashes
+  return s.replace(/^\/+/, "");
+}
+
+function nameFromPath(path: string) {
+  const parts = normalizePath(path).split("/").filter(Boolean);
+  return parts[parts.length - 1] || path || "new-file.txt";
+}
+
+async function fileExistsByPath(supabase: any, repoId: string, path: string) {
+  const { data, error } = await supabase
+    .from("repo_files")
+    .select("id")
+    .eq("repo_id", repoId)
+    .eq("path", path)
+    .is("deleted_at", null)
+    .maybeSingle();
+
+  if (error) throw new Error(`fileExistsByPath failed: ${error.message}`);
+  return Boolean(data?.id);
+}
+
+/**
+ * Propose creating a NEW text file (does not write).
+ * Returns a normal proposal object + meta.op="create"
+ */
+async function vault_propose_create(
+  supabase: any,
+  repoId: string,
+  args: { path: string; content: string; mime?: string }
+) {
+  const path = normalizePath(args.path);
+  if (!path) throw new Error("vault_propose_create missing path");
+
+  const content = String(args.content ?? "");
+  if (!content) throw new Error("vault_propose_create missing content");
+
+  const mime = String(args.mime ?? "text/plain");
+  if (!isTextMime(mime)) throw new Error("vault_propose_create: mime must be text-like");
+
+  // Must not already exist
+  const exists = await fileExistsByPath(supabase, repoId, path);
+  if (exists) throw new Error(`File already exists at path: ${path}`);
+
+  const fileId = typeof randomUUID === "function" ? randomUUID() : randomBytes(16).toString("hex");
+  const prevHash = sha256(""); // deterministic "empty"
+  const nextHash = sha256(content);
+  const confirm = confirmCreatePhrase(fileId, nextHash);
+
+  return {
+    fileId,
+    path,
+    name: nameFromPath(path),
+    mime,
+    prevHash,
+    nextHash,
+    confirm,
+    content,
+    bytes: Buffer.byteLength(content, "utf8"),
+    meta: {
+      op: "create",
+      path,
+      mime,
+    },
+  };
+}
+
+/**
+ * Apply creation proposal (writes v1 and inserts repo_files + repo_file_versions)
+ */
+async function vault_apply_create(
+  supabase: any,
+  repoId: string,
+  userId: string,
+  userMessage: string,
+  proposal: {
+    fileId: string;
+    path: string;
+    name?: string;
+    mime: string;
+    content: string;
+    prevHash: string;
+    nextHash: string;
+    confirm: string;
+    meta?: any;
+  }
+) {
+  const fileId = String(proposal.fileId || "").trim();
+  const path = normalizePath(String(proposal.path || ""));
+  const mime = String(proposal.mime || "text/plain");
+  const content = String(proposal.content ?? "");
+  const nextHash = String(proposal.nextHash || "");
+  const confirm = String(proposal.confirm || "");
+
+  if (!fileId) throw new Error("vault_apply_create missing fileId");
+  if (!path) throw new Error("vault_apply_create missing path");
+  if (!content) throw new Error("vault_apply_create missing content");
+  if (!nextHash) throw new Error("vault_apply_create missing nextHash");
+
+  const expected = confirmCreatePhrase(fileId, nextHash);
+  if (confirm !== expected) throw new Error("Bad confirm phrase");
+  if (userMessage.trim() !== expected) throw new Error("User did not confirm create");
+
+  if (!isTextMime(mime)) throw new Error("vault_apply_create: mime must be text-like");
+
+  // Re-check: path must still not exist
+  const exists = await fileExistsByPath(supabase, repoId, path);
+  if (exists) throw new Error(`Create failed: file already exists at path: ${path}`);
+
+  // Validate hash matches content
+  const computedNextHash = sha256(content);
+  if (computedNextHash !== nextHash) throw new Error("Proposed content hash mismatch");
+
+  const storageKey = `repos/${repoId}/${fileId}/v1`;
+  const sizeBytes = Buffer.byteLength(content, "utf8");
+  const name = proposal.name ? String(proposal.name) : nameFromPath(path);
+
+  // Insert metadata first (so file appears immediately)
+  const { error: insErr } = await supabase.from("repo_files").insert({
+    id: fileId,
+    repo_id: repoId,
+    path,
+    name,
+    mime,
+    size_bytes: sizeBytes,
+    storage_key: storageKey,
+    version: 1,
+    created_by: userId,
+    updated_at: new Date().toISOString(),
+  });
+
+  if (insErr) throw new Error(`repo_files insert failed: ${insErr.message}`);
+
+  // Upload content (no upsert)
+  const blob = new Blob([content], { type: mime });
+  const { error: upErr } = await supabase.storage
+    .from(VAULT_BUCKET)
+    .upload(storageKey, blob, { upsert: false, contentType: mime });
+
+  if (upErr) {
+    // rollback metadata row
+    await supabase.from("repo_files").delete().eq("id", fileId).eq("repo_id", repoId);
+    throw new Error(`Upload failed: ${upErr.message}`);
+  }
+
+  // Version row
+  const verInsert = await supabase.from("repo_file_versions").insert({
+    file_id: fileId,
+    version: 1,
+    storage_key: storageKey,
+    size_bytes: sizeBytes,
+    mime,
+    actor: "user",
+    created_by: userId,
+    sha256: nextHash,
+  });
+
+  if (verInsert.error) {
+    console.log("[vault_apply_create] repo_file_versions insert failed:", verInsert.error.message);
+  }
+
+  return {
+    ok: true,
+    fileId,
+    path,
+    version: 1,
+    storage_key: storageKey,
+    size_bytes: sizeBytes,
+    nextHash,
+    confirm: expected,
+  };
 }
 
 function parseVersionFromKey(key: string | null | undefined) {
@@ -542,10 +763,26 @@ const TOOLS: any[] = [
         path: { type: "string", description: "File path or name, e.g. miauw.tsx" },
         content: { type: "string" },
       },
-      required: ["content"],
+      required: ["path", "content"],
       additionalProperties: false,
     },
   },
+{
+  type: "function",
+  name: "vault_propose_create",
+  description:
+    "Propose creating a NEW text file at a given path with content. Does NOT write. Returns hashes and a confirmation phrase.",
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "New file path (must not already exist), e.g. app/pomodoro/page.tsx" },
+      content: { type: "string", description: "Full initial contents of the new file" },
+      mime: { type: "string", description: "Optional mime (defaults to text/plain)" },
+    },
+    required: ["path", "content"],
+    additionalProperties: false,
+  },
+},
   {
     type: "function",
     name: "vault_propose_append",
@@ -580,6 +817,28 @@ const TOOLS: any[] = [
       additionalProperties: false,
     },
   },
+  {
+  type: "function",
+  name: "vault_apply_create",
+  description:
+    "Apply a previously proposed create by writing v1, inserting repo_files + repo_file_versions. Requires exact user confirmation phrase.",
+  parameters: {
+    type: "object",
+    properties: {
+      fileId: { type: "string" },
+      path: { type: "string" },
+      name: { type: "string" },
+      mime: { type: "string" },
+      content: { type: "string" },
+      prevHash: { type: "string" },
+      nextHash: { type: "string" },
+      confirm: { type: "string" },
+      meta: {},
+    },
+    required: ["fileId", "path", "mime", "content", "prevHash", "nextHash", "confirm"],
+    additionalProperties: false,
+  },
+},
 ];
 
 async function runTool(
@@ -651,6 +910,40 @@ async function runTool(
 
       const result = await vault_propose_write(supabase, repoId, fileId, content);
       console.log("[tool]", ts, name, { ok: true, fileId });
+      return result;
+    }
+    
+    if (name === "vault_apply_create") {
+      const payload = {
+        fileId: String(args?.fileId ?? "").trim(),
+        path: String(args?.path ?? "").trim(),
+        name: args?.name ? String(args.name) : undefined,
+        mime: String(args?.mime ?? "text/plain"),
+        content: String(args?.content ?? ""),
+        prevHash: String(args?.prevHash ?? ""),
+        nextHash: String(args?.nextHash ?? ""),
+        confirm: String(args?.confirm ?? ""),
+        meta: args?.meta ?? null,
+      };
+
+      if (!payload.path) throw new Error("vault_apply_create missing path");
+      if (!payload.content) throw new Error("vault_apply_create missing content");
+      if (!payload.prevHash) throw new Error("vault_apply_create missing prevHash");
+      if (!payload.nextHash) throw new Error("vault_apply_create missing nextHash");
+      if (!payload.confirm) throw new Error("vault_apply_create missing confirm");
+
+      const result = await vault_apply_create(supabase, repoId, userId, payload.confirm, payload);
+      console.log("[tool]", ts, name, { ok: true, path: payload.path, fileId: payload.fileId });
+      return result;
+    }
+
+    if (name === "vault_propose_create") {
+      const path = String(args?.path ?? "").trim();
+      const content = String(args?.content ?? "");
+      const mime = String(args?.mime ?? "text/plain");
+
+      const result = await vault_propose_create(supabase, repoId, { path, content, mime });
+      console.log("[tool]", ts, name, { ok: true, path: result.path, fileId: result.fileId });
       return result;
     }
 
@@ -995,6 +1288,15 @@ function stripDuplicateTriplet(text: string) {
   return text.trim();
 }
 
+function scrubVisibleToolPayload(text: string) {
+  // Remove any JSON-ish blobs that contain proposal fields if they leak into visible text.
+  // This is intentionally conservative: it only strips blobs containing these keys.
+  return (text || "").replace(
+    /\{[\s\S]*?(prevHash|nextHash|fileId|storage_key|confirm|mime|bytes|content)[\s\S]*?\}/g,
+    ""
+  ).trim();
+}
+
 // ─────────────────────────────────────────────────────────────
 // Route: POST /api/repo/[repoId]/chat
 // ─────────────────────────────────────────────────────────────
@@ -1073,6 +1375,7 @@ console.log("[policy]", {
 console.log("[verify_probe] content:", JSON.stringify(content));
 
 const verifyCmd =
+  content.trim() === "__VERIFY_ALL__" ? "node_verify" :
   content.trim() === "__VERIFY_TEST__" ? "node_test" :
   content.trim() === "__VERIFY_LINT__" ? "node_lint" :
   content.trim() === "__VERIFY_TYPECHECK__" ? "node_typecheck" :
@@ -1155,6 +1458,18 @@ const txt =
   `[Action]\nstdout:\n${(result.stdout ?? "").slice(0, 3000)}\n\n` +
   `stderr:\n${(result.stderr ?? "").slice(0, 3000)}\n` +
   marker;
+
+// Persist the deterministic apply result so it survives refresh
+await supabase.from("repo_messages").insert({
+  repo_id: repoId,
+  user_id: user.id,
+  role: "assistant",
+  // IMPORTANT: store without transport markers
+  content:
+    "[Observation]\nWrite applied.\n\n" +
+    "[Assessment]\nVersion advanced.\n\n" +
+    "[Action]\nFile updated deterministically.\n",
+});
 
     return new Response(txt, {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -1248,11 +1563,31 @@ if (content.startsWith("__APPLY__:")) {
 
   try {
     const proposal = JSON.parse(raw);
-console.log("[apply] keys=", Object.keys(proposal || {}));
-console.log("[apply] meta=", proposal?.meta ?? null);
-    const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
+    console.log("[apply] keys=", Object.keys(proposal || {}));
+    console.log("[apply] meta=", proposal?.meta ?? null);
+const op =
+  proposal?.meta?.op === "create"
+    ? "create"
+    : "overwrite"; // or whatever your default was
+let applied: any;
 
-    await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
+if (op === "create") {
+  const expected = confirmCreatePhrase(proposal.fileId, proposal.nextHash);
+  applied = await vault_apply_create(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
+} else {
+  const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
+  applied = await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
+}
+
+
+
+if (op === "create") {
+  const expected = confirmCreatePhrase(proposal.fileId, proposal.nextHash);
+  await vault_apply_create(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
+} else {
+  const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
+  await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
+}
 
     // ✅ Engraving prune happens ONLY after apply succeeds
 if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepIds)) {
@@ -1321,10 +1656,27 @@ if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepId
 
 const didEngraving = proposal?.meta?.kind === "engraving";
 
+const applyPayload = {
+  ok: true,
+  repoId,
+  requestId,
+  changeId: typeof proposal?.meta?.changeId === "string" ? proposal.meta.changeId : null,
+  touchedFileIds: [String(proposal.fileId)].filter(Boolean),
+
+  // ✅ NEW: enough to auto-open without waiting for list refresh
+  appliedFile: {
+    fileId: applied?.fileId ?? String(proposal.fileId),
+    path: applied?.path ?? proposal?.path ?? null,
+    version: applied?.version ?? null,
+    mime: proposal?.mime ?? null,
+  },
+};
+
 const txt =
   `[Observation]\nWrite applied.\n\n` +
   `[Assessment]\nVersion advanced.\n\n` +
   `[Action]\nFile updated deterministically.\n` +
+  `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
   (didEngraving ? `\n__RESET__\n` : "");
 
   console.log("[apply] didEngraving=", didEngraving);
@@ -1532,6 +1884,7 @@ console.log("[credits]", { workspaceId, periodStart, remaining, runtimeTier: run
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let lastResponseId: string | null = null;
+      let lastProposalOut: any = null;
       let fullText = "";
       let firstTokenTime: number | null = null;
       let creditsCharged = false;
@@ -1740,7 +2093,26 @@ console.log("[credits]", { workspaceId, periodStart, remaining, runtimeTier: run
                 _repo_id: repoId,
                 _meta: meta,
               });
+                  if (!chErr) {
+                    const charge = Array.isArray(chargeRows) ? chargeRows[0] : chargeRows;
 
+                    // ✅ send remaining credits to client
+                    controller.enqueue(
+                      encoder.encode(`\n__CREDITS__:${JSON.stringify({
+                        remaining: Number(charge?.remaining ?? 0),
+                        charged: amount,
+                        duplicated: Boolean(charge?.duplicated),
+                        requestId,
+                      })}\n`)
+                    );
+
+                    console.log("[credits] charged", {
+                      amount,
+                      ok: charge?.ok,
+                      duplicated: charge?.duplicated,
+                      remaining: charge?.remaining,
+                    });
+                  }
               if (chErr) {
                 console.log("[credits] charge failed:", chErr.message);
               } else {
@@ -1769,6 +2141,7 @@ console.log("[credits]", { workspaceId, periodStart, remaining, runtimeTier: run
         const initialHadTools = pendingTools.length > 0 || pass1.sawToolsThisPass;
 
         if (!initialHadTools) {
+          fullText = scrubVisibleToolPayload(fullText);
           fullText = ensureTriplet(stripDuplicateTriplet(fullText));
         } else {
           fullText = "";
@@ -1871,44 +2244,91 @@ console.log("[credits]", { workspaceId, periodStart, remaining, runtimeTier: run
       
 // ─────────────────────────────────────────────────────────────
 // Tier clamp: Pro+ can create new files; Free/Builder can only edit existing files.
-// Applies to vault_propose_write when path is new.
+// Applies to vault_propose_write ONLY when the target path does not already exist.
 // ─────────────────────────────────────────────────────────────
 if (toolName === "vault_propose_write" && !tierPolicy.capabilities.allowCreateFiles) {
   const path = String(parsedArgs?.path ?? "").trim();
 
-  // If path is missing, let your tool handler deal with validation.
+  // If path is missing, let your tool handler do validation.
   if (path) {
-    try {
-      // If it exists, allow overwrite proposal.
-      await vault_read_text(supabase, repoId, path);
-    } catch (e: any) {
-      // If it doesn't exist, block creation.
-      const blocked = {
-        error:
-          "This tier cannot create new files from scratch. Ask to modify an existing file or upgrade to Pro.",
-        code: "TIER_CREATE_FILE_BLOCKED",
-        path,
-      };
+    // Check existence via repo_files (cheaper + avoids download).
+    const { data: existsRows, error: existsErr } = await supabase
+      .from("repo_files")
+      .select("id")
+      .eq("repo_id", repoId)
+      .eq("path", path)
+      .is("deleted_at", null)
+      .limit(1);
 
+    if (existsErr) {
       toolOutputs.push({
         type: "function_call_output",
         call_id: callId,
-        output: JSON.stringify(blocked),
+        output: JSON.stringify({ error: `file existence check failed: ${existsErr.message}` }),
       });
-        if (truncated) {
-          toolOutputs.push({
-            type: "function_call_output",
-            call_id: "tier_cap_notice",
-            output: JSON.stringify({
-              error: "Tool call limit per round exceeded for this tier.",
-              code: "TIER_TOOL_ROUND_LIMIT",
-              allowed: tierPolicy.tools.maxToolCallsPerRound,
-            }),
-          });
-        }
-      continue; // skip actual tool execution for this call
+      continue;
+    }
+
+    const exists = (existsRows?.length ?? 0) > 0;
+
+    // If missing => creation attempt => block on this tier
+    if (!exists) {
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          error:
+            "This tier cannot create new files from scratch. Ask to modify an existing file or upgrade to Pro.",
+          code: "TIER_CREATE_FILE_BLOCKED",
+          path,
+        }),
+      });
+
+      if (truncated) {
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: "tier_cap_notice",
+          output: JSON.stringify({
+            error: "Tool call limit per round exceeded for this tier.",
+            code: "TIER_TOOL_ROUND_LIMIT",
+            allowed: tierPolicy.tools.maxToolCallsPerRound,
+          }),
+        });
+      }
+
+      continue; // ✅ skip actual tool execution for this call
     }
   }
+}
+
+if (toolName === "vault_propose_create" && !tierPolicy.capabilities.allowCreateFiles) {
+  const path = String(parsedArgs?.path ?? "").trim();
+  const blocked = {
+    error:
+      "This tier cannot create new files from scratch. Ask to modify an existing file or upgrade to Pro.",
+    code: "TIER_CREATE_FILE_BLOCKED",
+    path,
+  };
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(blocked),
+  });
+
+  if (truncated) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: "tier_cap_notice",
+      output: JSON.stringify({
+        error: "Tool call limit per round exceeded for this tier.",
+        code: "TIER_TOOL_ROUND_LIMIT",
+        allowed: tierPolicy.tools.maxToolCallsPerRound,
+      }),
+    });
+  }
+
+  continue;
 }
 
 // Tier clamp: export gated
@@ -1935,14 +2355,18 @@ if (toolName === "export_multi" && !tierPolicy.capabilities.allowMultiExport) {
 
       const hasError = typeof out === "object" && out !== null && "error" in out;
 
-      if (
-        (toolName === "vault_propose_write" || toolName === "vault_propose_append") &&
-        out &&
-        !hasError
-      ) {
-          controller.enqueue(encoder.encode(`\n__PROPOSAL__:${JSON.stringify(out)}\n`));
-        }
+const isProposalTool =
+  toolName === "vault_propose_write" ||
+  toolName === "vault_propose_append" ||
+  toolName === "vault_propose_create";
 
+    if (isProposalTool && out && !hasError) {
+      lastProposalOut = out; // remember latest proposal
+      // DO NOT emit here; emit once after tool rounds
+    }
+    if (lastProposalOut) {
+      controller.enqueue(encoder.encode(`\n__PROPOSAL__:${JSON.stringify(lastProposalOut)}\n`));
+    }
             toolOutputs.push({
               type: "function_call_output",
               call_id: callId,
@@ -1988,6 +2412,7 @@ if (toolName === "export_multi" && !tierPolicy.capabilities.allowMultiExport) {
             "[Action]\nRetry the request or adjust prompt to conform to the output contract.";
         }
 
+        fullText = scrubVisibleToolPayload(fullText);
         fullText = ensureTriplet(stripDuplicateTriplet(fullText));
 
 const { error: aInsErr } = await supabase.from("repo_messages").insert({

@@ -69,12 +69,13 @@ export async function POST(
     });
   }
 
-  const alive = (filesRes.data ?? []).filter((f: any) => !f.deleted_at);
-  const fileIds = alive.map((f: any) => f.id);
+const alive = (filesRes.data ?? []).filter((f: any) => !f.deleted_at);
+const fileIds = alive.map((f: any) => f.id);
+const proposal = ch.data.proposal as any;
+const baseState: BaseState = { files: [] };
+const touchedSet = new Set<string>();   // <-- MOVE IT HERE (outside block)
 
-  const baseState: BaseState = { files: [] };
-
-  if (fileIds.length) {
+if (fileIds.length) {
     const versRes = await supabaseAdmin
       .from("repo_file_versions")
       .select("file_id, version, storage_key, size_bytes, sha256")
@@ -98,7 +99,8 @@ async function readTextFromStorage(supabaseAdmin: any, bucket: string, key: stri
   return new TextDecoder("utf-8", { fatal: false }).decode(ab);
 }
 
-const proposal = ch.data.proposal as any;
+
+const touchedSet = new Set<string>();
 const ops: any[] = Array.isArray(proposal?.ops) ? proposal.ops : [];
 
 for (const op of ops) {
@@ -117,6 +119,7 @@ for (const op of ops) {
       createdBy: user.id,
       note: `change ${changeId} apply overwrite_text`,
     });
+    touchedSet.add(fileId);
     continue;
   }
 
@@ -145,6 +148,7 @@ for (const op of ops) {
       createdBy: user.id,
       note: `change ${changeId} apply append_text`,
     });
+    touchedSet.add(fileId);
     continue;
   }
 
@@ -205,5 +209,6 @@ async function readTextFromStorage(supabaseAdmin: any, bucket: string, key: stri
     repoId,
     changeId,
     capturedFiles: baseState.files.length,
-  });
+    touchedFileIds: Array.from(touchedSet),
+  });1
 }
