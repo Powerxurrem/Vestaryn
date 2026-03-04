@@ -1579,16 +1579,6 @@ if (op === "create") {
   applied = await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
 }
 
-
-
-if (op === "create") {
-  const expected = confirmCreatePhrase(proposal.fileId, proposal.nextHash);
-  await vault_apply_create(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
-} else {
-  const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
-  await vault_apply_write(supabase, repoId, user.id, expected, { ...proposal, confirm: expected });
-}
-
     // ✅ Engraving prune happens ONLY after apply succeeds
 if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepIds)) {
   const keepIds = proposal.meta.keepIds.map((x: any) => String(x)).filter(Boolean);

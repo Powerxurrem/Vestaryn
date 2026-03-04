@@ -1,218 +1,192 @@
-🧠 Vestaryn – Master Handover (Phase: Pricing + Credits Integrated)
-1️⃣ System State Overview
+🧠 Vestaryn – Master Handover
+Phase: Apply → Auto-Open → Refresh Integration (Stabilizing)
+✅ What Is Working
+1️⃣ Vault System
 
-Vestaryn is a workspace-based AI coding system with:
+Deterministic storage (repos/<repoId>/<fileId>/vN)
 
-Obsidian Chamber (structured AI interaction contract)
+repo_files metadata insert first
 
-Deterministic Vault (repo_files + repo_file_versions canonical)
+repo_file_versions insert
 
-Snapshot-based Verify Runner
+Signed URL fetch working
 
-Workspace-scoped credit accounting
+Manual Create works
 
-Tier-enforced policy gating
+Manual Upload works
 
-Pricing page generated directly from TIER_POLICIES
+Soft delete works
 
-All core subsystems are operational.
+Version advance works
 
-2️⃣ Auth & Workspace
+2️⃣ Apply Pipeline
 
-Auth: Google, GitHub, Magic Link via Supabase
+vault_apply_create works
 
-workspace_members determines user → workspace
+vault_apply_write works
 
-repos belong to workspace
+Duplicate apply bug fixed (double call removed)
 
-Credits are workspace-scoped
+Confirm phrase validation working
 
-Current balance source of truth:
-workspace_credit_balances (workspace_id, period_start)
+Hash validation working
 
-3️⃣ Tier Policy Engine
+Storage upload rollback working
 
-Single source of truth:
-lib/membership/tiers.ts
+Apply result marker emitted
 
-Tiers:
+3️⃣ Auto-Open Integration
 
-free
+You implemented:
 
-builder
+RepoVaultHandle
 
-pro
+forwardRef
 
-elite
+useImperativeHandle
 
-admin (internal)
+refresh()
 
-Each tier defines:
+openFileById()
 
-model + modelClass
+vaultRef.current?.refresh()
 
-output caps (tokens, verbosity, detail ceiling)
+vaultRef.current?.openFileById(id)
 
-tool limits (rounds, calls)
+Apply result now:
 
-budget (credits/month, soft reserve, grace mode)
+Refreshes Vault
 
-capability flags (export, createFiles, createTrees, architectureMode, etc.)
+Opens the touched file
 
-Pricing page renders directly from this.
+Runs verify anchored to origin message
 
-No marketing drift possible.
+This part is architecturally correct now.
 
-4️⃣ Credits System
+4️⃣ Verify Flow
 
-Tables in use:
+__VERIFY__ marker parsed
 
-workspace_credit_balances
+Status propagated to onFileStatus
 
-workspace_credit_charges
+PASS node_verify confirmed working
 
-workspace_credit_events
+Anchored to origin bubble
 
-Balance endpoint:
-/api/credits/balance
+⚠️ Known Issue (Tomorrow's First Task)
+🧨 Pass1 Leak Problem
 
-Returns:
+When tools are used:
 
-tier
+Model may emit speculative pass1 text
 
-remaining credits
+That text is streamed to client
 
-HUD now shows:
+Then tools succeed
 
-Tier (from DB)
+Result looks contradictory
 
-Live credits (from API + event listener)
+Root cause:
 
-Grace modes:
+streamResponse(pass1) still streams text immediately
 
-clamp
+You only clear fullText after streaming ends
 
-downgrade
+Need to buffer pass1 and flush only if no tools
 
-System is functional and green.
+Location:
 
-5️⃣ Vault & Verify
+In route.ts:
 
-Vault:
+const pass1 = await streamResponse(resp, "pass1");
 
-Deterministic storage key: repos/<repoId>/<fileId>/vN
+Needs buffering mode.
 
-repo_files is metadata canonical
+🧱 Current Architecture Snapshot
+ChatFrame
 
-sha256 NOT NULL
+Handles:
 
-soft delete via deleted_at
+__PROPOSAL__
 
-version integer tracked
+__APPLY__
 
-signed URL model stable
+__VERIFY__
 
-Verify:
+refreshFiles
 
-Snapshot-based
+openFileById
 
-VERIFY marker extraction
+runVerify
 
-Structured result pipeline
+Clean and green.
 
-npm wrapper (Windows safe)
+RepoVault
 
-ESLint v9 flat config
+Now:
 
-End-to-end working
+forwardRef<RepoVaultHandle>
+useImperativeHandle(...)
+refresh()
+openFileById()
 
-Next planned:
+Fully wired.
 
-Auto-verify after APPLY
+Apply Route
 
-File-level status tracking gating
+Single call:
 
-6️⃣ Pricing Page
+applied = await vault_apply_create(...)
 
-Route:
-/pricing
+No duplicate calls anymore.
 
-Features:
+🧭 System State
 
-Plan cards (Free, Builder, Pro, Elite)
+Vestaryn is now:
 
-Current plan detection via workspace_credit_balances
+Deterministic
 
-Full comparison matrix auto-generated from TIER_POLICIES
+Workspace-scoped
 
-Linked from RepoHud → Account → Pricing
+Tier-enforced
 
-No billing integration yet (Stripe not added).
+Snapshot verified
 
-7️⃣ Known Clean State
+Vault consistent
 
-Build: green
+Auto-open functional
 
-Credits: decrementing
+Verify anchored
 
-Pricing: rendering
+Pricing integrated
 
-Auth: working
+Credits live
 
-No active 500 errors
+This is already beyond MVP solidity.
 
-Tier enforcement live
+🔥 Tomorrow Plan (Order Matters)
 
-8️⃣ Next Direction Options (To Decide Tomorrow)
+1️⃣ Fix pass1 leak (buffering change)
+2️⃣ Clean duplicate APPLY marker parsing (ensure only one handler exists)
+3️⃣ Add small logging to confirm tool detection accuracy
+4️⃣ Optional: remove any legacy refresh duplicates
 
-A. Usage Page
+Do not refactor anything else yet.
 
-Show credit ledger
+🧘 Mental State Check
 
-Pull from workspace_credit_charges
+You:
 
-B. Auto-Verify After APPLY
+Refactored forwardRef correctly
 
-Runner trigger integration
+Fixed double apply
 
-Status propagation to fileStatusById
+Wired cross-component imperative bridge
 
-C. Tier Upgrade UX
+Diagnosed ghost collision
 
-Soft gate messaging
+Got auto-open working
 
-Upgrade nudges inside blocked actions
+That’s a real engineering session.
 
-D. Workspace Tier Persistence Outside Billing Period
-
-Add workspaces.tier column?
-
-Or keep billing table as canonical?
-
-E. Architecture Mode Hard Gate Enforcement
-
-Ensure SYSTEM_PROTECTOR_ARCH fully tier-gated
-
-9️⃣ Open Architectural Questions
-
-Should tier be derived only from billing?
-
-Should admin tier remain invisible in pricing?
-
-Should downgrade grace auto-switch model caps?
-
-10️⃣ Mental Context
-
-Current build phase:
-"Feature integration & structural coherence"
-
-Not:
-
-UI polish
-
-Marketing optimization
-
-Billing monetization
-
-Primary goal:
-System solidity.
+Shut it down. Sleep resets architecture intuition.
