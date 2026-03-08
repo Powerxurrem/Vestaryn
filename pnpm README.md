@@ -1,388 +1,315 @@
-Vestaryn – Master Handover (Session Summary)
+Vestaryn — Master Handover (Session Summary)
 System State
 
-Vestaryn core architecture is stable and functioning:
+Vestaryn’s proposal preview architecture is now fully working.
 
-Chat → tool orchestration pipeline works
+Multi-file edits can now be:
 
-Vault deterministic storage works
+proposed
 
-File proposals + preview UI works
+previewed in the editor
 
-Verify runner executes commands and returns markers
+confirmed
 
-RepoVault UI shows file status and verify results
+applied deterministically
 
-Next.js test project successfully created and run
+verified automatically
 
-Multi-file reasoning works conceptually
+The proposal → preview → apply → verify pipeline is now stable.
 
-Vestaryn is now functioning as a proto-autonomous coding environment.
+Major Feature Completed
+Multi-File Proposal Preview System
 
-What Was Tested This Session
-1. Autonomous Code Generation
+Vestaryn now supports previewing multiple file proposals simultaneously.
 
-We tested Vestaryn by asking it to create a minimal Next.js app.
+Architecture:
 
-Files created:
+LLM
+  → __PROPOSAL_SET__
+  → ChatFrame parser
+  → proposalPreviewByFileId
+  → VaultEditorPane
+  → editor preview
 
-package.json
-app/layout.tsx
-app/page.tsx
+Key concept:
 
-Project successfully ran:
+Record<fileId, ProposalPreview>
 
-npm install
-npm run dev -- -p 3001
+Example:
+
+{
+  "fileA": { fileId, content, op, path, appendPreview },
+  "fileB": { fileId, content, op, path, appendPreview }
+}
+
+This allows:
+
+previewing multiple files
+
+switching tabs safely
+
+independent file previews
+
+deterministic apply confirmation
+
+Core Fix This Session
+Proposal Shape Drift Bug
+
+Earlier system expected:
+
+proposal
+
+New system produces:
+
+Record<fileId, proposal>
+
+This caused TypeScript errors and preview failures.
+
+Fix
+
+ChamberWithVault now receives the full proposal map:
+
+onProposalPreview={(proposals) => {
+  if (!proposals) {
+    setProposalPreviewByFileId({});
+    return;
+  }
+
+  setProposalPreviewByFileId(proposals);
+}}
+
+No more manual reconstruction of [fileId]: proposal.
+
+This aligns the architecture across:
+
+ChatFrame
+ChamberWithVault
+VaultEditorPane
+Final Working State
+
+Confirmed working:
+
+Multi-file proposals
+
+Example test:
+
+Edit kiwi.txt
+Edit tomato.txt
+Edit android.txt
 
 Result:
 
-http://localhost:3001
-Hello World
+✔ all 3 previews appear
+✔ editor tabs update correctly
+✔ preview content correct
+✔ no TypeScript errors
+✔ deterministic apply still working
 
-This confirms:
+Current Architecture
+Proposal preview state
+proposalPreviewByFileId
 
-correct Next.js App Router architecture
+Type:
 
-valid TypeScript/React output
+Record<string, {
+  fileId: string
+  content: string
+  path?: string | null
+  op?: string | null
+  appendPreview?: string | null
+}>
+Editor preview resolution
+VaultEditorPane
+   → activeFileId
+   → proposalPreviewByFileId[activeFileId]
 
-runnable project generation
+This makes preview rendering deterministic.
 
-2. Incremental Code Refinement
+Stable Subsystems
 
-Vestaryn successfully handled refinement tasks:
+These systems are now confirmed stable together:
 
-Examples tested:
+Chat System
 
-add navigation bar
+streaming responses
 
-add About page
+tool orchestration
 
-hover effects on navigation links
+proposal markers
 
-layout styling improvements
+Vault System
 
-This confirms Vestaryn can:
+deterministic file storage
 
-reason about UI layout
+version tracking
 
-update React components
+signed URLs
 
-preserve structure
+Proposal System
 
-produce syntactically valid code
+__PROPOSAL_SET__
 
-3. Verify Pipeline Integration
+preview before apply
 
-Verify markers are now processed correctly.
+confirmation phrase system
 
-Flow:
+Apply System
 
-AI proposal
-↓
-Apply
-↓
-Runner verify
-↓
-__VERIFY__ marker
-↓
-RepoVault status update
+deterministic overwrite
 
-File status now updates:
+version increment
 
-ok
-error
-pending
+touched file tracking
 
-Error reasons are parsed from:
+Verify System
 
-verify.stderr
-verify.stdout
-verify.error
+runner execution
 
-Stored in:
+marker parsing
 
-fileStatusById[fileId].reason
-4. RepoVault UI Improvements
+fileStatusById updates
 
-The following UI logic is now present:
+Editor System
 
-fileStatusById[fileId] = {
-  ts
-  status
-  reason
-}
+tab management
 
-Verify stream handler implemented:
+preview overlay
 
-consumeVerifyStream()
+multi-file support
 
-Mapping verify results to files:
+Chamber System
 
-verify.touchedFileIds
+Vault / Memory / Handover / SQL modes
 
-This enables:
+chamber memory
 
-file-level verification status
+re-summarization trigger
 
-error visualization in vault
+Remaining Minor Issues
 
-Next UI improvement planned:
+These are behavioral polish, not architectural problems.
 
-show reason text under errored files
-5. Tool Orchestration Improvements
+1. Auto-open new files
 
-The rewrite orchestration block now works:
+Sometimes when files are created they do not automatically open in the editor.
 
-vault_read_text
-→ generateRewrittenFileContent
-→ vault_propose_write
-→ __PROPOSAL__
+You already have:
 
-This enables deterministic edits without requiring the model to manually craft patches.
+openFileById(firstId)
 
-Behavior Issues Discovered
+Likely needs to trigger when:
 
-Several behavioral prompt problems were identified.
+__PROPOSAL_SET__ received
+2. Append diff visualization
 
-Issue 1 — Model claiming it cannot access repo
+Currently append previews show full file content.
 
-Example:
+Future improvement:
 
-"I can't read repository files in this turn"
+existing content
++ appended lines
 
-Even though tools exist.
+Highlight appended section.
 
-Fix Added
-REPOSITORY TOOL AUTHORITY
+Pure UI improvement.
 
-Rule:
+3. Multi-tab diff highlight behavior
 
-If a user references a file path,
-attempt vault_read_text before claiming repo access is unavailable.
-Issue 2 — Chat code dumping (token waste)
+Earlier observation:
 
-Vestaryn was pasting full files into chat.
+only one tab sometimes shows green/red diff markers
 
-Example:
+Now preview works correctly but diff markers should be verified.
 
-Replace layout.tsx with:
-<full file>
+Likely inside:
 
-This wastes tokens because UI already shows diff previews.
+VaultEditorPane
 
-Fix Added
-VISIBLE CHAT MINIMIZATION
+Preview resolution logic.
 
-Rules:
+4. Verify result marker capture
 
-- Chat should summarize changes
-- Code belongs in proposal preview
-- Do not paste full files unless user explicitly asks
-Issue 3 — Over-editing
+Minor logic issue exists:
 
-Vestaryn sometimes modifies unrelated parts.
+let marker = null
 
-Example request:
+but marker never assigned inside stream parser.
 
-make nav links slightly darker
+Later cleanup:
 
-Vestaryn changed:
+onMarker(v) => marker = v
 
-layout width
-header behavior
-new routes
-extra styles
-Fix Added
-MINIMAL CHANGE RULE
+Not blocking.
 
-Rule:
+Performance Observations
 
-Modify only what is required to satisfy the request.
-Issue 4 — Tool hesitation
+From logs:
 
-Vestaryn often falls back to:
+TTFT ~9.8s
+Total request ~17s
 
-paste file here
+Normal for:
 
-instead of calling tools.
+tool orchestration
 
-Fix Added
-TOOL ATTEMPT RULE
+multi-file writes
 
-Rule:
+verify pipeline
 
-If a file path is known,
-call vault_read_text immediately.
-Issue 5 — Multi-file execution incomplete
+No performance issues observed.
 
-Test case:
+Current System Capability
 
-Create Footer.tsx
-and render it in layout.tsx
+Vestaryn can now:
 
-Vestaryn correctly planned:
+✔ generate full projects
+✔ modify multiple files
+✔ preview changes safely
+✔ apply deterministic writes
+✔ run verification automatically
+✔ track per-file status
+✔ maintain chamber memory
 
-create component
-edit layout
+This is now a proto-autonomous coding environment.
 
-But did not execute both.
+Next Development Focus
 
-Current capability
+Recommended order tomorrow:
 
-Vestaryn:
+1️⃣ Auto-open created files
 
-✔ understands multi-file tasks
-✔ plans multi-file edits
+Small UX improvement.
 
-But execution still tends to:
+2️⃣ Editor diff visualization polish
 
-one file per turn
-Planned Fix
+Better append highlighting.
 
-Add rule:
+3️⃣ File tab verification indicators
 
-MULTI-FILE EXECUTION RULE
+Possible UI improvement:
 
-Behavior:
+tab icons
+● pending
+✔ verified
+⚠ warn
+✖ error
+4️⃣ Architecture Mode gate (later)
 
-If task requires creating a file and modifying another:
+Your roadmap item:
 
-1. vault_propose_create (new file)
-2. vault_read_text (existing file)
-3. vault_propose_write (edit existing file)
+Architecture mode
 
-All in the same turn.
+Higher-tier capability restriction.
 
-Additional Improvement
+Final Status
 
-Reduce token burn by preventing implementation explanations in chat.
+System state tonight:
 
-New rule:
+Vestaryn: Stable
+Preview pipeline: Working
+Files: Green
+Architecture: Solid
 
-CODE IN CHAT RULE
+Major milestone achieved:
 
-Behavior:
-
-Summarize changes in chat
-Stage edits via tools
-Current Vestaryn Capability Level
-
-Vestaryn is currently functioning as:
-
-AI coding IDE agent
-
-Capabilities confirmed:
-
-repo navigation
-file reading
-code generation
-file rewriting
-proposal staging
-verify execution
-UI diff preview
-file-level status tracking
-
-Limitations remaining:
-
-multi-file execution reliability
-tool confidence
-over-explanation in chat
-
-All are behavioral prompt issues, not architecture issues.
-
-System Architecture Status
-
-Vestaryn subsystems:
-
-Chamber (AI interaction)
-Vault (file storage)
-Verify Runner
-Proposal staging
-UI diff preview
-File status tracking
-Credits accounting
-Tier enforcement
-
-All stable.
-
-Recommended Next Development Steps
-1. Finish Multi-File Edits
-
-Implement rule:
-
-MULTI-FILE EXECUTION RULE
-
-Test with:
-
-Create reusable Footer component
-and render in layout
-2. Add Verify Reason Display
-
-RepoVault improvement:
-
-if status === "error"
-show fileStatusById[fileId].reason
-
-Under file row.
-
-3. Improve Tool Confidence
-
-Ensure the model never claims repo access is unavailable unless a tool call fails.
-
-4. Reduce Token Usage
-
-Ensure chat output remains short summaries only.
-
-5. Next Major Capability Tests
-
-Suggested next prompts:
-
-Multi-file UI component
-Create a reusable Card component and use it on the homepage.
-Route generation
-Create a blog page and a dynamic blog/[slug] route.
-State management
-Add a theme toggle button using React state.
-
-These will stress:
-
-multi-file edits
-imports
-component reuse
-routing logic
-Strategic Observation
-
-Vestaryn now behaves like:
-
-70% autonomous coding IDE
-30% conversational assistant
-
-Most remaining improvements are prompt rules, not core architecture changes.
-
-End State of This Session
-
-Vestaryn successfully:
-
-generated a runnable Next.js site
-refined UI layout
-handled code edits
-ran verification
-updated file status
-
-The system has crossed the threshold from:
-
-AI chat tool
-
-to
-
-AI coding workspace.
-Ready for Next Session
-
-Next chat should focus on:
-
-multi-file execution reliability
-tool confidence
-UI polish
-
-Vestaryn core architecture is stable and ready for further capability expansion.
+Multi-file preview pipeline complete.

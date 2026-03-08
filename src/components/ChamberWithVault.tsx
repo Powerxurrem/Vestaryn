@@ -45,13 +45,17 @@ export default function ChamberWithVault({
   // near top of file
   const [maintenance, setMaintenance] = useState<any>(null);
   const [fileStatusById, setFileStatusById] = useState<Record<string, FileStatus>>({});
-  const [proposalPreview, setProposalPreview] = useState<{
+type ProposalPreview = {
   fileId: string;
   content: string;
   path?: string | null;
   op?: string | null;
   appendPreview?: string | null;
-} | null>(null);
+};
+
+const [proposalPreviewByFileId, setProposalPreviewByFileId] = useState<
+  Record<string, ProposalPreview>
+>({});
   const MAINTENANCE_CAP = 40;
   const [fileReloadTokenById, setFileReloadTokenById] = useState<Record<string, number>>({});
   const bumpFileReload = useCallback((fileId: string) => {
@@ -388,81 +392,94 @@ const markFileUpdated = useCallback(
     window.addEventListener("mouseup", onUp);
   }
 
-  return (
-    <VestarynFrame
-      repoId={repoId}
-      repoName={repoName}
-      right={
-        <div className="absolute left-[275px] top-[13px] z-40">
-          <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/60 backdrop-blur">
-            msgs {msgStats.total}
-          </div>
-        </div>
-      }
-    >
-      <div className="w-full h-[70vh] flex min-w-0">
-        {/* Left: Chat */}
-        <div className="min-w-0" style={{ width: `${leftPct}%` }}>
-          <ChatFrame
-            repoId={repoId}
-            reloadToken={chatReloadToken}
-            onFileUpdated={markFileUpdated}
-            onFileStatus={onFileStatus}
-            refreshFiles={() => vaultRef.current?.refresh()}
-            openFileById={(id) => vaultRef.current?.openFileById(id)}
-            onMessageStats={setMsgStats}
-            onMaintenance={setMaintenance}
-            onProposalPreview={setProposalPreview}
-          />
-        </div>
-
-        {/* Splitter */}
-        <div
-          onMouseDown={onSplitterMouseDown}
-          className="w-[10px] shrink-0 cursor-col-resize relative group"
-          title="Drag to resize"
-        >
-          <div className="absolute inset-0 pointer-events-none" />
-          <div className="absolute left-1/2 top-2 bottom-2 w-px -translate-x-1/2 bg-white/10 group-hover:bg-blue-400/40" />
-        </div>
-
-        {/* Right: Editor */}
-        <div className="min-w-0 flex-1 relative rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/25 backdrop-blur-md">
-          <VaultEditorPane
-            repoId={repoId}
-            tabs={tabs}
-            activeFileId={activeFileId}
-            onActivate={setActiveFileId}
-            onClose={closeTab}
-            fileReloadTokenById={fileReloadTokenById}
-            proposalPreview={proposalPreview}
-            
-            sidebar={<RepoVault ref={vaultRef} repoId={repoId} onOpenFile={openFile} fileStatusById={fileStatusById} />}
-            fileStatusById={fileStatusById}
-            onFileStatus={onFileStatus}
-            rightChamber={
-              <HiddenChamber
-                repoId={repoId}
-                mode={chamberMode}
-                onToggleMode={toggleMode}
-                fileStatusById={fileStatusById}
-                maintenance={effectiveMaintenance}
-                onResummarizeDone={() => {
-                  setMaintenance(null);
-                  setChatReloadToken((v) => v + 1);
-                }}
-              />
-            }
-            rightChamberWidth={CHAMBER_WIDTH}
-            rightChamberOpen={true}
-          />
-
+ return (
+  <VestarynFrame
+    repoId={repoId}
+    repoName={repoName}
+    right={
+      <div className="absolute left-[275px] top-[13px] z-40">
+        <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/60 backdrop-blur">
+          msgs {msgStats.total}
         </div>
       </div>
-    </VestarynFrame>
-  );
-}
+    }
+  >
+    <div className="w-full h-[70vh] flex min-w-0">
+      {/* Left: Chat */}
+<div className="min-w-0" style={{ width: `${leftPct}%` }}>
+  <ChatFrame
+    repoId={repoId}
+    reloadToken={chatReloadToken}
+    onFileUpdated={markFileUpdated}
+    onFileStatus={onFileStatus}
+    refreshFiles={() => vaultRef.current?.refresh()}
+    openFileById={(id) => vaultRef.current?.openFileById(id)}
+    onMessageStats={setMsgStats}
+    onMaintenance={setMaintenance}
+    
+    
+onProposalPreview={(proposals) => {
+  if (!proposals) {
+    setProposalPreviewByFileId({});
+    return;
+  }
 
+  setProposalPreviewByFileId(proposals);
+}}
+    />
+</div>
+
+      {/* Splitter */}
+      <div
+        onMouseDown={onSplitterMouseDown}
+        className="w-[10px] shrink-0 cursor-col-resize relative group"
+        title="Drag to resize"
+      >
+        <div className="absolute inset-0 pointer-events-none" />
+        <div className="absolute left-1/2 top-2 bottom-2 w-px -translate-x-1/2 bg-white/10 group-hover:bg-blue-400/40" />
+      </div>
+
+      {/* Right: Editor */}
+      <div className="min-w-0 flex-1 relative rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/25 backdrop-blur-md">
+        <VaultEditorPane
+          repoId={repoId}
+          tabs={tabs}
+          activeFileId={activeFileId}
+          onActivate={setActiveFileId}
+          onClose={closeTab}
+          fileReloadTokenById={fileReloadTokenById}
+          proposalPreviewByFileId={proposalPreviewByFileId}
+          sidebar={
+            <RepoVault
+              ref={vaultRef}
+              repoId={repoId}
+              onOpenFile={openFile}
+              fileStatusById={fileStatusById}
+            />
+          }
+          fileStatusById={fileStatusById}
+          onFileStatus={onFileStatus}
+          rightChamber={
+            <HiddenChamber
+              repoId={repoId}
+              mode={chamberMode}
+              onToggleMode={toggleMode}
+              fileStatusById={fileStatusById}
+              maintenance={effectiveMaintenance}
+              onResummarizeDone={() => {
+                setMaintenance(null);
+                setChatReloadToken((v) => v + 1);
+              }}
+            />
+          }
+          rightChamberWidth={CHAMBER_WIDTH}
+          rightChamberOpen={true}
+        />
+      </div>
+    </div>
+  </VestarynFrame>
+);
+}
 // ─────────────────────────────────────────────────────────────
 // HiddenChamber (top-level, outside ChamberWithVault)
 // ─────────────────────────────────────────────────────────────

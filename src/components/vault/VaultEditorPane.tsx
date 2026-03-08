@@ -24,7 +24,7 @@ export default function VaultEditorPane({
   onClose,
   sidebar,
   fileStatusById,
-  proposalPreview,
+  proposalPreviewByFileId = {},
   onFileStatus,    
   rightChamber,
   rightChamberWidth,
@@ -39,13 +39,16 @@ export default function VaultEditorPane({
   onClose: (fileId: string) => void;
   sidebar: ReactNode;
   fileReloadTokenById?: Record<string, number>;
-  proposalPreview?: {
-  fileId: string;
-  content: string;
-  path?: string | null;
-  op?: string | null;
-  appendPreview?: string | null;
-} | null;
+   proposalPreviewByFileId?: Record<
+    string,
+    {
+      fileId: string;
+      content: string;
+      path?: string | null;
+      op?: string | null;
+      appendPreview?: string | null;
+    }
+  >;
   fileStatusById: Record<
     string,
     
@@ -157,23 +160,24 @@ function buildSimpleInlineDiff(oldText: string, newText: string): DiffLine[] {
 
   const dirty = mode === "edit" && content !== original;
   const canEdit = isTextLike(activeTab?.mime ?? "");
-const hasProposalForActiveFile =
-  !!proposalPreview &&
-  !!activeTab &&
-  proposalPreview.fileId === activeTab.fileId;
+const activeProposal =
+  activeTab?.fileId ? proposalPreviewByFileId[activeTab.fileId] ?? null : null;
 
-const proposalOp = proposalPreview?.op ?? null;
+const hasProposalForActiveFile = !!activeProposal;
+
+const proposalOp = activeProposal?.op ?? null;
+
 console.log("[editorPreview]", {
   activeFileId,
-  proposalFileId: proposalPreview?.fileId ?? null,
+  proposalFileId: activeProposal?.fileId ?? null,
   proposalOp,
   hasProposalForActiveFile,
   contentLen: content.length,
-  proposalLen: proposalPreview?.content?.length ?? 0,
+  proposalLen: activeProposal?.content?.length ?? 0,
   startsWithCurrent:
     !!content &&
-    !!proposalPreview?.content &&
-    proposalPreview.content.startsWith(content),
+    !!activeProposal?.content &&
+    activeProposal.content.startsWith(content),
 });
 
 const isAppendPreview =
@@ -188,15 +192,15 @@ const isInlineDiffPreview =
 
 const displayContent =
   hasProposalForActiveFile && mode === "read"
-    ? proposalPreview.content
+    ? activeProposal!.content
     : content;
 
 const changedLines = useMemo(() => {
   const changed = new Set<number>();
 
-  if (isAppendPreview) {
-    const newLines = splitLinesStable(proposalPreview!.content);
-    const appendLines = splitLinesStable(String(proposalPreview?.appendPreview ?? ""));
+  if (isAppendPreview && activeProposal) {
+    const newLines = splitLinesStable(activeProposal.content);
+    const appendLines = splitLinesStable(String(activeProposal.appendPreview ?? ""));
 
     const start = Math.max(0, newLines.length - appendLines.length);
 
@@ -213,7 +217,8 @@ const changedLines = useMemo(() => {
   }
 
   return changed;
-}, [isAppendPreview, proposalPreview]);
+}, [isAppendPreview, activeProposal]);
+
 function splitLinesStable(text: string) {
   const lines = text.replace(/\r/g, "").split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") {
@@ -222,8 +227,8 @@ function splitLinesStable(text: string) {
   return lines;
 }
 const inlineDiff =
-  isInlineDiffPreview
-    ? buildSimpleInlineDiff(content, proposalPreview!.content)
+  isInlineDiffPreview && activeProposal
+    ? buildSimpleInlineDiff(content, activeProposal.content)
     : [];
 
 useEffect(() => {
@@ -251,7 +256,7 @@ useEffect(() => {
 }, [
   hasProposalForActiveFile,
   activeFileId,
-  proposalPreview,
+  activeProposal,
   mode,
   loading,
   displayContent,

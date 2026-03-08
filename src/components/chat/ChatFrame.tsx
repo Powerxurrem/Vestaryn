@@ -38,13 +38,20 @@ type Props = {
   onMessageStats?: (s: { total: number; user: number; assistant: number; system: number }) => void;
   onMaintenance?: (payload: any) => void;
 
-  onProposalPreview?: (proposal: {
-    fileId: string;
-    content: string;
-    path?: string | null;
-    op?: string | null;
-    appendPreview?: string | null;
-  } | null) => void;
+onProposalPreview?: (
+  proposals:
+    | Record<
+        string,
+        {
+          fileId: string;
+          content: string;
+          path?: string | null;
+          op?: string | null;
+          appendPreview?: string | null;
+        }
+      >
+    | null
+) => void;
 };
 
 type ChamberState = "stable" | "analyzing" | "deep" | "archive";
@@ -309,6 +316,24 @@ function isContractComplete(t: string) {
   );
 }
 
+function isVerifiablePath(path?: string | null) {
+  const p = String(path ?? "").toLowerCase();
+
+  return (
+    p.endsWith(".ts") ||
+    p.endsWith(".tsx") ||
+    p.endsWith(".js") ||
+    p.endsWith(".jsx") ||
+    p.endsWith(".mjs") ||
+    p.endsWith(".cjs") ||
+    p.endsWith(".json") ||
+    p.endsWith(".css") ||
+    p.endsWith(".scss") ||
+    p.endsWith(".sql") ||
+    p.endsWith(".yml") ||
+    p.endsWith(".yaml")
+  );
+}
   // ─────────────────────────────────────────────────────────────
   // Effects: load history
   // ─────────────────────────────────────────────────────────────
@@ -733,27 +758,27 @@ if (line.startsWith("__PROPOSAL_SET__:")) {
       paths: proposalList.map((p: any) => p.path),
     });
 
-    if (proposalList.length > 0) {
-      setProposalSet(nextMap);
-      setLastProposalSet({ proposals: proposalList });
+if (proposalList.length > 0) {
+  setProposalSet(nextMap);
+  setLastProposalSet({ proposals: proposalList });
 
-      const first = proposalList[0];
-      setLastProposal(first);
-      setPendingConfirm("APPLY_SET");
-      setPendingConfirmMsgId(assistantId);
+  const first = proposalList[0];
+  setLastProposal(first);
+  setPendingConfirm("APPLY_SET");
+  setPendingConfirmMsgId(assistantId);
 
-      onProposalPreview?.({
-        fileId: first.fileId,
-        content: first.content,
-        path: first.path ?? null,
-        op: first.meta?.op ?? null,
-        appendPreview: first.meta?.appendPreview ?? null,
-      });
+  onProposalPreview?.(nextMap);
 
-      if (openFileById) {
-        openFileById(first.fileId);
-      }
+  if (openFileById) {
+    for (const p of proposalList) {
+      openFileById(p.fileId);
     }
+
+    if (first?.fileId) {
+      openFileById(first.fileId);
+    }
+  }
+}
   } catch (e) {
     console.log("[proposalSet parse failed]", e);
   }
@@ -790,56 +815,84 @@ if (line.startsWith("__APPLY__:") || line.startsWith("__APPLIED__:")) {
       const applyKey = `APPLIED:${repoId}:${changeId || payload?.nextHash || `${touchedFileIds.join(",")}:${assistantId}`}`;
 
       if (ok) {
-        onceMarker(applyKey, () => {
-          const appliedFiles = Array.isArray(payload?.appliedFiles)
-            ? payload.appliedFiles
-            : payload?.appliedFile
-            ? [payload.appliedFile]
-            : [];
+  onceMarker(applyKey, () => {
+    const appliedFiles = Array.isArray(payload?.appliedFiles)
+      ? payload.appliedFiles
+      : payload?.appliedFile
+      ? [payload.appliedFile]
+      : [];
 
-          console.log("[apply_result]", {
-            changeId,
-            touchedFileIds,
-            appliedFiles,
-            originMsgId: applyOriginMsgIdRef.current ?? assistantId,
-          });
+    const verifiableIds = appliedFiles
+      .filter((f: any) => isVerifiablePath(f?.path))
+      .map((f: any) => String(f.fileId))
+      .filter(Boolean);
 
-          setPendingConfirm(null);
-          setPendingConfirmMsgId(null);
-          setLastProposal(null);
-          setLastProposalSet(null);
-          setProposalSet({});
-          onProposalPreview?.(null);
+const skippedIds = touchedFileIds.filter(
+  (fid: string) => !verifiableIds.includes(fid)
+);
 
-          for (const fid of touchedFileIds) {
-            onFileUpdated?.(fid);
-          }
+    console.log("[apply_result]", {
+      changeId,
+      touchedFileIds,
+      appliedFiles,
+      verifiableIds,
+      skippedIds,
+      originMsgId: applyOriginMsgIdRef.current ?? assistantId,
+    });
 
-          Promise.resolve(refreshFiles?.()).finally(() => {
-            const firstAppliedId =
-              appliedFiles[0]?.fileId ??
-              touchedFileIds[0] ??
-              null;
+    setPendingConfirm(null);
+    setPendingConfirmMsgId(null);
+    setLastProposal(null);
+    setLastProposalSet(null);
+    setProposalSet({});
+    onProposalPreview?.(null);
 
-            console.log("[apply_result after refresh]", {
-              firstAppliedId,
-              touchedFileIds,
-              appliedFiles,
-            });
+    for (const fid of touchedFileIds) {
+      onFileUpdated?.(fid);
+    }
 
-            if (firstAppliedId) {
-              openFileById?.(firstAppliedId);
-            }
-          });
-
-          runVerify(
-            changeId,
-            touchedFileIds,
-            applyOriginMsgIdRef.current ?? assistantId
-          );
-          applyOriginMsgIdRef.current = null;
-        });
+    if (typeof onFileStatus === "function") {
+      for (const fid of skippedIds) {
+        onFileStatus(fid, "ok", "verify skipped (non-code file)");
       }
+      for (const fid of verifiableIds) {
+        onFileStatus(fid, "pending", "verifying");
+      }
+    }
+
+    Promise.resolve(refreshFiles?.()).finally(() => {
+      const firstAppliedId =
+        appliedFiles[0]?.fileId ??
+        touchedFileIds[0] ??
+        null;
+
+      console.log("[apply_result after refresh]", {
+        firstAppliedId,
+        touchedFileIds,
+        appliedFiles,
+        verifiableIds,
+        skippedIds,
+      });
+
+      if (firstAppliedId) {
+        openFileById?.(firstAppliedId);
+      }
+    });
+
+    if (verifiableIds.length > 0) {
+      runVerify(
+        changeId,
+        verifiableIds,
+        applyOriginMsgIdRef.current ?? assistantId
+      );
+    } else {
+      setLastVerify(null);
+      setLastVerifyMsgId(null);
+    }
+
+    applyOriginMsgIdRef.current = null;
+  });
+}
     }
   } catch {}
 
