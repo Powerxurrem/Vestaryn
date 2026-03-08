@@ -19,21 +19,47 @@ type ChatFrameProps = {
 
   refreshFiles?: () => void | Promise<void>;
   openFileById?: (fileId: string) => void;
+  onMaintenance?: (payload: any) => void;
 };
 
 type Props = {
   repoId: string;
+  reloadToken?: number;
 
   onFileUpdated?: (fileId: string) => void;
-  onFileStatus?: (fileId: string, status: "ok" | "warn" | "error" | "pending", reason?: string) => void;
+  onFileStatus?: (
+    fileId: string,
+    status: "ok" | "warn" | "error" | "pending",
+    reason?: string
+  ) => void;
 
   refreshFiles?: () => void | Promise<void>;
   openFileById?: (fileId: string) => void;
+  onMessageStats?: (s: { total: number; user: number; assistant: number; system: number }) => void;
+  onMaintenance?: (payload: any) => void;
+
+  onProposalPreview?: (proposal: {
+    fileId: string;
+    content: string;
+    path?: string | null;
+    op?: string | null;
+    appendPreview?: string | null;
+  } | null) => void;
 };
 
 type ChamberState = "stable" | "analyzing" | "deep" | "archive";
 
-export default function ChatFrame({ repoId, onFileUpdated, onFileStatus,refreshFiles, openFileById }: Props) {
+export default function ChatFrame({
+  repoId,
+  reloadToken,
+  onFileUpdated,
+  onFileStatus,
+  refreshFiles,
+  openFileById,
+  onMessageStats,
+  onMaintenance,
+  onProposalPreview,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [thinking, setThinking] = useState(false);
@@ -60,6 +86,40 @@ export default function ChatFrame({ repoId, onFileUpdated, onFileStatus,refreshF
     name?: string,
     mime?: string,
   } | null>(null);
+
+const [lastProposalSet, setLastProposalSet] = useState<
+  {
+    proposals: Array<{
+      fileId: string;
+      content: string;
+      prevHash: string;
+      nextHash: string;
+      confirm: string;
+      meta?: any;
+      path?: string | null;
+      name?: string | null;
+      mime?: string | null;
+    }>;
+  } | null
+>(null);
+
+  const [proposalSet, setProposalSet] = useState<
+  Record<
+    string,
+    {
+      fileId: string;
+      content: string;
+      prevHash: string;
+      nextHash: string;
+      confirm: string;
+      meta?: any;
+      path?: string | null;
+      name?: string | null;
+      mime?: string | null;
+    }
+  >
+>({});
+
   const [lastVerify, setLastVerify] = useState<any | null>(null);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -95,23 +155,54 @@ function parseSections(content: string) {
     sections.action = sections.action.split("[Observation]")[0].trim();
   }
 
+const stagedPhrase = "A staged change is ready. Confirm to apply.";
+if (sections.action.includes(stagedPhrase)) {
+  sections.action = stagedPhrase;
+}
+
   return sections;
 }
 
+
 function stripMarkersForRender(s: string) {
-  return (s || "")
-    .split("\n")
-    .filter(
-      (l) =>
-        !l.trim().startsWith("__CREDITS__:") &&
-        !l.trim().startsWith("__PROPOSAL__:") &&
-        !l.trim().startsWith("__VERIFY__:") &&
-        !l.trim().startsWith("__ENGRAVING__:") &&
-        !l.trim().startsWith("__APPLY__:") &&
-        !l.trim().startsWith("__APPLIED__:") &&
-        !l.trim().startsWith("__RESET__")
-    )
-    .join("\n");
+  const lines = (s || "").split("\n");
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i] ?? "";
+    const t = l.trim();
+
+    // Drop marker line even if it's mid-line
+    if (l.includes("__MAINTENANCE__:")) {
+      // If marker was appended to text, keep only the text before it
+      const before = l.split("__MAINTENANCE__:")[0]?.trimEnd();
+      if (before) out.push(before);
+
+      // Also drop next line if it's the JSON payload
+      const next = (lines[i + 1] ?? "").trim();
+      if (next.startsWith("{") && next.endsWith("}")) i++;
+
+      continue;
+    }
+
+    // Existing marker drops
+    if (
+      t.startsWith("__CREDITS__:") ||
+      t.startsWith("__PROPOSAL__:") ||
+      t.startsWith("__PROPOSAL_SET__:") ||
+      t.startsWith("__VERIFY__:") ||
+      t.startsWith("__ENGRAVING__:") ||
+      t.startsWith("__APPLY__:") ||
+      t.startsWith("__APPLIED__:") ||
+      t.startsWith("__RESET__")
+    ) {
+      continue;
+    }
+
+    out.push(l);
+  }
+
+  return out.join("\n");
 }
 
 function extractConfirmPhrase(text: string) {
@@ -127,6 +218,12 @@ async function runVerify(changeId: string, touchedFileIds: string[], originMsgId
         onFileStatus(fid, "pending", "verifying");
       }
     }
+
+console.log("[runVerify] start", {
+  changeId,
+  touchedFileIds,
+  originMsgId,
+});
 
     const res = await fetch(`/api/repo/${repoId}/verify`, {
       method: "POST",
@@ -164,18 +261,26 @@ async function runVerify(changeId: string, touchedFileIds: string[], originMsgId
           const verify = JSON.parse(jsonStr);
           setLastVerify(verify);
           setLastVerifyMsgId(originMsgId ?? null);
-          setLastVerifyMsgId(originMsgId ?? null);
           const ok = Boolean(verify?.ok);
           const reason =
             (verify?.failureKind ? String(verify.failureKind) : "") ||
             (verify?.error ? String(verify.error) : "") ||
             (verify?.stderr ? String(verify.stderr).slice(0, 200) : "") ||
             (verify?.stdout ? String(verify.stdout).slice(0, 200) : "");
-
+console.log("[runVerify] parsed verify", {
+  verify,
+  fallbackTouchedFileIds: touchedFileIds,
+});
           const ids =
             Array.isArray(verify?.touchedFileIds) && verify.touchedFileIds.length
               ? verify.touchedFileIds
               : touchedFileIds;
+
+console.log("[runVerify] applying file status", {
+  ids,
+  nextStatus: ok ? "ok" : "error",
+  reason,
+});
 
           if (typeof onFileStatus === "function") {
             for (const fid of ids) {
@@ -288,14 +393,37 @@ useEffect(() => {
   })();
 
   return () => controller.abort();
-}, [repoId]);
+}, [repoId, reloadToken]);
 
   // ─────────────────────────────────────────────────────────────
   // Effects: autoscroll
   // ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+useEffect(() => {
+  const id = window.setTimeout(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, 20);
+
+  return () => window.clearTimeout(id);
+}, [
+  messages.length,
+  pendingConfirm,
+  pendingConfirmMsgId,
+  lastProposal?.nextHash,
+  lastVerifyMsgId,
+  lastVerify?.fingerprint,
+]);
+useEffect(() => {
+  if (!onMessageStats) return;
+
+  let user = 0, assistant = 0, system = 0;
+  for (const m of messages) {
+    if (m.role === "user") user++;
+    else if (m.role === "assistant") assistant++;
+    else system++;
+  }
+
+  onMessageStats({ total: messages.length, user, assistant, system });
+}, [messages, onMessageStats]);
 
   // ─────────────────────────────────────────────────────────────
   // Action: send message + stream assistant response
@@ -304,15 +432,33 @@ useEffect(() => {
 const handleSend = async (text: string) => {
   
   const trimmed = text.trim();
-  console.log("[handleSend] sending:", trimmed);
-  if (!trimmed) return;
-  const isApplyCommand = trimmed.startsWith("__APPLY__:");
-  if (sendingRef.current) return;
+console.log("[handleSend] sending:", trimmed);
+if (!trimmed) return;
+
+const isApplyCommand =
+  trimmed.startsWith("__APPLY__:") || trimmed.startsWith("__APPLY_SET__:");
+
+if (sendingRef.current) {
+  console.log("[handleSend blocked] sendingRef.current=true", { trimmed });
+  return;
+}
+
+console.log("[handleSend proceed]", {
+  isApplyCommand,
+  trimmedHead: trimmed.slice(0, 40),
+});
   sendingRef.current = true;
   const assistantId = makeId();
   setPendingConfirm(null);
 
 if (!isApplyCommand) {
+  setPendingConfirm(null);
+  setPendingConfirmMsgId(null);
+  setLastProposal(null);
+  setLastProposalSet(null);
+  setProposalSet({});
+  onProposalPreview?.(null);
+
   const userMsg: Message = {
     id: makeId(),
     role: "user",
@@ -352,6 +498,7 @@ const res = await fetch(`/api/repo/${repoId}/chat`, {
   },
   body: JSON.stringify({ content: trimmed }),
 });
+
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
@@ -398,8 +545,7 @@ if (RESET_LINE_RE.test(normalized)) {
   setThinking(false);
   setState("stable");
 
-  // Clear transient proposal/verify/engraving UI state
-  setLastProposal(null);
+
   setPendingConfirm(null);
   setLastVerify(null);
   setLastEngraving(null);
@@ -453,41 +599,168 @@ if (line.startsWith("__PROPOSAL__:")) {
 
   try {
     const proposal = JSON.parse(jsonStr);
-    const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
-    const op = String(proposal?.meta?.op ?? "");
 
-    const isConfirmable =
-      confirm.startsWith("APPLY ") ||
-      confirm.startsWith("CREATE ") ||
-      op === "create";
+    console.log("[proposalPreview]", {
+      fileId: proposal?.fileId,
+      op: proposal?.meta?.op,
+      path: proposal?.path ?? proposal?.meta?.path ?? null,
+      contentHead: String(proposal?.content ?? "").slice(0, 80),
+    });
 
-    if (
-      isConfirmable &&
-      proposal?.fileId &&
-      proposal?.content &&
-      proposal?.prevHash &&
-      proposal?.nextHash &&
-      confirm
-    ) {
-      setLastProposal({
-        fileId: proposal.fileId,
-        content: proposal.content,
-        prevHash: proposal.prevHash,
-        nextHash: proposal.nextHash,
-        confirm,
-        meta: proposal.meta ?? null,
-        path: proposal.path ?? proposal.meta?.path ?? null,
-        name: proposal.name ?? null,
-        mime: proposal.mime ?? proposal.meta?.mime ?? null,
-      });
+    const proposalKey = `PROPOSAL:${repoId}:${proposal?.fileId ?? "?"}:${proposal?.nextHash ?? "?"}:${assistantId}`;
 
-      setPendingConfirm(confirm);
-      setPendingConfirmMsgId(assistantId); // or msg.id depending where you parse
-    }
+    onceMarker(proposalKey, () => {
+      const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
+      const op = String(proposal?.meta?.op ?? "");
+
+      const isConfirmable =
+        confirm.startsWith("APPLY ") ||
+        confirm.startsWith("CREATE ") ||
+        op === "create";
+
+      if (
+        isConfirmable &&
+        proposal?.fileId &&
+        proposal?.content &&
+        proposal?.prevHash &&
+        proposal?.nextHash &&
+        confirm
+      ) {
+        setLastProposal({
+          fileId: proposal.fileId,
+          content: proposal.content,
+          prevHash: proposal.prevHash,
+          nextHash: proposal.nextHash,
+          confirm,
+          meta: proposal.meta ?? null,
+          path: proposal.path ?? proposal.meta?.path ?? null,
+          name: proposal.name ?? null,
+          mime: proposal.mime ?? proposal.meta?.mime ?? null,
+        });
+
+        onProposalPreview?.({
+          fileId: proposal.fileId,
+          content: proposal.content,
+          path: proposal.path ?? proposal.meta?.path ?? null,
+          op: proposal.meta?.op ?? null,
+          appendPreview: proposal.meta?.appendPreview ?? null,
+        });
+
+        setPendingConfirm(confirm);
+        setPendingConfirmMsgId(assistantId);
+
+        if (proposal?.fileId && openFileById) {
+          openFileById(proposal.fileId);
+        }
+      }
+    });
   } catch {}
 
   lines[i] = "";
   changed = true;
+  continue;
+}
+
+if (line.startsWith("__PROPOSAL_SET__:")) {
+  const isLastLine = i === lines.length - 1;
+  const streamEndsWithNewline = accumulated.endsWith("\n");
+
+  if (isLastLine && !streamEndsWithNewline) {
+    continue;
+  }
+
+  const jsonStr = line.slice("__PROPOSAL_SET__:".length).trim();
+
+  try {
+    const payload = JSON.parse(jsonStr);
+    const proposals = Array.isArray(payload?.proposals)
+      ? payload.proposals
+      : Array.isArray(payload?.creates)
+      ? payload.creates
+      : [];
+
+    const nextMap: Record<string, any> = {};
+
+    console.log("[proposalSet raw]", payload);
+    console.log("[proposalSet proposals]", proposals);
+
+    for (const proposal of proposals) {
+      console.log("[proposalSet inspect]", {
+        fileId: proposal?.fileId,
+        path: proposal?.path,
+        hasContent: Boolean(proposal?.content),
+        hasPrevHash: Boolean(proposal?.prevHash),
+        hasNextHash: Boolean(proposal?.nextHash),
+        confirm: proposal?.confirm,
+        op: proposal?.meta?.op,
+      });
+
+      const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
+      const op = String(proposal?.meta?.op ?? "");
+
+      const isConfirmable =
+        confirm.startsWith("APPLY ") ||
+        confirm.startsWith("CREATE ") ||
+        op === "create";
+
+      if (
+        isConfirmable &&
+        proposal?.fileId &&
+        proposal?.content &&
+        proposal?.prevHash &&
+        proposal?.nextHash &&
+        confirm
+      ) {
+        nextMap[proposal.fileId] = {
+          fileId: proposal.fileId,
+          content: proposal.content,
+          prevHash: proposal.prevHash,
+          nextHash: proposal.nextHash,
+          confirm,
+          meta: proposal.meta ?? null,
+          path: proposal.path ?? proposal.meta?.path ?? null,
+          name: proposal.name ?? null,
+          mime: proposal.mime ?? proposal.meta?.mime ?? null,
+        };
+      }
+    }
+
+    const proposalList = Object.values(nextMap);
+
+    console.log("[proposalSet parsed]", {
+      count: proposalList.length,
+      ids: proposalList.map((p: any) => p.fileId),
+      paths: proposalList.map((p: any) => p.path),
+    });
+
+    if (proposalList.length > 0) {
+      setProposalSet(nextMap);
+      setLastProposalSet({ proposals: proposalList });
+
+      const first = proposalList[0];
+      setLastProposal(first);
+      setPendingConfirm("APPLY_SET");
+      setPendingConfirmMsgId(assistantId);
+
+      onProposalPreview?.({
+        fileId: first.fileId,
+        content: first.content,
+        path: first.path ?? null,
+        op: first.meta?.op ?? null,
+        appendPreview: first.meta?.appendPreview ?? null,
+      });
+
+      if (openFileById) {
+        openFileById(first.fileId);
+      }
+    }
+  } catch (e) {
+    console.log("[proposalSet parse failed]", e);
+  }
+
+  lines[i] = "";
+  changed = true;
+  continue;
 }
 
 // Apply marker (REQUEST or RESULT) — strip always; auto-verify only on RESULT.
@@ -508,33 +781,71 @@ if (line.startsWith("__APPLY__:") || line.startsWith("__APPLIED__:")) {
       typeof payload.nextHash === "string";
 
     if (!looksLikeRequest) {
-      // result shape
       const ok = Boolean(payload?.ok);
       const changeId = typeof payload?.changeId === "string" ? payload.changeId : "";
       const touchedFileIds = Array.isArray(payload?.touchedFileIds)
         ? payload.touchedFileIds.filter((x: any) => typeof x === "string")
         : [];
 
-if (ok) {
-  setPendingConfirm(null);
-  setPendingConfirmMsgId(null);
-  setLastProposal(null);
+      const applyKey = `APPLIED:${repoId}:${changeId || payload?.nextHash || `${touchedFileIds.join(",")}:${assistantId}`}`;
 
-  const firstId = touchedFileIds[0];
+      if (ok) {
+        onceMarker(applyKey, () => {
+          const appliedFiles = Array.isArray(payload?.appliedFiles)
+            ? payload.appliedFiles
+            : payload?.appliedFile
+            ? [payload.appliedFile]
+            : [];
 
-  // Refresh first, then open.
-  Promise.resolve(refreshFiles?.()).finally(() => {
-    if (firstId) openFileById?.(firstId);
-  });
+          console.log("[apply_result]", {
+            changeId,
+            touchedFileIds,
+            appliedFiles,
+            originMsgId: applyOriginMsgIdRef.current ?? assistantId,
+          });
 
-  runVerify(changeId, touchedFileIds, applyOriginMsgIdRef.current ?? assistantId);
-  applyOriginMsgIdRef.current = null;
-}
+          setPendingConfirm(null);
+          setPendingConfirmMsgId(null);
+          setLastProposal(null);
+          setLastProposalSet(null);
+          setProposalSet({});
+          onProposalPreview?.(null);
+
+          for (const fid of touchedFileIds) {
+            onFileUpdated?.(fid);
+          }
+
+          Promise.resolve(refreshFiles?.()).finally(() => {
+            const firstAppliedId =
+              appliedFiles[0]?.fileId ??
+              touchedFileIds[0] ??
+              null;
+
+            console.log("[apply_result after refresh]", {
+              firstAppliedId,
+              touchedFileIds,
+              appliedFiles,
+            });
+
+            if (firstAppliedId) {
+              openFileById?.(firstAppliedId);
+            }
+          });
+
+          runVerify(
+            changeId,
+            touchedFileIds,
+            applyOriginMsgIdRef.current ?? assistantId
+          );
+          applyOriginMsgIdRef.current = null;
+        });
+      }
     }
   } catch {}
 
-  lines[i] = ""; // strip marker from rendering
+  lines[i] = "";
   changed = true;
+  continue;
 }
 
 // Verify marker
@@ -543,7 +854,7 @@ if (line.startsWith("__VERIFY__:")) {
   try {
     const verify = JSON.parse(jsonStr);
     setLastVerify(verify);
-
+    
     // ✅ Bridge into file status (best-effort)
     // We attribute the verify result to the "last proposal file" if we have one.
     const ok = Boolean(verify?.ok);
@@ -568,6 +879,7 @@ if (typeof onFileStatus === "function") {
 
   lines[i] = ""; // strip line
   changed = true;
+  continue;
 }
 
 if (line.startsWith("__CREDITS__:")) {
@@ -581,6 +893,42 @@ if (line.startsWith("__CREDITS__:")) {
   continue;
 }
 
+// Maintenance marker (recommend prune)
+if (line.startsWith("__MAINTENANCE__:")) {
+  let jsonStr = line.split("__MAINTENANCE__:")[1]?.trim() ?? "";
+
+  if (!jsonStr && (lines[i + 1] ?? "").trim().startsWith("{")) {
+    jsonStr = (lines[i + 1] ?? "").trim();
+  }
+
+  try {
+    const payload = JSON.parse(jsonStr);
+
+      console.log("[ChatFrame] maintenance parsed", payload);
+
+      onMaintenance?.(payload);
+
+      window.dispatchEvent(
+        new CustomEvent("vestaryn:maintenance", { detail: payload })
+      );
+
+  } catch (e) {
+    console.log("[ChatFrame] maintenance parse failed", jsonStr, e);
+  }
+
+  lines[i] = line.split("__MAINTENANCE__:")[0]?.trimEnd() ?? "";
+  changed = true;
+
+  const next = (lines[i + 1] ?? "").trim();
+  if (next.startsWith("{") && next.endsWith("}")) {
+    lines[i + 1] = "";
+  }
+
+  continue;
+}
+
+
+  
   // Engraving marker
   if (line.startsWith("__ENGRAVING__:")) {
     const jsonStr = line.slice("__ENGRAVING__:".length).trim();
@@ -616,18 +964,18 @@ if (line.startsWith("__CREDITS__:")) {
     changed = true;
   }
 }
-if (changed) {
-  accumulated = lines.filter((l) => l !== "").join("\n");
-}
+
+const nextText = changed ? lines.join("\n") : accumulated;
 
 flushSync(() => {
   setMessages((prev) =>
-    prev.map((m) =>
-      m.id === assistantId ? { ...m, content: accumulated } : m
-    )
+    prev.map((m) => (m.id === assistantId ? { ...m, content: nextText } : m))
   );
 });
-    } // ✅ closes while
+
+accumulated = nextText; // keep accumulated in sync
+
+    } // closes while
 
     setThinking(false);
     setState("stable");
@@ -648,12 +996,32 @@ flushSync(() => {
     );
 
     console.error(e);
-    } finally {
-      streamingAssistantIdRef.current = null;
-      sendingRef.current = false;
-    }
+  } finally {
+    streamingAssistantIdRef.current = null;
+    sendingRef.current = false;
+  }
 };
 
+// ─────────────────────────────────────────────────────────────
+// Marker dedupe (prevents double-trigger on reconnect / chunk replay)
+// ─────────────────────────────────────────────────────────────
+const seenMarkerKeysRef = useRef<Set<string>>(new Set());
+
+function onceMarker(key: string, fn: () => void) {
+  const s = seenMarkerKeysRef.current;
+  if (s.has(key)) return false;
+  s.add(key);
+
+  // keep memory bounded
+  if (s.size > 2000) {
+    // simple strategy: clear (good enough for now)
+    s.clear();
+    s.add(key);
+  }
+
+  fn();
+  return true;
+}
 
  // ─────────────────────────────────────────────────────────────
 // Render
@@ -723,17 +1091,24 @@ return (
           )}
 
           {messages.map((msg) => {
-            console.log("CONFIRM DEBUG", {
-              pendingConfirm,
-              hasLastProposal: Boolean(lastProposal),
-              thinking,
-              pendingConfirmMsgId,
-              msgId: msg.id,
-            });
             const isThinkingBubble =
               thinking &&
               msg.role === "assistant" &&
               streamingAssistantIdRef.current === msg.id;
+
+          let previewText =
+            lastProposal?.meta?.op === "append"
+              ? String(lastProposal?.meta?.appendPreview ?? "")
+              : (lastProposal?.content ?? "");
+
+          if (!previewText) {
+            previewText = lastProposal?.content ?? "";
+          }
+
+          const previewShort =
+            previewText.length > 800
+              ? previewText.slice(0, 800) + "\n…(truncated)"
+              : previewText;
 
             return (
               <div
@@ -771,7 +1146,7 @@ return (
                             <div className="text-[10px] uppercase tracking-widest text-white/40 mb-1">
                               Observation
                             </div>
-                            <div className="text-white/80">{s.observation}</div>
+                            <div className="text-white/80 whitespace-pre-wrap">{s.observation}</div>
                           </div>
                         )}
 
@@ -782,7 +1157,7 @@ return (
                             <div className="text-[10px] uppercase tracking-widest text-blue-300/60 mb-1">
                               Assessment
                             </div>
-                            <div className="text-white/85">{s.assessment}</div>
+                            <div className="text-white/85 whitespace-pre-wrap">{s.assessment}</div>
                           </div>
                         )}
 
@@ -793,7 +1168,7 @@ return (
                             <div className="text-[10px] uppercase tracking-widest text-emerald-300/70 mb-1">
                               Action
                             </div>
-                            <div className="text-white/95">{s.action}</div>
+                            <div className="text-white/95 whitespace-pre-wrap">{s.action}</div>
                           </div>
                         )}
 
@@ -872,6 +1247,7 @@ return (
                                     setLastProposal(null);
                                     setPendingConfirm(null);
                                     setPendingConfirmMsgId(null);
+                                    onProposalPreview?.(null);
                                   }}
                                   className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
                                 >
@@ -888,31 +1264,39 @@ return (
                                 </div>
 
                                 <div className="mt-2">
-                                  <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
-                                    Proposed content (preview)
-                                  </div>
+                              <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+                                {lastProposal?.meta?.op === "append"
+                                  ? "Appended content"
+                                  : "Proposed content (preview)"}
+                              </div>
                                   <div className="mt-1 max-h-[120px] overflow-auto rounded-md bg-black/30 p-2 font-mono text-[11px] text-white/80 whitespace-pre-wrap">
-                                    {lastProposal.content.slice(0, 800)}
-                                    {lastProposal.content.length > 800
-                                      ? "\n…(truncated)"
-                                      : ""}
+                                    {previewShort}
                                   </div>
                                 </div>
 
                                 <div className="mt-3 flex justify-end">
                                   <button
+                                  disabled={thinking}
                                     onClick={() => {
-                                      if (!lastProposal) return;
-
-                                      // remember which bubble this apply belongs to
+                                      
                                       applyOriginMsgIdRef.current = pendingConfirmMsgId;
 
-                                      onFileUpdated?.(lastProposal.fileId);
+                                      setLastVerify(null);
+                                      setLastVerifyMsgId(null);
 
-                                      const payload = JSON.stringify(lastProposal);
                                       setPendingConfirm(null);
                                       setPendingConfirmMsgId(null);
-                                      handleSend(`__APPLY__:${payload}`);
+                                      console.log("[apply_set send]", lastProposalSet);
+                                      if (lastProposalSet?.proposals?.length) {
+                                        const payload = JSON.stringify(lastProposalSet);
+                                        handleSend(`__APPLY_SET__:${payload}`);
+                                        return;
+                                      }
+
+                                      if (lastProposal) {
+                                        const payload = JSON.stringify(lastProposal);
+                                        handleSend(`__APPLY__:${payload}`);
+                                      }
                                     }}
                                     className="h-[36px] rounded-lg px-3 text-[12px] font-medium bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300/40 active:scale-[0.99] transition"
                                   >

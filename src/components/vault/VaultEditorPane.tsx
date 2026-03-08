@@ -24,10 +24,13 @@ export default function VaultEditorPane({
   onClose,
   sidebar,
   fileStatusById,
+  proposalPreview,
   onFileStatus,    
   rightChamber,
   rightChamberWidth,
   rightChamberOpen,
+  fileReloadTokenById,
+  
 }: {
   repoId: string;
   tabs: OpenTab[];
@@ -35,8 +38,17 @@ export default function VaultEditorPane({
   onActivate: (fileId: string) => void;
   onClose: (fileId: string) => void;
   sidebar: ReactNode;
+  fileReloadTokenById?: Record<string, number>;
+  proposalPreview?: {
+  fileId: string;
+  content: string;
+  path?: string | null;
+  op?: string | null;
+  appendPreview?: string | null;
+} | null;
   fileStatusById: Record<
     string,
+    
     { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
   >;
   onFileStatus: (
@@ -56,7 +68,24 @@ export default function VaultEditorPane({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const reloadToken = fileReloadTokenById?.[activeFileId ?? ""] ?? 0;   
+  useEffect(() => {
+  if (!editorScrollRef.current) return;
+  if (!activeTab) return;
+  if (!content) return;
 
+  // only useful after a file reload completed
+  const lines = splitLinesStable(content);
+  if (lines.length === 0) return;
+
+  const lineHeight = 20;
+  const targetTop = Math.max(0, (lines.length - 6) * lineHeight - 40);
+
+  editorScrollRef.current.scrollTo({
+    top: targetTop,
+    behavior: "smooth",
+  });
+}, [reloadToken]);
   const [mode, setMode] = useState<"read" | "edit">("read");
   const [content, setContent] = useState("");
   const [original, setOriginal] = useState("");
@@ -76,10 +105,173 @@ const engravingW = 260; // try 260–320
 const minVaultW = 260;        // file list usability
 const maxEngravingW = 340;    // optional cap (aesthetics)
 const minEditorW = 720;       // you already have this (keep one source of truth)
+type DiffLine =
+  | { kind: "same"; text: string }
+  | { kind: "add"; text: string }
+  | { kind: "remove"; text: string };
 
+function buildSimpleInlineDiff(oldText: string, newText: string): DiffLine[] {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+
+  let start = 0;
+  while (
+    start < oldLines.length &&
+    start < newLines.length &&
+    oldLines[start] === newLines[start]
+  ) {
+    start++;
+  }
+
+  let oldEnd = oldLines.length - 1;
+  let newEnd = newLines.length - 1;
+  while (
+    oldEnd >= start &&
+    newEnd >= start &&
+    oldLines[oldEnd] === newLines[newEnd]
+  ) {
+    oldEnd--;
+    newEnd--;
+  }
+
+  const out: DiffLine[] = [];
+
+  for (let i = 0; i < start; i++) {
+    out.push({ kind: "same", text: oldLines[i] ?? "" });
+  }
+
+  for (let i = start; i <= oldEnd; i++) {
+    out.push({ kind: "remove", text: oldLines[i] ?? "" });
+  }
+
+  for (let i = start; i <= newEnd; i++) {
+    out.push({ kind: "add", text: newLines[i] ?? "" });
+  }
+
+  for (let i = oldEnd + 1; i < oldLines.length; i++) {
+    out.push({ kind: "same", text: oldLines[i] ?? "" });
+  }
+
+  return out;
+}
 
   const dirty = mode === "edit" && content !== original;
   const canEdit = isTextLike(activeTab?.mime ?? "");
+const hasProposalForActiveFile =
+  !!proposalPreview &&
+  !!activeTab &&
+  proposalPreview.fileId === activeTab.fileId;
+
+const proposalOp = proposalPreview?.op ?? null;
+console.log("[editorPreview]", {
+  activeFileId,
+  proposalFileId: proposalPreview?.fileId ?? null,
+  proposalOp,
+  hasProposalForActiveFile,
+  contentLen: content.length,
+  proposalLen: proposalPreview?.content?.length ?? 0,
+  startsWithCurrent:
+    !!content &&
+    !!proposalPreview?.content &&
+    proposalPreview.content.startsWith(content),
+});
+
+const isAppendPreview =
+  hasProposalForActiveFile &&
+  mode === "read" &&
+  proposalOp === "append";
+
+const isInlineDiffPreview =
+  hasProposalForActiveFile &&
+  mode === "read" &&
+  proposalOp !== "append";
+
+const displayContent =
+  hasProposalForActiveFile && mode === "read"
+    ? proposalPreview.content
+    : content;
+
+const changedLines = useMemo(() => {
+  const changed = new Set<number>();
+
+  if (isAppendPreview) {
+    const newLines = splitLinesStable(proposalPreview!.content);
+    const appendLines = splitLinesStable(String(proposalPreview?.appendPreview ?? ""));
+
+    const start = Math.max(0, newLines.length - appendLines.length);
+
+    for (let i = start; i < newLines.length; i++) {
+      changed.add(i);
+    }
+
+    console.log("[appendPreview]", {
+      newLinesLen: newLines.length,
+      appendLinesLen: appendLines.length,
+      start,
+      appendLines,
+    });
+  }
+
+  return changed;
+}, [isAppendPreview, proposalPreview]);
+function splitLinesStable(text: string) {
+  const lines = text.replace(/\r/g, "").split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines;
+}
+const inlineDiff =
+  isInlineDiffPreview
+    ? buildSimpleInlineDiff(content, proposalPreview!.content)
+    : [];
+
+useEffect(() => {
+  if (!editorScrollRef.current) return;
+  if (!hasProposalForActiveFile) return;
+  if (mode !== "read") return;
+  if (loading) return;
+  if (!displayContent) return;
+  if (changedLines.size === 0) return;
+
+  const firstChanged = Math.min(...Array.from(changedLines));
+  if (!Number.isFinite(firstChanged)) return;
+
+  const id = window.setTimeout(() => {
+    const lineHeight = 20;
+    const targetTop = Math.max(0, firstChanged * lineHeight - 40);
+
+    editorScrollRef.current?.scrollTo({
+      top: targetTop,
+      behavior: "smooth",
+    });
+  }, 30);
+
+  return () => window.clearTimeout(id);
+}, [
+  hasProposalForActiveFile,
+  activeFileId,
+  proposalPreview,
+  mode,
+  loading,
+  displayContent,
+  changedLines,
+]);
+
+function computeChangedLineSet(oldText: string, newText: string) {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const max = Math.max(oldLines.length, newLines.length);
+  const changed = new Set<number>();
+
+  for (let i = 0; i < max; i++) {
+    if ((oldLines[i] ?? "") !== (newLines[i] ?? "")) {
+      changed.add(i);
+    }
+  }
+
+  return changed;
+}
 
   // Load active file
   useEffect(() => {
@@ -128,7 +320,7 @@ const minEditorW = 720;       // you already have this (keep one source of truth
     return () => {
       cancelled = true;
     };
-  }, [repoId, activeTab?.fileId, activeTab?.mime]);
+    }, [repoId, activeTab?.fileId, activeTab?.mime, reloadToken]);
 
   async function save() {
     if (!activeTab) return;
@@ -162,7 +354,7 @@ const minEditorW = 720;       // you already have this (keep one source of truth
 
 const containerRef = useRef<HTMLDivElement | null>(null);
 const draggingRef = useRef(false);
-
+const editorScrollRef = useRef<HTMLDivElement | null>(null);
 const storageKey = `vestaryn:ideSplit:explorerW:${repoId ?? "default"}`;
 
 const [explorerW, setExplorerW] = useState(280);
@@ -227,6 +419,7 @@ return (
 
   {/* Left pane body: Vault (scroll) + Engraving (fixed) */}
   <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
+    
     {/* Vault list (scrolls) */}
     <div
       className="min-h-0 overflow-auto vault-scroll border-r border-white/10"
@@ -235,36 +428,24 @@ return (
       {sidebar}
     </div>
 
-    {/* Engraving area (fixed, does NOT scroll with vault) */}
-    <div className="flex-1 min-w-0 min-h-0 overflow-hidden bg-black/15">
-      <div className="h-full overflow-auto p-3">
+{/* Engraving area (fixed, does NOT scroll with vault) */}
+<div className="flex-1 min-w-0 min-h-0 overflow-hidden bg-black/15">
+  <div className="h-full overflow-auto p-3">
+    {rightChamber ? (
+      rightChamber
+    ) : (
+      <>
         <div className="text-[10px] uppercase tracking-widest text-white/40 mb-2">
           Engraving
         </div>
 
-        <div className="grid grid-cols-2 gap-2 mb-3">
-          <button className="px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70">
-            Memory
-          </button>
-          <button className="px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70">
-            Handover
-          </button>
-          <button className="px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70">
-            SQL
-          </button>
-          <button className="px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70">
-            Notes
-          </button>
-        </div>
-
         <div className="text-xs text-white/55">
-          Vault status placeholder:
-          <div className="mt-2 text-white/40">
-            0 tracked • all green → commit (future)
-          </div>
+          No chamber mounted.
         </div>
-      </div>
-    </div>
+      </>
+    )}
+  </div>
+</div>
   </div>
 </aside>
 
@@ -291,7 +472,7 @@ return (
               const active = t.fileId === activeFileId;
               const isDirty = active && dirty;
               const st = fileStatusById?.[t.fileId];
-              const isRecent = st?.ts && Date.now() - st.ts < 5000;
+              const isRecent = st?.ts && Date.now() - st.ts < 15000;
               const status = st?.status ?? null;
               const reason = st?.reason ?? "";
 
@@ -404,7 +585,7 @@ return (
         </div>
 
 {/* Editor body */}
-<div className="flex-1 min-h-0 overflow-auto">
+<div ref={editorScrollRef} className="flex-1 min-h-0 overflow-auto">
   {!activeTab ? (
     <div className="h-full flex items-center justify-center text-sm text-white/35">
       Open a file from Explorer.
@@ -418,9 +599,42 @@ return (
   ) : error ? (
     <div className="p-4 text-sm text-rose-300">{error}</div>
   ) : mode === "read" ? (
-    <pre className="p-4 text-xs text-white/80 whitespace-pre-wrap break-words font-mono">
-      {content}
-    </pre>
+<div className="p-4 text-xs text-white/80 font-mono whitespace-pre-wrap break-words">
+  {isInlineDiffPreview ? (
+    inlineDiff.map((line, i) => (
+      <div
+        key={i}
+        className={
+          line.kind === "add"
+            ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
+            : line.kind === "remove"
+            ? "bg-rose-500/10 border-l-2 border-rose-400 px-2 -mx-2 text-rose-100/80 line-through"
+            : ""
+        }
+      >
+        {line.kind === "add" ? "+ " : line.kind === "remove" ? "- " : "  "}
+        {line.text || " "}
+      </div>
+    ))
+  ) : (
+    displayContent.split("\n").map((line, i) => {
+      const isChanged = changedLines.has(i);
+
+      return (
+        <div
+          key={i}
+          className={
+            isChanged
+              ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
+              : ""
+          }
+        >
+          {line || " "}
+        </div>
+      );
+    })
+  )}
+</div>
   ) : (
     <textarea
       className="w-full h-full resize-none bg-black/40 p-4 text-xs text-white/90 font-mono outline-none"

@@ -30,30 +30,51 @@ export default function ChamberWithVault({
     localStorage.setItem("vestaryn:lastRepoId", repoId);
   }, [repoId]);
 
+  useEffect(() => {
+  console.log("[ChamberWithVault] mounted");
+  return () => console.log("[ChamberWithVault] unmounted");
+}, []);
+
+  console.log("[ChamberWithVault] render", { repoId });
+  const [msgStats, setMsgStats] = useState({ total: 0, user: 0, assistant: 0, system: 0 });
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const vaultRef = useRef<RepoVaultHandle | null>(null);
   // ✅ splitter percent (left = chat)
   const [leftPct, setLeftPct] = useState(50);
-
+  // near top of file
+  const [maintenance, setMaintenance] = useState<any>(null);
   const [fileStatusById, setFileStatusById] = useState<Record<string, FileStatus>>({});
-
+  const [proposalPreview, setProposalPreview] = useState<{
+  fileId: string;
+  content: string;
+  path?: string | null;
+  op?: string | null;
+  appendPreview?: string | null;
+} | null>(null);
+  const MAINTENANCE_CAP = 40;
+  const [fileReloadTokenById, setFileReloadTokenById] = useState<Record<string, number>>({});
+  const bumpFileReload = useCallback((fileId: string) => {
+    setFileReloadTokenById((prev) => ({
+      ...prev,
+      [fileId]: (prev[fileId] ?? 0) + 1,
+    }));
+  }, []);
 const onFileStatus = useCallback(
   (fileId: string, status: FileStatus["status"], reason?: string) => {
     const ts = Date.now();
     setFileStatusById((prev) => {
       const cur = prev[fileId];
+      console.log("[fileStatus]", { fileId, status, reason });
+
 
       // Pending is "stronger" than a generic Updated ok.
       if (cur?.status === "pending") {
-        const r = (reason ?? "").toLowerCase();
+        const canResolvePending =
+          status === "ok" || status === "warn" || status === "error";
 
-        // allow verify completion to overwrite pending
-        const isVerifyOk = status === "ok" && (r === "verified" || r.includes("verify"));
-        const isNonOk = status === "error" || status === "warn";
-
-        if (!isVerifyOk && !isNonOk) {
-          return prev; // ignore things like ok/Updated
+        if (!canResolvePending) {
+          return prev;
         }
       }
 
@@ -78,14 +99,28 @@ const onFileStatus = useCallback(
   type ChamberMode = "vault" | "memory" | "handover" | "sql";
 
   const CHAMBER_WIDTH = 360; // px
-  const [chamberMode, setChamberMode] = useState<ChamberMode | null>(null);
+  const [chamberMode, setChamberMode] = useState<ChamberMode | null>("vault");
   
-
   const chamberOpen = chamberMode !== null;
-
+const [chatReloadToken, setChatReloadToken] = useState(0);
   // clicking the same mode toggles it off (close chamber)
 const toggleMode = (m: ChamberMode) =>
-  setChamberMode((cur) => (cur === m ? null : m));
+  setChamberMode((cur) => {
+    const next = cur === m ? null : m;
+    console.log("[toggleMode]", { cur, m, next });
+    return next;
+  });
+
+const effectiveMaintenance =
+  maintenance ??
+  (msgStats.total >= MAINTENANCE_CAP
+    ? {
+        type: "recommend_resummarize",
+        reason: "message_cap_ui",
+        count: msgStats.total,
+        cap: MAINTENANCE_CAP,
+      }
+    : null);
 
   // optional UI state if you want to show it somewhere later
   const [verifyState, setVerifyState] = useState<
@@ -190,16 +225,51 @@ const toggleMode = (m: ChamberMode) =>
 
       let marker: any | null = null;
 
-      await consumeVerifyStream(res.body, (v) => {
-        console.log("[auto_verify] marker", v);
-        marker = v;
-      });
+await consumeVerifyStream(res.body, (verify) => {
+  const ok = Boolean(verify?.ok);
+
+  const reason = !ok
+    ? (
+        String(
+          verify?.stderr ||
+          verify?.stdout ||
+          verify?.error ||
+          "Verify failed"
+        )
+          .split("\n")
+          .map((line: string) => line.trim())
+          .find((line: string) =>
+            line.length > 0 &&
+            !line.startsWith("[") &&
+            !line.startsWith(">") &&
+            !line.startsWith("at ")
+          ) || "Verify failed"
+      )
+    : undefined;
+
+  const fileIds: string[] = Array.isArray(verify?.touchedFileIds)
+    ? verify.touchedFileIds
+    : [];
+
+  setFileStatusById((prev) => {
+    const next = { ...prev };
+    for (const fileId of fileIds) {
+      next[fileId] = {
+        ts: Date.now(),
+        status: ok ? "ok" : "error",
+        reason,
+      };
+    }
+    return next;
+  });
+});
 
       setLastVerify(marker);
       const ok = !!marker?.ok;
 
       touched.forEach((fid) =>
         onFileStatus(
+          
           fid,
           ok ? "ok" : "error",
           ok
@@ -240,14 +310,13 @@ const toggleMode = (m: ChamberMode) =>
 
 
   
-  const markFileUpdated = useCallback(
-    (fileId: string) => {
-      pendingTouchedRef.current.add(fileId);
-      onFileStatus(fileId, "pending", "Verifying…");
-      scheduleVerify();
-    },
-    [onFileStatus]
-  );
+const markFileUpdated = useCallback(
+  (fileId: string) => {
+    bumpFileReload(fileId);
+    onFileStatus(fileId, "pending", "Verifying…");
+  },
+  [onFileStatus, bumpFileReload]
+);
 
   // load saved split
   useEffect(() => {
@@ -319,83 +388,137 @@ const toggleMode = (m: ChamberMode) =>
     window.addEventListener("mouseup", onUp);
   }
 
-return (
-  <VestarynFrame
-    repoId={repoId}
-    repoName={repoName}
-    right={
-      <>
-        {/* membership dropdown or other right-side controls here */}
-      </>
-    }
-  >
-    <div className="w-full h-[70vh] flex min-w-0">
-      {/* Left: Chat */}
-      <div className="min-w-0" style={{ width: `${leftPct}%` }}>
-        <ChatFrame
-          repoId={repoId}
-          onFileUpdated={markFileUpdated}
-          onFileStatus={onFileStatus}
-          refreshFiles={() => vaultRef.current?.refresh()}
-          openFileById={(id) => vaultRef.current?.openFileById(id)}
-        />
-      </div>
+  return (
+    <VestarynFrame
+      repoId={repoId}
+      repoName={repoName}
+      right={
+        <div className="absolute left-[275px] top-[13px] z-40">
+          <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/60 backdrop-blur">
+            msgs {msgStats.total}
+          </div>
+        </div>
+      }
+    >
+      <div className="w-full h-[70vh] flex min-w-0">
+        {/* Left: Chat */}
+        <div className="min-w-0" style={{ width: `${leftPct}%` }}>
+          <ChatFrame
+            repoId={repoId}
+            reloadToken={chatReloadToken}
+            onFileUpdated={markFileUpdated}
+            onFileStatus={onFileStatus}
+            refreshFiles={() => vaultRef.current?.refresh()}
+            openFileById={(id) => vaultRef.current?.openFileById(id)}
+            onMessageStats={setMsgStats}
+            onMaintenance={setMaintenance}
+            onProposalPreview={setProposalPreview}
+          />
+        </div>
 
-      {/* Splitter */}
-      <div
-        onMouseDown={onSplitterMouseDown}
-        className="w-[10px] shrink-0 cursor-col-resize relative group"
-        title="Drag to resize"
-      >
-        <div className="absolute inset-0 pointer-events-none" />
-        <div className="absolute left-1/2 top-2 bottom-2 w-px -translate-x-1/2 bg-white/10 group-hover:bg-blue-400/40" />
-      </div>
-
-      {/* Right: Editor */}
-      <div className="min-w-0 flex-1 relative rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/25 backdrop-blur-md">
-        <VaultEditorPane
-          repoId={repoId}
-          tabs={tabs}
-          activeFileId={activeFileId}
-          onActivate={setActiveFileId}
-          onClose={closeTab}
-          sidebar={<RepoVault ref={vaultRef} repoId={repoId} onOpenFile={openFile} />}
-          fileStatusById={fileStatusById}
-          onFileStatus={onFileStatus}
-          rightChamber={
-            <HiddenChamber
-              mode={chamberMode}
-              onToggleMode={toggleMode}
-              fileStatusById={fileStatusById}
-            />
-          }
-          rightChamberWidth={CHAMBER_WIDTH}
-          rightChamberOpen={chamberOpen}
-        />
-
-        {/* Edge handle: click to toggle Vault */}
-        <button
-          type="button"
-          onClick={() => toggleMode("vault")}
-          className="absolute top-0 right-0 z-20 h-full w-2 opacity-70 hover:opacity-100"
-          title="Open chamber"
+        {/* Splitter */}
+        <div
+          onMouseDown={onSplitterMouseDown}
+          className="w-[10px] shrink-0 cursor-col-resize relative group"
+          title="Drag to resize"
         >
-          <span className="absolute inset-y-6 right-0 w-px bg-white/20" />
-        </button>
-      </div>
-    </div>
-  </VestarynFrame>
-);
+          <div className="absolute inset-0 pointer-events-none" />
+          <div className="absolute left-1/2 top-2 bottom-2 w-px -translate-x-1/2 bg-white/10 group-hover:bg-blue-400/40" />
+        </div>
 
+        {/* Right: Editor */}
+        <div className="min-w-0 flex-1 relative rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/25 backdrop-blur-md">
+          <VaultEditorPane
+            repoId={repoId}
+            tabs={tabs}
+            activeFileId={activeFileId}
+            onActivate={setActiveFileId}
+            onClose={closeTab}
+            fileReloadTokenById={fileReloadTokenById}
+            proposalPreview={proposalPreview}
+            
+            sidebar={<RepoVault ref={vaultRef} repoId={repoId} onOpenFile={openFile} fileStatusById={fileStatusById} />}
+            fileStatusById={fileStatusById}
+            onFileStatus={onFileStatus}
+            rightChamber={
+              <HiddenChamber
+                repoId={repoId}
+                mode={chamberMode}
+                onToggleMode={toggleMode}
+                fileStatusById={fileStatusById}
+                maintenance={effectiveMaintenance}
+                onResummarizeDone={() => {
+                  setMaintenance(null);
+                  setChatReloadToken((v) => v + 1);
+                }}
+              />
+            }
+            rightChamberWidth={CHAMBER_WIDTH}
+            rightChamberOpen={true}
+          />
+
+        </div>
+      </div>
+    </VestarynFrame>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// HiddenChamber (top-level, outside ChamberWithVault)
+// ─────────────────────────────────────────────────────────────
 function HiddenChamber(props: {
+  repoId: string;
   mode: "vault" | "memory" | "handover" | "sql" | null;
   onToggleMode: (m: "vault" | "memory" | "handover" | "sql") => void;
   fileStatusById: Record<
     string,
     { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
   >;
+  maintenance?: any;
+  onResummarizeDone?: () => void;
 }) {
-  const { mode, onToggleMode, fileStatusById } = props;
+  const { repoId, mode, onToggleMode, fileStatusById, maintenance,onResummarizeDone, } = props;
+
+  // debug: confirm mode actually changes and chamber renders
+  useEffect(() => {
+    console.log("[HiddenChamber]", { mode, repoId });
+  }, [mode, repoId]);
+  const bootstrappedRef = useRef(false);
+  type MemoryKey = "master-summary" | "chamber-state" | "path-tree" | "ledger";
+  const [memoryKey, setMemoryKey] = useState<MemoryKey>("master-summary");
+  const [memoryDoc, setMemoryDoc] = useState<{
+    content: string;
+    updated_at?: string | null;
+  } | null>(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [resummarizing, setResummarizing] = useState(false);
+
+  // Bootstrap memory docs when Memory opens
+useEffect(() => {
+  if (mode !== "memory") return;
+  if (bootstrappedRef.current) return;
+
+  bootstrappedRef.current = true;
+
+  console.log("[memory] bootstrap firing (once)", repoId);
+  fetch(`/api/repo/${repoId}/memory/bootstrap`, { method: "POST" })
+    .then((r) => console.log("[memory] bootstrap status", r.status))
+    .catch((e) => console.log("[memory] bootstrap error", e));
+}, [mode, repoId]);
+
+  // Load selected memory doc
+  useEffect(() => {
+    if (mode !== "memory") return;
+
+    setMemoryLoading(true);
+    fetch(`/api/repo/${repoId}/memory?key=${encodeURIComponent(memoryKey)}`, {
+      cache: "no-store",
+    })
+      .then((r) => r.json())
+      .then((j) => setMemoryDoc(j?.doc ?? null))
+      .catch(() => setMemoryDoc(null))
+      .finally(() => setMemoryLoading(false));
+  }, [mode, repoId, memoryKey]);
 
   const total = Object.keys(fileStatusById).length;
   const counts = Object.values(fileStatusById).reduce((acc, s) => {
@@ -410,11 +533,16 @@ function HiddenChamber(props: {
 
   const allGreen = total > 0 && ok === total;
 
-  const btn = (m: string) =>
-    mode === m ? "bg-white/10 ring-1 ring-white/20" : "bg-white/5 hover:bg-white/10";
+const btn = (m: string) =>
+  mode === m
+    ? "bg-blue-500/20 border border-blue-400/40 text-white"
+    : "bg-white/5 hover:bg-white/10 text-white/70";
 
-  return (
-    <div className="h-full w-full p-3 flex flex-col gap-3">
+return (
+  <div className="h-full w-full p-3 flex flex-col gap-3">
+    <div className="text-[10px] uppercase tracking-widest text-white/40">
+      Chamber
+    </div>
       {/* Mode bar */}
       <div className="flex items-center gap-2 p-2 rounded-xl bg-black/20 ring-1 ring-white/10">
         <button
@@ -447,12 +575,73 @@ function HiddenChamber(props: {
         </div>
       </div>
 
+{maintenance && (
+  <div className="rounded-lg border border-blue-400/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-100/80">
+    <div className="flex items-center justify-between gap-3">
+      <div>
+        {(() => {
+          const cap = Number(maintenance.cap ?? 0) || 0;
+          const rawCount = Number(maintenance.count ?? 0) || 0;
+          const count = cap > 0 ? Math.min(rawCount, cap) : rawCount;
+
+          return (
+            <>
+              Chamber memory nearing limit
+              {cap > 0 ? ` (${count}/${cap})` : ""}
+            </>
+          );
+        })()}
+      </div>
+
+      <button
+        type="button"
+        disabled={resummarizing}
+        onClick={async () => {
+          try {
+            setResummarizing(true);
+
+            const res = await fetch(`/api/repo/${repoId}/maintenance/resummarize`, {
+              method: "POST",
+            });
+
+            const j = await res.json().catch(() => null);
+
+            if (!res.ok) {
+              throw new Error(j?.error || `resummarize failed (${res.status})`);
+            }
+
+          setMemoryKey("master-summary");
+          setMemoryLoading(true);
+
+          fetch(`/api/repo/${repoId}/memory?key=${encodeURIComponent("master-summary")}`, {
+            cache: "no-store",
+          })
+            .then((r) => r.json())
+            .then((j) => setMemoryDoc(j?.doc ?? null))
+            .catch(() => setMemoryDoc(null))
+            .finally(() => setMemoryLoading(false));
+
+          onResummarizeDone?.();
+
+          } catch (e) {
+            console.error("[resummarize] failed", e);
+          } finally {
+            setResummarizing(false);
+          }
+        }}
+        className="shrink-0 rounded-md border border-blue-300/20 bg-blue-400/10 px-2 py-1 text-[11px] text-blue-100 hover:bg-blue-400/15 disabled:opacity-50"
+      >
+        {resummarizing ? "Running..." : "Re-summarize now"}
+      </button>
+    </div>
+  </div>
+)}
+
       {/* Content */}
       <div className="flex-1 rounded-xl bg-black/30 ring-1 ring-white/10 p-3 overflow-auto">
-        
+        {mode === null && (
           <div className="text-sm text-white/70">
             <div className="text-white/90 font-medium mb-2">Vault Status</div>
-
             <div className="space-y-1">
               <div>Files tracked: {total}</div>
               <div className="text-emerald-200/80">ok: {ok}</div>
@@ -460,35 +649,13 @@ function HiddenChamber(props: {
               <div className="text-amber-200/80">warn: {warn}</div>
               <div className="text-rose-200/80">error: {error}</div>
             </div>
-
-            {allGreen ? (
-              <div className="mt-4 border-t border-white/10 pt-3">
-                <div className="text-emerald-200/90 mb-2">All files verified ✔</div>
-
-                <button
-                  className="w-full px-3 py-2 rounded-lg bg-emerald-500/20 border border-emerald-400/40 hover:bg-emerald-500/30 text-white"
-                  disabled
-                  title="Future: git commit"
-                >
-                  Commit (future)
-                </button>
-
-                <div className="mt-2 text-[11px] text-white/40">
-                  Next: hook this to a repo commit action once we have a commits table / runner command.
-                </div>
-              </div>
-            ) : (
-              <div className="mt-3 text-[11px] text-white/45">
-                Commit unlocks when everything is green.
-              </div>
-            )}
+            <div className="mt-3 text-[11px] text-white/45">Pick a mode above.</div>
           </div>
-        
+        )}
 
         {mode === "vault" && (
           <div className="text-sm text-white/70">
             <div className="text-white/90 font-medium mb-2">Vault</div>
-
             <div className="space-y-1">
               <div>Files tracked: {total}</div>
               <div className="text-emerald-200/80">ok: {ok}</div>
@@ -519,8 +686,76 @@ function HiddenChamber(props: {
         {mode === "memory" && (
           <div className="text-sm text-white/70">
             <div className="text-white/90 font-medium mb-2">Memory</div>
-            <div className="text-xs text-white/50">
-              Placeholder: memory targets + engraving pane.
+
+            {/* Tabs */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <button
+                className={`px-2 py-1.5 rounded-lg text-xs ${
+                  memoryKey === "master-summary"
+                    ? "bg-white/10 ring-1 ring-white/15"
+                    : "bg-white/5 hover:bg-white/10"
+                }`}
+                onClick={() => setMemoryKey("master-summary")}
+              >
+                Master
+              </button>
+
+              <button
+                className={`px-2 py-1.5 rounded-lg text-xs ${
+                  memoryKey === "chamber-state"
+                    ? "bg-white/10 ring-1 ring-white/15"
+                    : "bg-white/5 hover:bg-white/10"
+                }`}
+                onClick={() => setMemoryKey("chamber-state")}
+              >
+                Chamber
+              </button>
+
+              <button
+                className={`px-2 py-1.5 rounded-lg text-xs ${
+                  memoryKey === "path-tree"
+                    ? "bg-white/10 ring-1 ring-white/15"
+                    : "bg-white/5 hover:bg-white/10"
+                }`}
+                onClick={() => setMemoryKey("path-tree")}
+              >
+                Tree
+              </button>
+
+              <button
+                className={`px-2 py-1.5 rounded-lg text-xs ${
+                  memoryKey === "ledger"
+                    ? "bg-white/10 ring-1 ring-white/15"
+                    : "bg-white/5 hover:bg-white/10"
+                }`}
+                onClick={() => setMemoryKey("ledger")}
+              >
+                Ledger
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="rounded-xl bg-black/30 ring-1 ring-white/10 p-3">
+              {memoryLoading ? (
+                <div className="text-xs text-white/40">Loading…</div>
+              ) : (
+                <>
+                  <div className="text-[10px] uppercase tracking-widest text-white/40 mb-2">
+                    {memoryKey}
+                  </div>
+
+                  <pre className="whitespace-pre-wrap text-[12px] text-white/75">
+                    {(memoryDoc?.content ?? "").trim() ||
+                      "Empty. Will be filled after prune."}
+                  </pre>
+
+                  <div className="mt-3 text-[11px] text-white/35">
+                  {memoryDoc?.updated_at
+                    ? `Updated: ${new Date(memoryDoc.updated_at).toLocaleString()}`
+                    : ""}
+                </div>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -528,28 +763,23 @@ function HiddenChamber(props: {
         {mode === "handover" && (
           <div className="text-sm text-white/70">
             <div className="text-white/90 font-medium mb-2">Handover</div>
-            <div className="text-xs text-white/50">
-              Placeholder: master handover composer.
-            </div>
+            <div className="text-xs text-white/50">Placeholder.</div>
           </div>
         )}
 
         {mode === "sql" && (
           <div className="text-sm text-white/70">
             <div className="text-white/90 font-medium mb-2">SQL</div>
-            <div className="text-xs text-white/50">
-              Placeholder: schema/migrations staging.
-            </div>
+            <div className="text-xs text-white/50">Placeholder.</div>
           </div>
         )}
       </div>
 
-      {/* Footer hint */}
       <div className="text-[11px] text-white/40">
         Click a mode to open; click it again to close.
       </div>
     </div>
 
+    
   );
-}
 }

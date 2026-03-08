@@ -103,7 +103,9 @@ export default function RepoHud({
   const shownCredits = credits === null ? "…" : credits.toLocaleString();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  
+
+  const [maintenance, setMaintenance] = useState<null | { count?: number; cap?: number; reason?: string }>(null);
+  const maintTimerRef = useRef<number | null>(null);
 
 useEffect(() => {
   let cancelled = false;
@@ -136,6 +138,27 @@ useEffect(() => {
   return () => {
     cancelled = true;
     window.removeEventListener("focus", load);
+  };
+}, []);
+
+useEffect(() => {
+  function onMaint(e: Event) {
+    const ce = e as CustomEvent<any>;
+    const detail = ce.detail ?? {};
+    setMaintenance({
+      count: Number(detail.count) || undefined,
+      cap: Number(detail.cap) || undefined,
+      reason: String(detail.reason ?? ""),
+    });
+
+    if (maintTimerRef.current) window.clearTimeout(maintTimerRef.current);
+    maintTimerRef.current = window.setTimeout(() => setMaintenance(null), 6000);
+  }
+
+  window.addEventListener("vestaryn:maintenance", onMaint as any);
+  return () => {
+    window.removeEventListener("vestaryn:maintenance", onMaint as any);
+    if (maintTimerRef.current) window.clearTimeout(maintTimerRef.current);
   };
 }, []);
 
@@ -180,6 +203,30 @@ useEffect(() => {
   return () => window.removeEventListener("vestaryn:credits", onCredits as any);
 }, []);
 
+useEffect(() => {
+  function onMaint(e: Event) {
+    const ce = e as CustomEvent<any>;
+    const detail = ce.detail ?? {};
+
+    console.log("[RepoHud] maintenance event received", detail);
+
+    setMaintenance({
+      count: Number(detail.count) || undefined,
+      cap: Number(detail.cap) || undefined,
+      reason: String(detail.reason ?? ""),
+    });
+
+    if (maintTimerRef.current) window.clearTimeout(maintTimerRef.current);
+    maintTimerRef.current = window.setTimeout(() => setMaintenance(null), 6000);
+  }
+
+  window.addEventListener("vestaryn:maintenance", onMaint as any);
+  return () => {
+    window.removeEventListener("vestaryn:maintenance", onMaint as any);
+    if (maintTimerRef.current) window.clearTimeout(maintTimerRef.current);
+  };
+}, []);
+
 async function onLogout() {
   setOpen(false);
   const supabase = supabaseBrowser();
@@ -217,6 +264,16 @@ async function onLogout() {
         <span className="text-[11px] rounded-md border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 text-amber-100/80 whitespace-nowrap">
           {shownCredits}
         </span>
+
+        {maintenance && (
+          <span
+            className="text-[11px] rounded-md border border-blue-400/20 bg-blue-500/10 px-2 py-0.5 text-blue-100/80 whitespace-nowrap"
+            title="Chamber maintenance recommended"
+          >
+            resummarize
+            {maintenance.count && maintenance.cap ? ` ${maintenance.count}/${maintenance.cap}` : ""}
+          </span>
+        )}
 
         <span className="ml-1 text-white/30 text-xs">▾</span>
       </button>

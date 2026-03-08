@@ -38,6 +38,12 @@ function inferMime(name: string) {
   if (n.endsWith(".css")) return "text/css";
   return "text/plain";
 }
+function isExplicitEditIntent(text: string) {
+  return /refine|improve|rewrite|clean up|cleanup|harden|extend|modify|edit|tighten|fix/i.test(
+    text || ""
+  );
+}
+
 
 function json(body: any, status = 200) {
   return NextResponse.json(body, {
@@ -66,16 +72,27 @@ export async function POST(req: Request, ctx: Ctx) {
   const vaultBucket = process.env.VAULT_BUCKET ?? "vestaryn-files";
 
   // Parse payload
-  const body = await req.json().catch(() => ({}));
-  const name = String(body?.name ?? "").trim();
-  const content = String(body?.content ?? "");
+const body = await req.json()
 
-  // Validate file name (prevent path traversal / nested paths)
-  if (!name) return json({ error: "File name required" }, 400);
+const rawPath = String(body?.path ?? body?.name ?? "").trim();
+const content = String(body?.content ?? "");
 
-  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
-    return json({ error: "Invalid file name" }, 400);
-  }
+if (!rawPath) return json({ error: "Path required" }, 400);
+
+// normalize path
+const path = rawPath
+  .replace(/\\/g, "/")
+  .replace(/^\/+/, "")
+  .replace(/\/{2,}/g, "/")
+  .trim();
+
+if (!path) return json({ error: "Path required" }, 400);
+if (path.includes("..")) return json({ error: "Invalid path" }, 400);
+if (path.endsWith("/")) return json({ error: "Invalid path" }, 400);
+
+// derive basename
+const name = path.split("/").filter(Boolean).pop() ?? "";
+if (!name) return json({ error: "Invalid path" }, 400);
 
   // IDs + encoding
   const fileId = randomUUID();
@@ -94,7 +111,7 @@ export async function POST(req: Request, ctx: Ctx) {
     .insert({
       id: fileId,
       repo_id: repoId,
-      path: name,
+      path,
       name,
       mime,
       size_bytes: buf.byteLength,
@@ -119,11 +136,11 @@ export async function POST(req: Request, ctx: Ctx) {
 
   // Rollback on upload failure (hard delete DB row)
   if (upErr) {
-    await supabase
-      .from(process.env.VAULT_BUCKET ?? "repo_files")
-      .delete()
-      .eq("id", fileId)
-      .eq("repo_id", repoId);
+await supabase
+  .from("repo_files")
+  .delete()
+  .eq("id", fileId)
+  .eq("repo_id", repoId);
     return json({ error: upErr.message }, 400);
   }
 

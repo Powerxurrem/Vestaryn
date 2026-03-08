@@ -74,7 +74,11 @@ export type RepoVaultHandle = {
 const RepoVault = forwardRef<RepoVaultHandle, {
   repoId: string;
   onOpenFile: (file: RepoFile) => void;
-}>(function RepoVault({ repoId, onOpenFile }, ref) {
+  fileStatusById?: Record<
+    string,
+    { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
+  >;
+}>(function RepoVault({ repoId, onOpenFile, fileStatusById }, ref) {
   // ─────────────────────────────────────────────────────────────
   // State
   // ─────────────────────────────────────────────────────────────
@@ -318,12 +322,7 @@ async function exportFile(f: RepoFile) {
       if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
 
       setMenu({ open: false, x: 0, y: 0, file: null });
-      await refresh();
 
-      // NOTE: There is a second DELETE call here in the original code.
-      // If this was intentional (e.g., legacy endpoint mismatch), keep it.
-      // Otherwise, remove to avoid double-hit and confusing logs.
-      await fetch(`/api/repos/${repoId}/files/${f.id}`, { method: "DELETE" });
     } catch (e: any) {
       setError(e?.message ?? "Delete failed");
     }
@@ -489,52 +488,94 @@ async function exportFile(f: RepoFile) {
           <div className="p-3 text-sm text-white/50">No files yet.</div>
         ) : (
           <ul className="p-2 space-y-1">
-            {prettyFiles.map((f) => (
-              <li key={f.id}>
-                <div className="flex items-stretch gap-1">
-                  <button
-                    className={[
-                      "flex-1 text-left px-2 py-2 rounded-md",
-                      "hover:bg-white/10",
-                      selectedId === f.id ? "bg-white/12" : "bg-transparent",
-                    ].join(" ")}
-                    onClick={() => {
-                      setSelectedId(f.id);
-                      onOpenFile(f);
-                    }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setSelectedId(f.id);
-                      openMenuAt(e.clientX, e.clientY, f);
-                    }}
-                  >
-                    <div className="text-sm text-white truncate">{f.path}</div>
-                    <div className="text-xs text-white/50 truncate">
-                      {f.mime} • {Math.round((f.size_bytes || 0) / 1024)} KB
-                    </div>
-                  </button>
+{prettyFiles.map((f) => {
+  const st = fileStatusById?.[f.id];
+  const status = st?.status;
 
-                  {/* Fallback menu button (works everywhere) */}
-                  <button
-                    className="px-2 rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
-                    title="Actions"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      setSelectedId(f.id);
-                      openMenuAt(
-                        Math.round(rect.left),
-                        Math.round(rect.bottom + 6),
-                        f
-                      );
-                    }}
-                  >
-                    ⋯
-                  </button>
-                </div>
-              </li>
-            ))}
+  return (
+    <li key={f.id}>
+      <div className="flex items-stretch gap-1">
+        <button
+          className={[
+            "flex-1 text-left px-2 py-2 rounded-md",
+            "hover:bg-white/10",
+            selectedId === f.id ? "bg-white/12" : "bg-transparent",
+          ].join(" ")}
+          onClick={() => {
+            setSelectedId(f.id);
+            onOpenFile(f);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setSelectedId(f.id);
+            openMenuAt(e.clientX, e.clientY, f);
+          }}
+        >
+<div className="flex items-center gap-2">
+  <span
+    title={st?.reason ?? ""}
+    className={[
+      "shrink-0 h-2.5 w-2.5 rounded-full",
+      status === "ok"
+        ? "bg-emerald-400"
+        : status === "pending"
+        ? "bg-amber-400 animate-pulse"
+        : status === "warn"
+        ? "bg-orange-400"
+        : status === "error"
+        ? "bg-rose-400"
+        : "bg-white/20",
+    ].join(" ")}
+  />
+
+  <div className="text-sm text-white truncate flex-1">{f.path}</div>
+
+  {status ? (
+    <span
+      title={st?.reason ?? ""}
+      className={[
+        "shrink-0 rounded-md px-2 py-0.5 text-[10px] border whitespace-nowrap",
+        status === "ok"
+          ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
+          : status === "pending"
+          ? "border-amber-400/25 bg-amber-500/10 text-amber-200"
+          : status === "warn"
+          ? "border-orange-400/25 bg-orange-500/10 text-orange-200"
+          : "border-rose-400/25 bg-rose-500/10 text-rose-200",
+      ].join(" ")}
+    >
+      {status === "pending" ? "VERIFYING" : status.toUpperCase()}
+    </span>
+  ) : null}
+</div>
+
+          <div className="text-xs text-white/50 truncate">
+            {f.mime} • {Math.round((f.size_bytes || 0) / 1024)} KB
+          </div>
+        </button>
+
+        {/* Fallback menu button (works everywhere) */}
+        <button
+          className="px-2 rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
+          title="Actions"
+          onClick={(e) => {
+            e.stopPropagation();
+            const rect = e.currentTarget.getBoundingClientRect();
+            setSelectedId(f.id);
+            openMenuAt(
+              Math.round(rect.left),
+              Math.round(rect.bottom + 6),
+              f
+            );
+          }}
+        >
+          ⋯
+        </button>
+      </div>
+    </li>
+  );
+})}
           </ul>
         )}
       </div>
@@ -619,12 +660,12 @@ async function exportFile(f: RepoFile) {
               <div className="p-4 border-b border-white/10">
                 <div className="text-sm text-white/80">Create file</div>
                 <div className="text-xs text-white/50 mt-1">
-                  Creates an empty file in this repo.
+                  Creates an empty file at the given repo path.
                 </div>
               </div>
 
               <div className="p-4 space-y-2">
-                <label className="block text-xs text-white/60">File name</label>
+                <label className="block text-xs text-white/60">Path</label>
                 <input
                   className="w-full px-3 py-2 rounded-md bg-white/5 border border-white/10 text-sm text-white outline-none focus:border-white/20"
                   value={createName}
@@ -634,7 +675,7 @@ async function exportFile(f: RepoFile) {
                     if (e.key === "Enter") createFile();
                     if (e.key === "Escape" && !creating) setCreateOpen(false);
                   }}
-                  placeholder="e.g. notes.md"
+                  placeholder="e.g. app/api/users/route.ts"
                   disabled={creating}
                 />
               </div>
