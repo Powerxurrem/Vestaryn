@@ -417,7 +417,7 @@ const markFileUpdated = useCallback(
     onMessageStats={setMsgStats}
     onMaintenance={setMaintenance}
     
-    
+     
 onProposalPreview={(proposals) => {
   if (!proposals) {
     setProposalPreviewByFileId({});
