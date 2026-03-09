@@ -5,14 +5,13 @@ import { supabaseServerComponent } from "@/lib/supabase/server";
 
 type PublicTier = Exclude<VestarynTier, "admin">;
 
-const ORDER: PublicTier[] = ["free", "builder", "pro", "elite"];
+const ORDER: PublicTier[] = ["free", "early_access", "builder", "pro", "elite"];
 
 function fmt(n: number) {
   return n.toLocaleString();
 }
 
 function modelLabel(p: TierPolicy) {
-  // e.g. "gpt-5.2 (premium)"
   return `${p.model} (${p.modelClass})`;
 }
 
@@ -30,6 +29,8 @@ function tagline(tier: PublicTier) {
   switch (tier) {
     case "free":
       return "Try the chamber with tight limits.";
+    case "early_access":
+      return "Early access to Vestaryn with guided limits and active iteration.";
     case "builder":
       return "Daily building with exports + more headroom.";
     case "pro":
@@ -43,6 +44,8 @@ function bestFor(tier: PublicTier) {
   switch (tier) {
     case "free":
       return "Best for: exploration + light edits.";
+    case "early_access":
+      return "Best for: early adopters helping shape the system.";
     case "builder":
       return "Best for: consistent iteration + sharing outputs.";
     case "pro":
@@ -58,7 +61,6 @@ function primaryBullets(p: TierPolicy) {
   const tools = p.tools;
   const budget = p.budget;
 
-  // Keep these “marketing bullets” stable + readable.
   const bullets: string[] = [];
 
   bullets.push(`Credits / month: ${fmt(budget.creditsPerPeriod)}`);
@@ -210,15 +212,15 @@ function ComparisonTable({ tiers }: { tiers: Record<PublicTier, TierPolicy> }) {
   );
 }
 
- export default async function PricingPage() {
+export default async function PricingPage() {
   const tiers = {
     free: TIER_POLICIES.free,
+    early_access: TIER_POLICIES.early_access,
     builder: TIER_POLICIES.builder,
     pro: TIER_POLICIES.pro,
     elite: TIER_POLICIES.elite,
   } satisfies Record<PublicTier, TierPolicy>;
 
-  // Optional: show current tier if you persist it (your canon does: workspace_credit_balances.tier)
   let currentTier: PublicTier | null = null;
 
   try {
@@ -237,11 +239,10 @@ function ComparisonTable({ tiers }: { tiers: Record<PublicTier, TierPolicy> }) {
       const workspaceId = membership?.[0]?.workspace_id;
 
       if (workspaceId) {
-        // Compute UTC month start: YYYY-MM-01
         const now = new Date();
         const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
           .toISOString()
-          .slice(0, 10); // date
+          .slice(0, 10);
 
         const { data: bal, error: balErr } = await supabase
           .from("workspace_credit_balances")
@@ -252,7 +253,15 @@ function ComparisonTable({ tiers }: { tiers: Record<PublicTier, TierPolicy> }) {
 
         if (!balErr) {
           const t = (bal as any)?.tier as string | undefined;
-          if (t === "free" || t === "builder" || t === "pro" || t === "elite") currentTier = t;
+          if (
+            t === "free" ||
+            t === "early_access" ||
+            t === "builder" ||
+            t === "pro" ||
+            t === "elite"
+          ) {
+            currentTier = t;
+          }
         }
       }
     }
@@ -316,4 +325,3 @@ function ComparisonTable({ tiers }: { tiers: Record<PublicTier, TierPolicy> }) {
     </div>
   );
 }
-  
