@@ -66,9 +66,10 @@ const isAdminAllowed =
   process.env.NODE_ENV !== "production" ||
   process.env.VESTARYN_ALLOW_ADMIN_TIER === "1";
 
-const { policy: tierPolicy, meta: tierMeta } =
-  resolveTierPolicyWithMeta(requestedTier, { isAdminAllowed });
-
+const { policy: tierPolicy, meta: tierMeta } = resolveTierPolicyWithMeta(requestedTier, {
+  isAdminAllowed,
+  forcedTier: "early_access",
+});
 // ✅ This line ensures tierMeta is "read" so TS is happy
 console.log("[tier]", tierMeta);
 

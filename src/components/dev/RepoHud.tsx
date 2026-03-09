@@ -9,16 +9,21 @@ import {
 import { supabaseBrowser } from "@/lib/supabase/client";
 
 
-type Tier = "free" | "builder" | "pro" | "elite";
+type Tier = "free" | "early_access" | "builder" | "pro" | "elite";
 
 const TIER_KEY = "vestaryn.tier";
 
 function getTier(): Tier {
   const v =
     typeof window !== "undefined" ? localStorage.getItem(TIER_KEY) : null;
-  return v === "builder" || v === "pro" || v === "elite" ? v : "free";
+  return v === "early_access" || v === "builder" || v === "pro" || v === "elite"
+    ? v
+    : "free";
 }
-
+function titleCaseTier(tier: Tier) {
+  if (tier === "early_access") return "Early Access";
+  return tier.slice(0, 1).toUpperCase() + tier.slice(1);
+}
 function titleCase(s: string) {
   return s.slice(0, 1).toUpperCase() + s.slice(1);
 }
@@ -124,15 +129,17 @@ useEffect(() => {
       const j = await res.json();
       if (cancelled) return;
 
-      setTierDb(
-        j.tier === "builder" || j.tier === "pro" || j.tier === "elite" ? j.tier : "free"
-      );
+setTierDb(
+  j.tier === "early_access" || j.tier === "builder" || j.tier === "pro" || j.tier === "elite"
+    ? j.tier
+    : "free"
+);
       setCredits(typeof j.credits === "number" ? j.credits : Number(j.credits));
     } catch {
       // ignore for now
     }
   }
-
+{titleCaseTier(tierDb)}
   load();
   window.addEventListener("focus", load);
   return () => {

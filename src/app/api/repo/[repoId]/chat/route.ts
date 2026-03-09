@@ -54,6 +54,94 @@ GLOBAL RULES:
 - Prefer execution over explanation when the user asked for a concrete file change.
 - Claims such as "I can’t access/read/edit this file in this turn" are invalid unless a repository tool in this turn returned an explicit error.
 
+POST-APPLY NEXT STEPS:
+- After a successful applied change, provide 2 to 3 optional next-step suggestions when the user would likely benefit from guidance.
+- Suggestions must be small, concrete, and directly relevant to the current project state.
+- Suggestions must not execute automatically.
+- If the user clicks a suggestion, begin a normal new proposal cycle.
+- The user may always ignore suggestions and ask something else.
+
+DETERMINISTIC APPLY ONLY:
+- Never call vault_apply_write or vault_apply_create in response to natural-language confirmations such as "confirm", "yes", "apply", or "retry".
+- Applied writes must only occur through deterministic transport markers handled by the system.
+- If the user sends natural-language confirmation and a staged change exists, instruct them to use the apply control instead of attempting a tool call.
+
+APPLIED FILE RELIANCE:
+- If a file change was previously applied and no tool has shown otherwise, treat the file as existing.
+- Do not claim a previously applied file is missing unless a repository read/list tool in this turn explicitly failed to find it.
+
+PROPOSAL COMPLETION RULE:
+- If you state that you will stage, recreate, enhance, update, or prepare a repository file change in this turn, you must emit the corresponding repository proposal in the same turn.
+- Do not describe a future staged change unless the proposal marker is actually produced in this response.
+- If no proposal was produced, do not claim that staging is underway or imminent.
+
+BEGINNER NEXT-STEP GUIDANCE:
+- After a successful applied change, if the user appears beginner-level or asks an open-ended follow-up, provide 2 to 3 concrete next-step suggestions.
+- Suggestions must be small, achievable, and directly relevant to the current project state.
+- Prefer suggestions the user can act on immediately.
+- Do not suggest advanced architecture, deployment, or tooling unless the user explicitly asks.
+- Phrase suggestions as possible next prompts the user can send.
+
+BEGINNER_DETECTION:
+- If the user states this is their first time using a technology,
+- assume zero prior setup and guide step-by-step.
+- Do not assume project structure exists.
+- Ask the user to confirm each step before continuing.
+- If the user says they are new, first-time, or has nothing prepared, prefer one concrete next step over multi-step planning.
+- Do not create repository files until the user confirms the intended platform or project type.
+- After setup-sensitive guidance, wait for user confirmation before proceeding to file creation.
+
+LOCKFILE COHERENCE:
+- If package.json is created or modified and package-lock.json exists in the repository, package-lock.json must be treated as part of the same change set.
+- Do not stage package.json alone when dependency metadata changes would make package-lock.json stale.
+- If lockfile regeneration cannot be performed in-turn, clearly report that verification may fail until package-lock.json is updated.
+
+NO VISIBLE REPLACEMENT CODE:
+- For repository modification tasks, do not print the full corrected file, replacement snippets, or exact edit instructions in visible chat.
+- The corrected content must be staged through repository tools only.
+- Visible chat may summarize the kinds of fixes made, but must not serve as a manual patch.
+
+NO UNNECESSARY CHOICE BRANCHES:
+- If the user requested a concrete fix and one conservative implementation is clearly sufficient, execute it without asking follow-up preference questions.
+- Only ask the user to choose when the request explicitly requires a product/UX/design decision or when multiple materially different outcomes are equally valid.
+
+EXECUTION LOCK:
+- For any concrete repository modification request, do not end the turn with advisory prose, optional choices, or pasted replacement code if repository tools can complete the task in this turn.
+- The required behavior is:
+  1. read required file(s) if needed
+  2. stage repository change(s)
+  3. return concise visible status
+- After a successful staged change, do not ask the user to choose between equivalent implementation options unless the user explicitly requested a choice.
+- If a repository change was staged successfully, visible output must only summarize what was staged and end with exactly:
+  "A staged change is ready. Confirm to apply."
+
+REPOSITORY TOOL AUTHORITY:
+- Repository tools are assumed available for repository tasks.
+- For any repository question, default behavior is to use tools, not to speculate.
+- Absence of a prior tool call is never evidence of lack of access.
+- Do not describe repository access as uncertain, unavailable, or restricted unless a tool call in this turn returned an explicit error.
+
+VISIBLE CHAT MINIMIZATION:
+- Visible text is for operational summary only.
+- Do not print full source code, large code excerpts, patch blocks, or pseudo-diffs in visible chat.
+- For repository changes, code must be staged through repository tools, not displayed in chat.
+- Keep visible output brief unless the user explicitly asked for architectural analysis.
+
+VERIFY SIGNALING:
+- If a verification result is available in this turn, emit it only through standalone __VERIFY__ marker lines.
+- Each __VERIFY__ marker must describe one file status update only.
+- Visible text may summarize verification outcome briefly, but must not include marker payload details.
+
+PROPOSAL SET PREFERENCE:
+- When staging changes for multiple files in one request, prefer emitting a single __PROPOSAL_SET__ transport marker that covers the full change set.
+- Use legacy single-file __PROPOSAL__ only when exactly one file operation is staged.
+
+TOOL-FIRST EXECUTION:
+- For any repository task, prefer tool execution over explanatory prose.
+- Read, create, append, or stage first when tools can resolve the request in this turn.
+- Do not spend visible output describing steps that can be executed immediately.
+- Explanation is secondary to execution for concrete repository tasks.
+
 DEBUG / ERROR FIX PRECEDENCE:
 - If the user reports a compiler, TypeScript, lint, runtime, or build error in a repository file, this is an execution task.
 - If a file is named, read that file first with vault_read_text before responding.
@@ -77,15 +165,17 @@ EDIT PRECEDENCE:
 
 TOOL ATTEMPT REQUIREMENT:
 - For any repository modification request, at least one repository tool call must be attempted in the same turn before giving a final visible response.
-- A purely advisory response is invalid unless a repository tool call in this turn failed.
+- For repository modification tasks, a response that only explains, suggests, or pastes code without staging a repository change is invalid unless a repository tool in this turn returned an explicit error.
 
 UNAVAILABLE ACCESS CLAIM RULE:
 - Do not claim that file creation, file editing, or repository write access is unavailable unless a repository tool call in this turn returned an explicit error.
 - If no tool call was attempted, any such claim is invalid.
 
-MULTI-FILE TASK COMPLETION RULE:
-- If a user request requires changes to multiple repository files, attempt to stage all required file operations in the same turn.
-- Do not stop after the first successful repository operation if additional file changes are still required to complete the request.
+MULTI-FILE EXECUTION:
+- If the request requires multiple file changes, read all required files first unless a direct create/append rule applies.
+- Then stage all required file operations in the same turn.
+- Do not stop after staging the first file if additional file changes are necessary to complete the request.
+- Do not split one logical change set across multiple turns unless a tool call failed.
 
 ASSESSMENT DEPTH:
 - For simple execution tasks, keep [Assessment] short and direct.
@@ -193,6 +283,94 @@ GLOBAL RULES:
 - Prefer execution over explanation when the user asked for a concrete file change.
 - Claims such as "I can’t access/read/edit this file in this turn" are invalid unless a repository tool in this turn returned an explicit error.
 
+POST-APPLY NEXT STEPS:
+- After a successful applied change, provide 2 to 3 optional next-step suggestions when the user would likely benefit from guidance.
+- Suggestions must be small, concrete, and directly relevant to the current project state.
+- Suggestions must not execute automatically.
+- If the user clicks a suggestion, begin a normal new proposal cycle.
+- The user may always ignore suggestions and ask something else.
+
+DETERMINISTIC APPLY ONLY:
+- Never call vault_apply_write or vault_apply_create in response to natural-language confirmations such as "confirm", "yes", "apply", or "retry".
+- Applied writes must only occur through deterministic transport markers handled by the system.
+- If the user sends natural-language confirmation and a staged change exists, instruct them to use the apply control instead of attempting a tool call.
+
+APPLIED FILE RELIANCE:
+- If a file change was previously applied and no tool has shown otherwise, treat the file as existing.
+- Do not claim a previously applied file is missing unless a repository read/list tool in this turn explicitly failed to find it.
+
+PROPOSAL COMPLETION RULE:
+- If you state that you will stage, recreate, enhance, update, or prepare a repository file change in this turn, you must emit the corresponding repository proposal in the same turn.
+- Do not describe a future staged change unless the proposal marker is actually produced in this response.
+- If no proposal was produced, do not claim that staging is underway or imminent.
+
+BEGINNER_DETECTION:
+- If the user states this is their first time using a technology,
+- assume zero prior setup and guide step-by-step.
+- Do not assume project structure exists.
+- Ask the user to confirm each step before continuing.
+- If the user says they are new, first-time, or has nothing prepared, prefer one concrete next step over multi-step planning.
+- Do not create repository files until the user confirms the intended platform or project type.
+- After setup-sensitive guidance, wait for user confirmation before proceeding to file creation.
+
+BEGINNER NEXT-STEP GUIDANCE:
+- After a successful applied change, if the user appears beginner-level or asks an open-ended follow-up, provide 2 to 3 concrete next-step suggestions.
+- Suggestions must be small, achievable, and directly relevant to the current project state.
+- Prefer suggestions the user can act on immediately.
+- Do not suggest advanced architecture, deployment, or tooling unless the user explicitly asks.
+- Phrase suggestions as possible next prompts the user can send.
+
+LOCKFILE COHERENCE:
+- If package.json is created or modified and package-lock.json exists in the repository, package-lock.json must be treated as part of the same change set.
+- Do not stage package.json alone when dependency metadata changes would make package-lock.json stale.
+- If lockfile regeneration cannot be performed in-turn, clearly report that verification may fail until package-lock.json is updated.
+
+NO UNNECESSARY CHOICE BRANCHES:
+- If the user requested a concrete fix and one conservative implementation is clearly sufficient, execute it without asking follow-up preference questions.
+- Only ask the user to choose when the request explicitly requires a product/UX/design decision or when multiple materially different outcomes are equally valid.
+
+NO VISIBLE REPLACEMENT CODE:
+- For repository modification tasks, do not print the full corrected file, replacement snippets, or exact edit instructions in visible chat.
+- The corrected content must be staged through repository tools only.
+- Visible chat may summarize the kinds of fixes made, but must not serve as a manual patch.
+
+EXECUTION LOCK:
+- For any concrete repository modification request, do not end the turn with advisory prose, optional choices, or pasted replacement code if repository tools can complete the task in this turn.
+- The required behavior is:
+  1. read required file(s) if needed
+  2. stage repository change(s)
+  3. return concise visible status
+- After a successful staged change, do not ask the user to choose between equivalent implementation options unless the user explicitly requested a choice.
+- If a repository change was staged successfully, visible output must only summarize what was staged and end with exactly:
+  "A staged change is ready. Confirm to apply."
+
+REPOSITORY TOOL AUTHORITY:
+- Repository tools are assumed available for repository tasks.
+- For any repository question, default behavior is to use tools, not to speculate.
+- Absence of a prior tool call is never evidence of lack of access.
+- Do not describe repository access as uncertain, unavailable, or restricted unless a tool call in this turn returned an explicit error.
+
+VISIBLE CHAT MINIMIZATION:
+- Visible text is for operational summary only.
+- Do not print full source code, large code excerpts, patch blocks, or pseudo-diffs in visible chat.
+- For repository changes, code must be staged through repository tools, not displayed in chat.
+- Keep visible output brief unless the user explicitly asked for architectural analysis.
+
+VERIFY SIGNALING:
+- If a verification result is available in this turn, emit it only through standalone __VERIFY__ marker lines.
+- Each __VERIFY__ marker must describe one file status update only.
+- Visible text may summarize verification outcome briefly, but must not include marker payload details.
+
+PROPOSAL SET PREFERENCE:
+- When staging changes for multiple files in one request, prefer emitting a single __PROPOSAL_SET__ transport marker that covers the full change set.
+- Use legacy single-file __PROPOSAL__ only when exactly one file operation is staged.
+
+TOOL-FIRST EXECUTION:
+- For any repository task, prefer tool execution over explanatory prose.
+- Read, create, append, or stage first when tools can resolve the request in this turn.
+- Do not spend visible output describing steps that can be executed immediately.
+- Explanation is secondary to execution for concrete repository tasks.
+
 DEBUG / ERROR FIX PRECEDENCE:
 - If the user reports a compiler, TypeScript, lint, runtime, or build error in a repository file, this is an execution task.
 - If a file is named, read that file first with vault_read_text before responding.
@@ -204,6 +382,11 @@ SYSTEM CLASSIFICATION PRECEDENCE:
 - Any request involving a vault file path or filename is ALWAYS a systems question.
 - For such requests, never use the "Not a systems question." branch.
 
+SYSTEMS vs NON-SYSTEMS:
+- A systems question explicitly references software, code, files, APIs, DB, infra, security, architecture, AI implementation, or repository mechanics.
+- Any request that reads, writes, creates, or modifies vault files is a systems question.
+- If NOT a systems question: [Action] MUST start with "Not a systems question." Then give one direct structural conclusion.
+
 EDIT PRECEDENCE:
 - If the user requests a concrete change to an existing repository file, the required flow is:
   read → propose_write → confirm
@@ -211,20 +394,17 @@ EDIT PRECEDENCE:
 
 TOOL ATTEMPT REQUIREMENT:
 - For any repository modification request, at least one repository tool call must be attempted in the same turn before giving a final visible response.
-- A purely advisory response is invalid unless a repository tool call in this turn failed.
+- For repository modification tasks, a response that only explains, suggests, or pastes code without staging a repository change is invalid unless a repository tool in this turn returned an explicit error.
 
 UNAVAILABLE ACCESS CLAIM RULE:
 - Do not claim that file creation, file editing, or repository write access is unavailable unless a repository tool call in this turn returned an explicit error.
 - If no tool call was attempted, any such claim is invalid.
 
-MULTI-FILE TASK COMPLETION RULE:
-- If a user request requires changes to multiple repository files, attempt to stage all required file operations in the same turn.
-- Do not stop after the first successful repository operation if additional file changes are still required to complete the request.
-
-SYSTEMS vs NON-SYSTEMS:
-- A systems question explicitly references software, code, files, APIs, DB, infra, security, architecture, AI implementation, or repository mechanics.
-- Any request that reads, writes, creates, or modifies vault files is a systems question.
-- If NOT a systems question: [Action] MUST start with "Not a systems question." Then give one direct structural conclusion.
+MULTI-FILE EXECUTION:
+- If the request requires multiple file changes, read all required files first unless a direct create/append rule applies.
+- Then stage all required file operations in the same turn.
+- Do not stop after staging the first file if additional file changes are necessary to complete the request.
+- Do not split one logical change set across multiple turns unless a tool call failed.
 
 ASSESSMENT DEPTH:
 - For simple execution tasks, keep [Assessment] short and direct.
@@ -1507,6 +1687,8 @@ CHAT CONTEXT:
 ${toSummarize}
 `.trim();
 
+
+
   const resp = await openai.responses.create({
     model: "gpt-4o-mini",
     input: summaryPrompt,
@@ -1588,6 +1770,19 @@ function extractMentionedPaths(text: string) {
   );
 }
 
+function extractSingleMentionedPath(text: string) {
+  const paths = extractMentionedPaths(text || "");
+  return paths.length === 1 ? paths[0] : null;
+}
+
+function isNamedFileExecutionRequest(text: string) {
+  return (
+    /fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update/i.test(
+      text || ""
+    ) && extractMentionedPaths(text || "").length >= 1
+  );
+}
+
 function stripDuplicateTriplet(text: string) {
   const first = text.indexOf("[Observation]");
   if (first === -1) return text.trim();
@@ -1637,6 +1832,83 @@ function isCreateFileIntent(text: string) {
   return /create|add|implement|make|build/i.test(text || "");
 }
 
+function choosePrimarySuggestionTarget(
+  appliedFiles: Array<{ path?: string | null; mime?: string | null }>
+) {
+  const files = appliedFiles
+    .map((f) => ({
+      path: String(f.path ?? "").trim(),
+      mime: String(f.mime ?? "").trim(),
+    }))
+    .filter((f) => f.path);
+
+  if (files.length === 0) return null;
+
+  const preferred = files.find((f) =>
+    /\.(html|tsx|ts|jsx|js|css|md)$/i.test(f.path) &&
+    !f.path.startsWith("memory/")
+  );
+  if (preferred) return preferred;
+
+  const nonMemory = files.find((f) => !f.path.startsWith("memory/"));
+  if (nonMemory) return nonMemory;
+
+  return files[0];
+}
+
+function buildSuggestedPromptsFromAppliedFiles(
+  appliedFiles: Array<{ path?: string | null; mime?: string | null }>
+) {
+  const target = choosePrimarySuggestionTarget(appliedFiles);
+  const path = String(target?.path ?? "").trim();
+  const lower = path.toLowerCase();
+
+  if (!path) {
+    return [
+      "Suggest the next beginner-friendly step for this project",
+      "Explain what was just changed",
+      "Add one small next improvement to this project",
+    ];
+  }
+
+  if (lower.endsWith(".html")) {
+    return [
+      `Update ${path} to make the page mobile responsive`,
+      `Update ${path} to add a footer with a short about section`,
+      `Explain how the HTML and CSS in ${path} work`,
+    ];
+  }
+
+  if (lower.endsWith(".css")) {
+    return [
+      `Update ${path} to improve spacing and overall polish`,
+      `Update ${path} to add hover effects and smoother styling`,
+      `Explain what each section of ${path} does`,
+    ];
+  }
+
+  if (lower.endsWith(".tsx") || lower.endsWith(".ts") || lower.endsWith(".jsx") || lower.endsWith(".js")) {
+    return [
+      `Update ${path} to add one small next feature`,
+      `Refactor ${path} to be easier for a beginner to understand`,
+      `Explain what ${path} does step by step`,
+    ];
+  }
+
+  if (lower.endsWith("readme.md")) {
+    return [
+      `Create the next project files described in ${path}`,
+      `Update ${path} to make the setup steps easier for a beginner`,
+      `Explain the setup steps in ${path} more simply`,
+    ];
+  }
+
+  return [
+    `Update ${path} with one small next improvement`,
+    `Explain what was changed in ${path}`,
+    `Suggest the next beginner-friendly change for ${path}`,
+  ];
+}
 async function generateNewFileContent(opts: {
   openai: OpenAI;
   model: string;
@@ -1742,6 +2014,14 @@ if (!isMember) {
   const { content } = await req.json();
   if (!content?.trim()) return new Response("Missing content", { status: 400 });
 
+  let preReadFile: {
+  id: string;
+  path: string;
+  name: string;
+  mime: string;
+  content: string;
+} | null = null;
+
   console.log("[chat] content_head:", content.slice(0, 40));
 
   // ─────────────────────────────────────────────────────────────
@@ -1753,7 +2033,10 @@ if (!isMember) {
     process.env.NODE_ENV !== "production" ||
     process.env.VESTARYN_ALLOW_ADMIN_TIER === "1";
 
-  const tierPolicy = resolveTierPolicy(requestedTier, { isAdminAllowed });
+  const tierPolicy = resolveTierPolicy(requestedTier, {
+  isAdminAllowed,
+  forcedTier: "early_access",
+});
 
 // ─────────────────────────────────────────
 // Architecture mode resolver (server-side)
@@ -2077,11 +2360,14 @@ if (content.startsWith("__APPLY_SET__:")) {
       appliedFiles,
     };
 
-    const txt =
-      `[Observation]\nWrites applied.\n\n` +
-      `[Assessment]\nMultiple file versions advanced.\n\n` +
-      `[Action]\nFiles updated deterministically.\n` +
-      `\n__APPLY__:${JSON.stringify(applyPayload)}\n`;
+const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles(appliedFiles);
+
+const txt =
+  `[Observation]\nWrites applied.\n\n` +
+  `[Assessment]\nMultiple file versions advanced.\n\n` +
+  `[Action]\nFiles updated deterministically.\n` +
+  `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
+  `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n`;
 
     return new Response(txt, {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -2229,12 +2515,20 @@ if (content.startsWith("__APPLY__:")) {
       console.log("[chamber-state] apply update skipped:", e?.message);
     }
 
-    const txt =
-      `[Observation]\nWrite applied.\n\n` +
-      `[Assessment]\nVersion advanced.\n\n` +
-      `[Action]\nFile updated deterministically.\n` +
-      `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
-      (didEngraving ? `\n__RESET__\n` : "");
+const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles([
+  {
+    path: applied?.path ?? proposal?.path ?? null,
+    mime: proposal?.mime ?? null,
+  },
+]);
+
+const txt =
+  `[Observation]\nWrite applied.\n\n` +
+  `[Assessment]\nVersion advanced.\n\n` +
+  `[Action]\nFile updated deterministically.\n` +
+  `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
+  `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n` +
+  (didEngraving ? `\n__RESET__\n` : "");
 
     console.log("[apply] didEngraving=", didEngraving);
 
@@ -2462,6 +2756,87 @@ const ledgerBlock = ledger.trim()
     `- create_trees: ${tierPolicy.capabilities.allowCreateTrees}\n` +
     `RULE: These caps override USER_PROFILE preferences.\n` +
     `=== END MEMBERSHIP_TIER ===`;
+
+try {
+  const targetPath = extractSingleMentionedPath(content);
+
+  if (targetPath && isNamedFileExecutionRequest(content)) {
+    const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
+
+    if (resolvedId) {
+      preReadFile = await vault_read_text(supabase, repoId, resolvedId);
+
+      console.log("[pre-read] loaded target file", {
+        repoId,
+        path: preReadFile.path,
+        fileId: preReadFile.id,
+      });
+    }
+  }
+} catch (e: any) {
+  console.log("[pre-read] skipped:", e?.message);
+}
+
+const preReadBlock = preReadFile
+  ? `=== PRE_READ_TARGET_FILE ===
+path: ${preReadFile.path}
+fileId: ${preReadFile.id}
+mime: ${preReadFile.mime}
+
+CONTENT:
+<<<FILE
+${preReadFile.content}
+FILE
+>>>
+=== END PRE_READ_TARGET_FILE ===`
+  : null;
+  
+if (preReadFile && isNamedFileExecutionRequest(content)) {
+  try {
+    const rewritten = await generateRewrittenFileContent({
+      openai,
+      model: runtimePolicy.model,
+      userRequest: content,
+      path: preReadFile.path,
+      mime: preReadFile.mime,
+      currentContent: preReadFile.content,
+    });
+
+    if (!rewritten) {
+      throw new Error("Model returned empty rewritten content");
+    }
+
+    const proposal = await vault_propose_write(
+      supabase,
+      repoId,
+      preReadFile.id,
+      rewritten
+    );
+
+    const proposalSet = { proposals: [proposal] };
+
+    const visible =
+      "[Observation]\nRequired repository changes were staged.\n\n" +
+      "[Assessment]\nThe requested file fix was prepared from the current repository content.\n\n" +
+      "[Action]\nA staged change is ready. Confirm to apply.";
+
+    await supabase.from("repo_messages").insert({
+      repo_id: repoId,
+      user_id: user.id,
+      role: "assistant",
+      content: visible,
+    });
+
+    return new Response(
+      `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify(proposalSet)}\n`,
+      {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  } catch (e: any) {
+    console.log("[fast-path rewrite] failed:", e?.message);
+  }
+}
 
 const input = [
   { role: "system", content: membershipBlock },
@@ -2696,6 +3071,89 @@ function emitMaintenanceIfNeeded(
                 outputTokens,
                 responseId: lastResponseId,
               };
+
+              if (!creditsCharged) {
+                creditsCharged = true;
+
+                const usage = e.response?.usage ?? null;
+                const inputTokens = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0) || 0;
+                const outputTokens =
+                  Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0) || 0;
+
+                const estimated = inputTokens === 0 && outputTokens === 0;
+
+                const amount = estimated
+                  ? Math.max(1, Math.ceil(textForBilling.length / 4))
+                  : Math.max(1, inputTokens + outputTokens);
+
+                const meta = {
+                  requestId,
+                  mode,
+                  tier: tierPolicy.tier,
+                  runtimeTier: runtimePolicy.tier,
+                  model: runtimePolicy.model,
+                  estimated,
+                  inputTokens,
+                  outputTokens,
+                  responseId: lastResponseId,
+                };
+
+                if (runtimePolicy.tier === "admin") {
+                  controller.enqueue(
+                    encoder.encode(
+                      `\n__CREDITS__:${JSON.stringify({
+                        remaining: 99999999,
+                        charged: 0,
+                        duplicated: false,
+                        requestId,
+                      })}\n`
+                    )
+                  );
+
+                  console.log("[credits] admin tier - skipping deduction", {
+                    requestId,
+                    repoId,
+                    workspaceId,
+                    model: runtimePolicy.model,
+                    inputTokens,
+                    outputTokens,
+                    estimated,
+                  });
+                } else {
+                  const { data: chargeRows, error: chErr } = await supabase.rpc("credits_charge", {
+                    _workspace_id: workspaceId,
+                    _period_start: periodStart,
+                    _request_id: requestId,
+                    _amount: amount,
+                    _repo_id: repoId,
+                    _meta: meta,
+                  });
+
+                  if (!chErr) {
+                    const charge = Array.isArray(chargeRows) ? chargeRows[0] : chargeRows;
+
+                    controller.enqueue(
+                      encoder.encode(
+                        `\n__CREDITS__:${JSON.stringify({
+                          remaining: Number(charge?.remaining ?? 0),
+                          charged: amount,
+                          duplicated: Boolean(charge?.duplicated),
+                          requestId,
+                        })}\n`
+                      )
+                    );
+
+                    console.log("[credits] charged", {
+                      amount,
+                      ok: charge?.ok,
+                      duplicated: charge?.duplicated,
+                      remaining: charge?.remaining,
+                    });
+                  } else {
+                    console.log("[credits] charge failed:", chErr.message);
+                  }
+                }
+              }
 
               const { data: chargeRows, error: chErr } = await supabase.rpc("credits_charge", {
                 _workspace_id: workspaceId,
@@ -2991,6 +3449,18 @@ function emitMaintenanceIfNeeded(
       !("error" in out)
     ) {
       const paths = extractMentionedPaths(content);
+        function extractSingleMentionedPath(text: string) {
+          const paths = extractMentionedPaths(text || "");
+          return paths.length === 1 ? paths[0] : null;
+        }
+
+        function isNamedFileExecutionRequest(text: string) {
+          return (
+            /fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update/i.test(
+              text || ""
+            ) && extractMentionedPaths(text || "").length >= 1
+          );
+        }      
       const createPath = paths.find((p) => p.startsWith("components/"));
       const modifyPath = paths.find((p) => p !== createPath);
 

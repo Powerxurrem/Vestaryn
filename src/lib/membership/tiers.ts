@@ -1,5 +1,5 @@
 // lib/membership/tiers.ts
-export type VestarynTier = "free" | "builder" | "pro" | "elite" | "admin";
+export type VestarynTier = "early_access" | "free" | "builder" | "pro" | "elite" | "admin";
 export type ModelClass = "mini" | "standard" | "premium";
 
 export type BudgetPolicy = {
@@ -40,6 +40,9 @@ export type CapabilityPolicy = {
 export type TierPolicy = {
   tier: VestarynTier;
   label: string;
+
+  isTemporary?: boolean;
+  isInviteOnly?: boolean;
 
   model: string;
   modelClass: ModelClass;
@@ -83,6 +86,40 @@ export const TIER_POLICIES: Record<VestarynTier, TierPolicy> = {
       allowArchitectureMode: false,
     },
   },
+
+early_access: {
+  tier: "early_access",
+  label: "Early Access",
+  isTemporary: true,
+  isInviteOnly: true,
+  model: "gpt-4.1-mini",
+  modelClass: "mini",
+  output: {
+    maxOutputTokens: 1200,
+    verbosityCeiling: "medium",
+    codeDetailCeiling: "full_files",
+  },
+  tools: {
+    maxToolRounds: 4,
+    maxToolCallsPerRound: 4,
+    allowVault: true,
+    allowMultiFileOps: true,
+    allowUserProfileEdits: true,
+  },
+  budget: {
+    period: "monthly",
+    creditsPerPeriod: 250_000,
+    softReserveCredits: 10_000,
+    graceMode: "clamp",
+  },
+  capabilities: {
+    allowExport: true,
+    allowMultiExport: false,
+    allowCreateFiles: true,
+    allowCreateTrees: false,
+    allowArchitectureMode: false,
+  },
+},
 
   builder: {
     tier: "builder",
@@ -215,7 +252,14 @@ export const TIER_POLICIES: Record<VestarynTier, TierPolicy> = {
 
 export function parseTier(value: string | null | undefined): VestarynTier | null {
   const v = (value ?? "").toLowerCase().trim();
-  if (v === "free" || v === "builder" || v === "pro" || v === "elite" || v === "admin") return v;
+  if (
+    v === "early_access" ||
+    v === "free" ||
+    v === "builder" ||
+    v === "pro" ||
+    v === "elite" ||
+    v === "admin"
+  ) return v;
   return null;
 }
 

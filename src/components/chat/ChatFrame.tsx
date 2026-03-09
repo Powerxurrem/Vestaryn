@@ -128,6 +128,7 @@ const [lastProposalSet, setLastProposalSet] = useState<
 >({});
 
   const [lastVerify, setLastVerify] = useState<any | null>(null);
+  const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([]);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -456,9 +457,10 @@ useEffect(() => {
 
 const handleSend = async (text: string) => {
   
-  const trimmed = text.trim();
+const trimmed = text.trim();
 console.log("[handleSend] sending:", trimmed);
 if (!trimmed) return;
+setSuggestedPrompts([]);
 
 const isApplyCommand =
   trimmed.startsWith("__APPLY__:") || trimmed.startsWith("__APPLY_SET__:");
@@ -512,8 +514,8 @@ if (!isApplyCommand) {
   try {
 const tier =
   typeof window !== "undefined"
-    ? localStorage.getItem("vestaryn.tier") ?? "free"
-    : "free";
+    ? localStorage.getItem("vestaryn.tier") ?? "early_access"
+    : "early_access";
 
 const res = await fetch(`/api/repo/${repoId}/chat`, {
   method: "POST",
@@ -686,6 +688,37 @@ if (line.startsWith("__PROPOSAL__:")) {
   continue;
 }
 
+if (line.startsWith("__SUGGESTED_PROMPTS__:")) {
+  const isLastLine = i === lines.length - 1;
+  const streamEndsWithNewline = accumulated.endsWith("\n");
+
+  if (isLastLine && !streamEndsWithNewline) {
+    continue;
+  }
+
+  const jsonStr = line.slice("__SUGGESTED_PROMPTS__:".length).trim();
+
+  console.log("[suggestedPrompts raw]", jsonStr);
+
+  try {
+    const prompts = JSON.parse(jsonStr);
+
+    console.log("[suggestedPrompts parsed]", prompts);
+
+    if (Array.isArray(prompts)) {
+      setSuggestedPrompts(
+        prompts.filter((x) => typeof x === "string").slice(0, 3)
+      );
+    }
+  } catch (e) {
+    console.log("[suggestedPrompts parse failed]", e);
+  }
+
+  lines[i] = "";
+  changed = true;
+  continue;
+}
+
 if (line.startsWith("__PROPOSAL_SET__:")) {
   const isLastLine = i === lines.length - 1;
   const streamEndsWithNewline = accumulated.endsWith("\n");
@@ -709,46 +742,54 @@ if (line.startsWith("__PROPOSAL_SET__:")) {
     console.log("[proposalSet raw]", payload);
     console.log("[proposalSet proposals]", proposals);
 
-    for (const proposal of proposals) {
-      console.log("[proposalSet inspect]", {
-        fileId: proposal?.fileId,
-        path: proposal?.path,
-        hasContent: Boolean(proposal?.content),
-        hasPrevHash: Boolean(proposal?.prevHash),
-        hasNextHash: Boolean(proposal?.nextHash),
-        confirm: proposal?.confirm,
-        op: proposal?.meta?.op,
-      });
+for (const proposal of proposals) {
+  const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
+  const op = String(proposal?.meta?.op ?? "");
 
-      const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
-      const op = String(proposal?.meta?.op ?? "");
+  const isConfirmable =
+    confirm.startsWith("APPLY ") ||
+    confirm.startsWith("CREATE ") ||
+    op === "create";
 
-      const isConfirmable =
-        confirm.startsWith("APPLY ") ||
-        confirm.startsWith("CREATE ") ||
-        op === "create";
+  const missing = {
+    isConfirmable,
+    fileId: !proposal?.fileId,
+    content: proposal?.content == null,
+    prevHash: !proposal?.prevHash,
+    nextHash: !proposal?.nextHash,
+    confirm: !confirm,
+  };
 
-      if (
-        isConfirmable &&
-        proposal?.fileId &&
-        proposal?.content &&
-        proposal?.prevHash &&
-        proposal?.nextHash &&
-        confirm
-      ) {
-        nextMap[proposal.fileId] = {
-          fileId: proposal.fileId,
-          content: proposal.content,
-          prevHash: proposal.prevHash,
-          nextHash: proposal.nextHash,
-          confirm,
-          meta: proposal.meta ?? null,
-          path: proposal.path ?? proposal.meta?.path ?? null,
-          name: proposal.name ?? null,
-          mime: proposal.mime ?? proposal.meta?.mime ?? null,
-        };
-      }
-    }
+  if (
+    isConfirmable &&
+    proposal?.fileId &&
+    proposal?.content != null &&
+    proposal?.prevHash &&
+    proposal?.nextHash &&
+    confirm
+  ) {
+    nextMap[proposal.fileId] = {
+      fileId: proposal.fileId,
+      content: proposal.content,
+      prevHash: proposal.prevHash,
+      nextHash: proposal.nextHash,
+      confirm,
+      meta: proposal.meta ?? null,
+      path: proposal.path ?? proposal.meta?.path ?? null,
+      name: proposal.name ?? null,
+      mime: proposal.mime ?? proposal.meta?.mime ?? null,
+    };
+  } else {
+    console.log("[proposalSet rejected]", {
+      fileId: proposal?.fileId,
+      path: proposal?.path,
+      op,
+      confirm,
+      missing,
+      proposal,
+    });
+  }
+}
 
     const proposalList = Object.values(nextMap);
 
@@ -757,6 +798,13 @@ if (line.startsWith("__PROPOSAL_SET__:")) {
       ids: proposalList.map((p: any) => p.fileId),
       paths: proposalList.map((p: any) => p.path),
     });
+
+if (proposalList.length === 0) {
+  console.log("[proposalSet empty after filtering]", {
+    rawCount: proposals.length,
+    payload,
+  });
+}
 
 if (proposalList.length > 0) {
   setProposalSet(nextMap);
@@ -1202,7 +1250,28 @@ return (
                             <div className="text-white/80 whitespace-pre-wrap">{s.observation}</div>
                           </div>
                         )}
+                          {suggestedPrompts.length > 0 &&
+                            !thinking &&
+                            messages[messages.length - 1]?.id === msg.id && (
+                              <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                                <div className="mb-2 text-[10px] uppercase tracking-widest text-white/40">
+                                  Next steps
+                                </div>
 
+                                <div className="flex flex-wrap gap-2">
+                                  {suggestedPrompts.map((prompt) => (
+                                    <button
+                                      key={prompt}
+                                      type="button"
+                                      onClick={() => handleSend(prompt)}
+                                      className="rounded-full border border-blue-400/20 bg-blue-500/10 px-3 py-1.5 text-[12px] text-blue-100/90 transition hover:border-blue-300/30 hover:bg-blue-500/15"
+                                    >
+                                      {prompt}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                         <div className="h-px bg-white/5 my-2" />
 
                         {s.assessment && (

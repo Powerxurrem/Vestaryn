@@ -52,7 +52,10 @@ export async function GET(req: Request) {
     const isAdminAllowed =
       process.env.NODE_ENV !== "production" || process.env.VESTARYN_ALLOW_ADMIN_TIER === "1";
 
-    const tierPolicy = resolveTierPolicy(requestedTier, { isAdminAllowed });
+    const tierPolicy = resolveTierPolicy(requestedTier, {
+  isAdminAllowed,
+  forcedTier: "early_access",
+});
 
     // 4) get/create monthly balance row
     const { data: statusRows, error: stErr } = await supabase.rpc("credits_get_status", {

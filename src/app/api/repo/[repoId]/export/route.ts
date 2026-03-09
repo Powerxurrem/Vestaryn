@@ -17,7 +17,10 @@ export async function GET(_req: Request, ctx: { params: Promise<{ repoId: string
   const requestedTier = _req.headers.get("x-vestaryn-tier");
   const isAdminAllowed =
     process.env.NODE_ENV !== "production" || process.env.VESTARYN_ALLOW_ADMIN_TIER === "1";
-  const tierPolicy = resolveTierPolicy(requestedTier, { isAdminAllowed });
+  const tierPolicy = resolveTierPolicy(requestedTier, {
+  isAdminAllowed,
+  forcedTier: "early_access",
+});
 
   if (!tierPolicy.capabilities.allowExport) {
     return new NextResponse("Export is not available on your tier. Upgrade to Pro.", { status: 403 });

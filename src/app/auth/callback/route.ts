@@ -1,6 +1,7 @@
 ﻿import { NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { isEarlyAccessAllowed } from "@/lib/early-access";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
@@ -31,6 +32,18 @@ export async function GET(request: Request) {
 
   if (error) {
     return NextResponse.redirect(`${origin}/login`);
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const email = user?.email?.trim().toLowerCase() ?? null;
+  const allowed = await isEarlyAccessAllowed(email);
+
+  if (!allowed) {
+    await supabase.auth.signOut();
+    return NextResponse.redirect(`${origin}/early_access`);
   }
 
   return NextResponse.redirect(`${origin}/`);

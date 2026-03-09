@@ -1,315 +1,489 @@
-Vestaryn — Master Handover (Session Summary)
-System State
+Vestaryn — Master Handover (March 2026)
+1. Project Overview
 
-Vestaryn’s proposal preview architecture is now fully working.
+Vestaryn is an AI-driven development environment that behaves more like a structured coding partner than a chat assistant.
 
-Multi-file edits can now be:
+Core workflow:
 
-proposed
+User request
+   ↓
+Observation
+   ↓
+Assessment
+   ↓
+Action (proposal)
+   ↓
+User approval
+   ↓
+Apply change
+   ↓
+Verify
+   ↓
+Next suggestions
 
-previewed in the editor
+The system operates on deterministic repository state rather than loose text responses.
 
-confirmed
+Primary goals:
 
-applied deterministically
+Safe AI-driven file editing
 
-verified automatically
+Deterministic repository lifecycle
 
-The proposal → preview → apply → verify pipeline is now stable.
+Human approval loop
 
-Major Feature Completed
-Multi-File Proposal Preview System
+Autonomous improvement suggestions
 
-Vestaryn now supports previewing multiple file proposals simultaneously.
+Cheap, scalable token usage
 
-Architecture:
+2. System Architecture
+Core Components
+Chamber
 
-LLM
-  → __PROPOSAL_SET__
-  → ChatFrame parser
-  → proposalPreviewByFileId
-  → VaultEditorPane
-  → editor preview
+AI reasoning environment.
 
-Key concept:
+Handles:
 
-Record<fileId, ProposalPreview>
+conversation
 
-Example:
+Observation / Assessment / Action contract
 
-{
-  "fileA": { fileId, content, op, path, appendPreview },
-  "fileB": { fileId, content, op, path, appendPreview }
-}
+tool orchestration
 
-This allows:
+proposal generation
 
-previewing multiple files
+Vault
 
-switching tabs safely
+Repository file system abstraction.
 
-independent file previews
+Features:
 
-deterministic apply confirmation
+deterministic file lifecycle
 
-Core Fix This Session
-Proposal Shape Drift Bug
+versioned storage
 
-Earlier system expected:
+Supabase storage backend
+
+metadata in database
+
+signed URL editing
+
+Storage format:
+
+repos/<repoId>/<fileId>/vN
+
+Currently:
+
+overwrite v1
+
+Versioning planned later.
+
+Runner / Verify
+
+Runner executes validation commands.
+
+Pipeline:
 
 proposal
+   ↓
+apply
+   ↓
+snapshot
+   ↓
+runner
+   ↓
+verify markers
 
-New system produces:
+Allowed commands:
 
-Record<fileId, proposal>
+npm lint
+npm typecheck
+npm test
+npm run build
 
-This caused TypeScript errors and preview failures.
+Verification markers returned:
 
-Fix
+__VERIFY__
 
-ChamberWithVault now receives the full proposal map:
+UI displays:
 
-onProposalPreview={(proposals) => {
-  if (!proposals) {
-    setProposalPreviewByFileId({});
-    return;
-  }
+PASS / FAIL
+exit code
+duration
+failure fingerprint
+ChatFrame UI
 
-  setProposalPreviewByFileId(proposals);
-}}
+The main interaction interface.
 
-No more manual reconstruction of [fileId]: proposal.
+Sections rendered:
 
-This aligns the architecture across:
+Observation
+Assessment
+Action
+Pending Change
+Verification
+Next Steps (suggested prompts)
 
-ChatFrame
-ChamberWithVault
-VaultEditorPane
-Final Working State
+ChatFrame parses special markers:
 
-Confirmed working:
+__PROPOSAL__
+__PROPOSAL_SET__
+__VERIFY__
+__SUGGESTED_PROMPTS__
 
-Multi-file proposals
+Markers are stripped from visible chat.
 
-Example test:
+3. Recent Major Features Implemented
+1. Next Step Suggestion Pills
 
-Edit kiwi.txt
-Edit tomato.txt
-Edit android.txt
+Vestaryn now emits:
+
+__SUGGESTED_PROMPTS__:[ ... ]
+
+ChatFrame parses this and renders clickable suggestion pills.
+
+UI example:
+
+Next steps
+[ Make this page mobile responsive ]
+[ Add a footer with an about section ]
+[ Explain how the HTML works ]
+
+Clicking a pill automatically sends that prompt.
 
 Result:
 
-✔ all 3 previews appear
-✔ editor tabs update correctly
-✔ preview content correct
-✔ no TypeScript errors
-✔ deterministic apply still working
+continuous improvement loop
+2. Multi-file Proposal Sets
 
-Current Architecture
-Proposal preview state
-proposalPreviewByFileId
-
-Type:
-
-Record<string, {
-  fileId: string
-  content: string
-  path?: string | null
-  op?: string | null
-  appendPreview?: string | null
-}>
-Editor preview resolution
-VaultEditorPane
-   → activeFileId
-   → proposalPreviewByFileId[activeFileId]
-
-This makes preview rendering deterministic.
-
-Stable Subsystems
-
-These systems are now confirmed stable together:
-
-Chat System
-
-streaming responses
-
-tool orchestration
-
-proposal markers
-
-Vault System
-
-deterministic file storage
-
-version tracking
-
-signed URLs
-
-Proposal System
+Vestaryn can stage:
 
 __PROPOSAL_SET__
 
-preview before apply
+Instead of single file proposals.
 
-confirmation phrase system
+Apply logic:
 
-Apply System
+__APPLY_SET__
 
-deterministic overwrite
+This supports complex changes such as:
 
-version increment
+create file
+modify file
+append file
 
-touched file tracking
+in one approval.
 
-Verify System
+3. Proposal UI Improvements
 
-runner execution
+Pending change block shows:
 
-marker parsing
+fileId
+confirmation phrase
+preview
+Confirm & Apply button
 
-fileStatusById updates
+Preview displays truncated code diff.
 
-Editor System
+4. Verification UI
 
-tab management
+Verification panel now appears inside the assistant bubble.
 
-preview overlay
+Displays:
 
-multi-file support
+PASS / FAIL
+command
+exit code
+duration
+failure step
+fingerprint
 
-Chamber System
+Dismiss button resets verification state.
 
-Vault / Memory / Handover / SQL modes
+5. Suggested Prompt Engine
 
-chamber memory
+Assistant now ends responses with suggestion markers.
 
-re-summarization trigger
+Example output:
 
-Remaining Minor Issues
+__SUGGESTED_PROMPTS__:[
+"Make this page mobile responsive",
+"Add animations to the button",
+"Explain how this layout works"
+]
 
-These are behavioral polish, not architectural problems.
+These power the suggestion pills.
 
-1. Auto-open new files
+4. Credit System
 
-Sometimes when files are created they do not automatically open in the editor.
+Vestaryn uses a workspace-scoped credit ledger.
 
-You already have:
+Database table:
 
-openFileById(firstId)
+workspace_credit_balances
 
-Likely needs to trigger when:
+Columns:
 
-__PROPOSAL_SET__ received
-2. Append diff visualization
+workspace_id
+period_start
+tier
+credits_granted
+credits_spent
+credits_reserved
+updated_at
 
-Currently append previews show full file content.
+Remaining credits computed as:
 
-Future improvement:
+credits_granted - credits_spent - credits_reserved
+Early Access Tier
 
-existing content
-+ appended lines
+Runtime tier currently forced:
 
-Highlight appended section.
+early_access
 
-Pure UI improvement.
+Model:
 
-3. Multi-tab diff highlight behavior
+gpt-4.1-mini
 
-Earlier observation:
+Credit allowance planned:
 
-only one tab sometimes shows green/red diff markers
+100k / week
+≈ 30–50 changes
 
-Now preview works correctly but diff markers should be verified.
+Cost observed:
 
-Likely inside:
+250k credits ≈ €0.34
 
-VaultEditorPane
+Very cheap due to structured token usage.
 
-Preview resolution logic.
+Admin Mode
 
-4. Verify result marker capture
+Developer workspace set to:
 
-Minor logic issue exists:
+tier = admin
+credits_granted = 99,999,999
 
-let marker = null
+Allows unlimited development without worrying about credits.
 
-but marker never assigned inside stream parser.
+5. Chat API Pipeline
 
-Later cleanup:
+Chat endpoint:
 
-onMarker(v) => marker = v
+/api/repo/[repoId]/chat
 
-Not blocking.
+Pipeline:
 
-Performance Observations
+request
+↓
+tier resolution
+↓
+model execution
+↓
+stream response
+↓
+parse tool markers
+↓
+charge credits
+↓
+send verification markers
 
-From logs:
+Credits charged through RPC:
 
-TTFT ~9.8s
-Total request ~17s
+credits_charge
 
-Normal for:
+Usage metadata recorded:
 
-tool orchestration
+input_tokens
+output_tokens
+model
+requestId
+estimated usage flag
+6. Current Model Strategy
 
-multi-file writes
+Active model:
 
-verify pipeline
+gpt-4.1-mini
 
-No performance issues observed.
+Chosen because:
 
-Current System Capability
+cheap
 
-Vestaryn can now:
+consistent reasoning
 
-✔ generate full projects
-✔ modify multiple files
-✔ preview changes safely
-✔ apply deterministic writes
-✔ run verification automatically
-✔ track per-file status
-✔ maintain chamber memory
+good for structured editing
 
-This is now a proto-autonomous coding environment.
+ideal for incremental coding loops
 
-Next Development Focus
+Future model escalation:
 
-Recommended order tomorrow:
+default → mini
+complex tasks → stronger model
+architecture mode → premium model
 
-1️⃣ Auto-open created files
+Not implemented yet.
 
-Small UX improvement.
+7. Known Behavioral Observations
 
-2️⃣ Editor diff visualization polish
+Vestaryn performs best when prompts include file path or context.
 
-Better append highlighting.
+Example:
 
-3️⃣ File tab verification indicators
+Bad:
 
-Possible UI improvement:
+add a footer
 
-tab icons
-● pending
-✔ verified
-⚠ warn
-✖ error
-4️⃣ Architecture Mode gate (later)
+Better:
 
-Your roadmap item:
+add a footer to my-first-website/index.html
 
-Architecture mode
+Reason:
 
-Higher-tier capability restriction.
+Model does not always infer repository targets automatically.
 
-Final Status
+Potential future improvement:
 
-System state tonight:
+automatic vault file discovery
+8. Current Working Features Demonstrated
 
-Vestaryn: Stable
-Preview pipeline: Working
-Files: Green
-Architecture: Solid
+Vestaryn successfully:
 
-Major milestone achieved:
+created a website project
 
-Multi-file preview pipeline complete.
+edited HTML
+
+added styling
+
+created navigation
+
+added learning sections
+
+generated README
+
+proposed file edits
+
+verified changes
+
+suggested next steps
+
+Example output:
+
+A beginner website with:
+
+navigation
+landing card
+learning section
+styled button
+dark theme
+
+All built iteratively through the AI loop.
+
+9. Current UI Layout
+
+Left:
+
+Chamber chat
+
+Right:
+
+Vault explorer
+file editor
+diff preview
+
+Explorer includes:
+
+Vault files
+memory files
+
+Editor shows:
+
+live code
+proposal diffs
+10. Current Stability
+
+System status:
+
+Vault: stable
+Runner: stable
+Chat pipeline: stable
+Proposal system: stable
+Verification: stable
+Suggested prompts: working
+
+Remaining issues mostly behavioral rather than architectural.
+
+11. Next Development Priorities
+1. Improve file discovery
+
+Vestaryn should automatically understand repo files without needing explicit file paths.
+
+Possible step:
+
+vault_list_files tool
+2. Improve suggestion engine
+
+Better categorized suggestions:
+
+Improve
+Features
+Learn
+3. Multi-file reliability
+
+Ensure proposal sets consistently execute.
+
+4. Architecture Mode
+
+Future capability:
+
+Vestaryn can perform larger system design changes.
+
+5. Better prompt guidance
+
+Vestaryn could proactively suggest:
+
+possible next improvements
+
+based on repository state.
+
+12. Key Insight From This Session
+
+Vestaryn’s biggest strength is structured iteration.
+
+Instead of:
+
+prompt → code dump
+
+Vestaryn enables:
+
+idea → change → approve → verify → iterate
+
+This makes it feel like:
+
+AI pair programmer
+
+rather than a code generator.
+
+13. Current Dev Environment
+
+Stack:
+
+Next.js
+TypeScript
+Supabase
+OpenAI API
+Fly.io runner
+Vercel frontend
+
+Core systems already validated in production.
+
+14. Developer Context
+
+Developer:
+
+Romano
+
+Location:
+
+Netherlands
+
+Goal:
+
+Build Vestaryn into a fully autonomous coding environment capable of creating and evolving complete software systems.

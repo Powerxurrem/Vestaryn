@@ -397,7 +397,7 @@ const markFileUpdated = useCallback(
     repoId={repoId}
     repoName={repoName}
     right={
-      <div className="absolute left-[275px] top-[13px] z-40">
+      <div className="absolute left-[300px] top-[13px] z-40">
         <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/60 backdrop-blur">
           msgs {msgStats.total}
         </div>
