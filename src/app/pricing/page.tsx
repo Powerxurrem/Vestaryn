@@ -5,7 +5,7 @@ import { supabaseServerComponent } from "@/lib/supabase/server";
 
 type PublicTier = Exclude<VestarynTier, "admin">;
 
-const ORDER: PublicTier[] = ["free", "early_access", "builder", "pro", "elite"];
+const ORDER: PublicTier[] = ["early_access"];
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -55,7 +55,7 @@ function bestFor(tier: PublicTier) {
   }
 }
 
-function primaryBullets(p: TierPolicy) {
+function primaryBullets(tier: PublicTier, p: TierPolicy) {
   const caps = p.capabilities;
   const out = p.output;
   const tools = p.tools;
@@ -63,7 +63,9 @@ function primaryBullets(p: TierPolicy) {
 
   const bullets: string[] = [];
 
+  if (tier === "early_access") {
   bullets.push(`Credits / month: ${fmt(budget.creditsPerPeriod)}`);
+}
   bullets.push(`Model: ${modelLabel(p)}`);
   bullets.push(`Max output tokens: ${fmt(out.maxOutputTokens)}`);
   bullets.push(`Tooling: ${tools.maxToolRounds} rounds × ${tools.maxToolCallsPerRound} calls`);
@@ -118,7 +120,7 @@ function Card({
 
       <div className="rounded-xl bg-black/25 border border-white/10 p-3">
         <div className="grid gap-2">
-          {primaryBullets(p).map((b) => (
+          {primaryBullets(tier, p).map((b) => (
             <div key={b} className="text-sm text-white/70">
               • {b}
             </div>

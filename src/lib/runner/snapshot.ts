@@ -268,8 +268,7 @@ async function zipDirectory(dir: string, outZipPath: string): Promise<number> {
     output.on("close", () => resolve(archive.pointer()));
     output.on("error", reject);
 
-    archive.on("warning", (err) => {
-      // treat warnings as non-fatal unless you want stricter behavior
+    archive.on("warning", (err: unknown) => {
       console.warn("[snapshot_zip] warning:", err);
     });
     archive.on("error", reject);
@@ -322,7 +321,7 @@ function shortId(): string {
 async function safeRm(p: string) {
   try {
     // Node 14+ supports fs.rm with recursive; fallback not needed here.
-    // @ts-ignore
+    
     await fs.rm(p, { recursive: true, force: true });
   } catch {
     // ignore

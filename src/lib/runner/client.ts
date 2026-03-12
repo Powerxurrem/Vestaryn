@@ -7,9 +7,28 @@ export type RunnerResult = {
   error?: string;
 
   fingerprint?: string;
-  failedStep?: "install" | "exec" | null;
+  failedStep?: "profile" | "install" | "lint" | "typecheck" | "test" | "exec" | null;
   failureKind?: string | null;
   timedOut?: boolean;
+
+  profile?: {
+    hasPackageJson: boolean;
+    hasLockfile: boolean;
+    hasTypeScript: boolean;
+    hasESLintConfig: boolean;
+    hasVerifyScript: boolean;
+    hasLintScript: boolean;
+    hasTypecheckScript: boolean;
+    hasTestScript: boolean;
+  };
+
+  steps?: Array<{
+    name: "install" | "lint" | "typecheck" | "test";
+    ok: boolean;
+    skipped?: boolean;
+    exitCode?: number;
+    reason?: string;
+  }>;
 };
 
 export async function runnerRun(args: {
@@ -91,10 +110,15 @@ export async function runnerRun(args: {
     const durationMs =
       typeof data.durationMs === "number" ? data.durationMs : 0;
 
-    const failedStep =
-      data.failedStep === "install" || data.failedStep === "exec"
-        ? data.failedStep
-        : null;
+const failedStep =
+  data.failedStep === "profile" ||
+  data.failedStep === "install" ||
+  data.failedStep === "lint" ||
+  data.failedStep === "typecheck" ||
+  data.failedStep === "test" ||
+  data.failedStep === "exec"
+    ? data.failedStep
+    : null;
 
     return {
       ok,
@@ -109,22 +133,31 @@ export async function runnerRun(args: {
       failedStep,
       failureKind: typeof data.failureKind === "string" ? data.failureKind : null,
       timedOut: Boolean(data.timedOut),
-    };
-  } catch (e: any) {
-    const isTimeout = e?.name === "AbortError";
-    const msg = isTimeout
-      ? `Runner request timed out after ~${timeoutMs}ms`
-      : (e?.message ?? String(e));
 
-    return {
-      ok: false,
-      exitCode: -1,
-      durationMs: 0,
-      error: msg,
-      fingerprint: "runner_client:v2",
-      failedStep: null,
-      failureKind: isTimeout ? "runner_request_timeout" : "runner_request_error",
-      timedOut: isTimeout,
+      profile:
+        data.profile && typeof data.profile === "object"
+          ? {
+              hasPackageJson: Boolean(data.profile.hasPackageJson),
+              hasLockfile: Boolean(data.profile.hasLockfile),
+              hasTypeScript: Boolean(data.profile.hasTypeScript),
+              hasESLintConfig: Boolean(data.profile.hasESLintConfig),
+              hasVerifyScript: Boolean(data.profile.hasVerifyScript),
+              hasLintScript: Boolean(data.profile.hasLintScript),
+              hasTypecheckScript: Boolean(data.profile.hasTypecheckScript),
+              hasTestScript: Boolean(data.profile.hasTestScript),
+            }
+          : undefined,
+
+      steps: Array.isArray(data.steps)
+        ? data.steps.map((step: any) => ({
+            name: step?.name,
+            ok: Boolean(step?.ok),
+            skipped: Boolean(step?.skipped),
+            exitCode:
+              typeof step?.exitCode === "number" ? step.exitCode : undefined,
+            reason: typeof step?.reason === "string" ? step.reason : undefined,
+          }))
+        : undefined,
     };
   } finally {
     clearTimeout(t);

@@ -172,6 +172,94 @@ if (sections.action.includes(stagedPhrase)) {
 }
 
 
+function applyParsedProposals(
+  proposals: Array<{
+    fileId: string;
+    content: string;
+    prevHash: string;
+    nextHash: string;
+    confirm: string;
+    meta?: any;
+    path?: string | null;
+    name?: string | null;
+    mime?: string | null;
+  }>,
+  assistantId: string
+) {
+  if (!Array.isArray(proposals) || proposals.length === 0) return;
+
+  const nextMap: Record<string, any> = {};
+
+for (const proposal of proposals) {
+  if (!proposal?.fileId) continue;
+  if (proposal?.meta?.kind === "engraving") continue;
+
+  nextMap[proposal.fileId] = {
+    fileId: proposal.fileId,
+    content: proposal.content,
+    prevHash: proposal.prevHash,
+    nextHash: proposal.nextHash,
+    confirm: proposal.confirm,
+    meta: proposal.meta ?? null,
+    path: proposal.path ?? proposal.meta?.path ?? null,
+    name: proposal.name ?? null,
+    mime: proposal.mime ?? proposal.meta?.mime ?? null,
+  };
+}
+
+  const proposalList = Object.values(nextMap) as Array<{
+    fileId: string;
+    content: string;
+    prevHash: string;
+    nextHash: string;
+    confirm: string;
+    meta?: any;
+    path?: string | null;
+    name?: string | null;
+    mime?: string | null;
+  }>;
+
+  if (proposalList.length === 0) return;
+
+  const first = proposalList[0];
+
+  setProposalSet(nextMap);
+  setLastProposalSet({ proposals: proposalList });
+  setLastProposal({
+  ...first,
+  path: first.path ?? undefined,
+  name: first.name ?? undefined,
+  mime: first.mime ?? undefined,
+});
+
+  setPendingConfirm(proposalList.length > 1 ? "APPLY_SET" : first.confirm);
+  setPendingConfirmMsgId(assistantId);
+
+  onProposalPreview?.(
+    Object.fromEntries(
+      proposalList.map((p) => [
+        p.fileId,
+        {
+          fileId: p.fileId,
+          content: p.content,
+          path: p.path ?? null,
+          op: p.meta?.op ?? null,
+          appendPreview: p.meta?.appendPreview ?? null,
+        },
+      ])
+    )
+  );
+
+  if (openFileById) {
+    for (const p of proposalList) {
+      openFileById(p.fileId);
+    }
+    if (first?.fileId) {
+      openFileById(first.fileId);
+    }
+  }
+}
+
 function stripMarkersForRender(s: string) {
   const lines = (s || "").split("\n");
   const out: string[] = [];
@@ -451,11 +539,14 @@ useEffect(() => {
   onMessageStats({ total: messages.length, user, assistant, system });
 }, [messages, onMessageStats]);
 
+
+
   // ─────────────────────────────────────────────────────────────
   // Action: send message + stream assistant response
   // ─────────────────────────────────────────────────────────────
 
 const handleSend = async (text: string) => {
+  
   
 const trimmed = text.trim();
 console.log("[handleSend] sending:", trimmed);
@@ -484,6 +575,7 @@ if (!isApplyCommand) {
   setLastProposal(null);
   setLastProposalSet(null);
   setProposalSet({});
+  setLastEngraving(null);
   onProposalPreview?.(null);
 
   const userMsg: Message = {
@@ -574,8 +666,14 @@ if (RESET_LINE_RE.test(normalized)) {
 
 
   setPendingConfirm(null);
+  setPendingConfirmMsgId(null);
+  setLastProposal(null);
+  setLastProposalSet(null);
+  setProposalSet({});
   setLastVerify(null);
+  setLastVerifyMsgId(null);
   setLastEngraving(null);
+  onProposalPreview?.(null);
 
   // Reload canonical history (post-prune)
   try {
@@ -645,43 +743,39 @@ if (line.startsWith("__PROPOSAL__:")) {
         confirm.startsWith("CREATE ") ||
         op === "create";
 
+      if (proposal?.meta?.kind === "engraving") {
+        return;
+      }
+
       if (
         isConfirmable &&
         proposal?.fileId &&
-        proposal?.content &&
+        proposal?.content != null &&
         proposal?.prevHash &&
         proposal?.nextHash &&
         confirm
       ) {
-        setLastProposal({
-          fileId: proposal.fileId,
-          content: proposal.content,
-          prevHash: proposal.prevHash,
-          nextHash: proposal.nextHash,
-          confirm,
-          meta: proposal.meta ?? null,
-          path: proposal.path ?? proposal.meta?.path ?? null,
-          name: proposal.name ?? null,
-          mime: proposal.mime ?? proposal.meta?.mime ?? null,
-        });
-
-        onProposalPreview?.({
-          fileId: proposal.fileId,
-          content: proposal.content,
-          path: proposal.path ?? proposal.meta?.path ?? null,
-          op: proposal.meta?.op ?? null,
-          appendPreview: proposal.meta?.appendPreview ?? null,
-        });
-
-        setPendingConfirm(confirm);
-        setPendingConfirmMsgId(assistantId);
-
-        if (proposal?.fileId && openFileById) {
-          openFileById(proposal.fileId);
-        }
+        applyParsedProposals(
+          [
+            {
+              fileId: proposal.fileId,
+              content: proposal.content,
+              prevHash: proposal.prevHash,
+              nextHash: proposal.nextHash,
+              confirm,
+              meta: proposal.meta ?? null,
+              path: proposal.path ?? proposal.meta?.path ?? undefined,
+              name: proposal.name ?? undefined,
+              mime: proposal.mime ?? proposal.meta?.mime ?? undefined,
+            },
+          ],
+          assistantId
+        );
       }
     });
-  } catch {}
+  } catch (e) {
+    console.log("[proposal parse failed]", e);
+  }
 
   lines[i] = "";
   changed = true;
@@ -737,12 +831,17 @@ if (line.startsWith("__PROPOSAL_SET__:")) {
       ? payload.creates
       : [];
 
+    const filtered = proposals.filter(
+      (p: any) => p?.meta?.kind !== "engraving"
+    );
+
     const nextMap: Record<string, any> = {};
 
     console.log("[proposalSet raw]", payload);
     console.log("[proposalSet proposals]", proposals);
+    console.log("[proposalSet filtered]", filtered);
 
-for (const proposal of proposals) {
+    for (const proposal of filtered) {
   const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
   const op = String(proposal?.meta?.op ?? "");
 
@@ -768,17 +867,17 @@ for (const proposal of proposals) {
     proposal?.nextHash &&
     confirm
   ) {
-    nextMap[proposal.fileId] = {
-      fileId: proposal.fileId,
-      content: proposal.content,
-      prevHash: proposal.prevHash,
-      nextHash: proposal.nextHash,
-      confirm,
-      meta: proposal.meta ?? null,
-      path: proposal.path ?? proposal.meta?.path ?? null,
-      name: proposal.name ?? null,
-      mime: proposal.mime ?? proposal.meta?.mime ?? null,
-    };
+      nextMap[proposal.fileId] = {
+        fileId: proposal.fileId,
+        content: proposal.content,
+        prevHash: proposal.prevHash,
+        nextHash: proposal.nextHash,
+        confirm: proposal.confirm,
+        meta: proposal.meta ?? null,
+        path: proposal.path ?? proposal.meta?.path ?? undefined,
+        name: proposal.name ?? undefined,
+        mime: proposal.mime ?? proposal.meta?.mime ?? undefined,
+      };
   } else {
     console.log("[proposalSet rejected]", {
       fileId: proposal?.fileId,
@@ -802,30 +901,13 @@ for (const proposal of proposals) {
 if (proposalList.length === 0) {
   console.log("[proposalSet empty after filtering]", {
     rawCount: proposals.length,
+    filteredCount: filtered.length,
     payload,
   });
 }
 
 if (proposalList.length > 0) {
-  setProposalSet(nextMap);
-  setLastProposalSet({ proposals: proposalList });
-
-  const first = proposalList[0];
-  setLastProposal(first);
-  setPendingConfirm("APPLY_SET");
-  setPendingConfirmMsgId(assistantId);
-
-  onProposalPreview?.(nextMap);
-
-  if (openFileById) {
-    for (const p of proposalList) {
-      openFileById(p.fileId);
-    }
-
-    if (first?.fileId) {
-      openFileById(first.fileId);
-    }
-  }
+  applyParsedProposals(proposalList, assistantId);
 }
   } catch (e) {
     console.log("[proposalSet parse failed]", e);
@@ -1036,33 +1118,11 @@ if (line.startsWith("__MAINTENANCE__:")) {
     try {
       const engr = JSON.parse(jsonStr);
       setLastEngraving(engr);
-
-      // Reuse existing proposal UX: engr.proposal is a vault proposal
-      const p = engr?.proposal;
-      if (
-        p?.fileId &&
-        p?.content &&
-        p?.prevHash &&
-        p?.nextHash &&
-        (p?.confirm || p?.pendingConfirmPhrase)
-      ) {
-        const confirm = String(p.confirm || p.pendingConfirmPhrase);
-
-        setLastProposal({
-          fileId: p.fileId,
-          content: p.content,
-          prevHash: p.prevHash,
-          nextHash: p.nextHash,
-          confirm,
-          meta: p.meta ?? null,
-        });
-
-        setPendingConfirm(confirm);
-      }
     } catch {}
 
     lines[i] = ""; // strip line
     changed = true;
+    continue;
   }
 }
 
@@ -1367,6 +1427,8 @@ return (
                                   type="button"
                                   onClick={() => {
                                     setLastProposal(null);
+                                    setLastProposalSet(null);
+                                    setProposalSet({});
                                     setPendingConfirm(null);
                                     setPendingConfirmMsgId(null);
                                     onProposalPreview?.(null);
@@ -1409,7 +1471,9 @@ return (
                                       setPendingConfirm(null);
                                       setPendingConfirmMsgId(null);
                                       console.log("[apply_set send]", lastProposalSet);
-                                      if (lastProposalSet?.proposals?.length) {
+                                      const proposalCount = lastProposalSet?.proposals?.length ?? 0;
+
+                                      if (proposalCount > 1) {
                                         const payload = JSON.stringify(lastProposalSet);
                                         handleSend(`__APPLY_SET__:${payload}`);
                                         return;
@@ -1418,6 +1482,7 @@ return (
                                       if (lastProposal) {
                                         const payload = JSON.stringify(lastProposal);
                                         handleSend(`__APPLY__:${payload}`);
+                                        
                                       }
                                     }}
                                     className="h-[36px] rounded-lg px-3 text-[12px] font-medium bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300/40 active:scale-[0.99] transition"

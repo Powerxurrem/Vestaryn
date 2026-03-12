@@ -1,7 +1,22 @@
-Vestaryn — Master Handover (March 2026)
-1. Project Overview
+Vestaryn — Master Handover
 
-Vestaryn is an AI-driven development environment that behaves more like a structured coding partner than a chat assistant.
+(Status: Early Access Phase / Phase 1 Complete)
+
+1. Core Concept
+
+Vestaryn is an AI-driven development environment designed to behave like a structured engineering partner, not a chat assistant.
+
+The system focuses on:
+
+deterministic repository state
+
+safe AI-driven edits
+
+human approval loops
+
+automated verification
+
+scalable architecture
 
 Core workflow:
 
@@ -17,473 +32,429 @@ User approval
    ↓
 Apply change
    ↓
-Verify
+Verify (runner)
    ↓
 Next suggestions
 
-The system operates on deterministic repository state rather than loose text responses.
-
-Primary goals:
-
-Safe AI-driven file editing
-
-Deterministic repository lifecycle
-
-Human approval loop
-
-Autonomous improvement suggestions
-
-Cheap, scalable token usage
+The AI never directly edits files.
+All edits go through the proposal → apply → verify pipeline.
 
 2. System Architecture
-Core Components
 Chamber
 
-AI reasoning environment.
+The reasoning environment.
 
-Handles:
+Responsibilities:
 
-conversation
+interpret user intent
 
-Observation / Assessment / Action contract
+read repository
 
-tool orchestration
+generate proposals
 
-proposal generation
+orchestrate tools
 
-Vault
+maintain structured reasoning contract
 
-Repository file system abstraction.
+Output contract:
 
-Features:
+[Observation]
+[Assessment]
+[Action]
 
-deterministic file lifecycle
-
-versioned storage
-
-Supabase storage backend
-
-metadata in database
-
-signed URL editing
-
-Storage format:
-
-repos/<repoId>/<fileId>/vN
-
-Currently:
-
-overwrite v1
-
-Versioning planned later.
-
-Runner / Verify
-
-Runner executes validation commands.
-
-Pipeline:
-
-proposal
-   ↓
-apply
-   ↓
-snapshot
-   ↓
-runner
-   ↓
-verify markers
-
-Allowed commands:
-
-npm lint
-npm typecheck
-npm test
-npm run build
-
-Verification markers returned:
-
-__VERIFY__
-
-UI displays:
-
-PASS / FAIL
-exit code
-duration
-failure fingerprint
-ChatFrame UI
-
-The main interaction interface.
-
-Sections rendered:
-
-Observation
-Assessment
-Action
-Pending Change
-Verification
-Next Steps (suggested prompts)
-
-ChatFrame parses special markers:
+Markers emitted during execution:
 
 __PROPOSAL__
 __PROPOSAL_SET__
+__APPLY__
+__APPLIED__
 __VERIFY__
-__SUGGESTED_PROMPTS__
+__ENGRAVING__
+__RESET__
+__MAINTENANCE__
+Vault (Repository System)
 
-Markers are stripped from visible chat.
+Deterministic file system abstraction.
 
-3. Recent Major Features Implemented
-1. Next Step Suggestion Pills
+Storage structure:
 
-Vestaryn now emits:
-
-__SUGGESTED_PROMPTS__:[ ... ]
-
-ChatFrame parses this and renders clickable suggestion pills.
-
-UI example:
-
-Next steps
-[ Make this page mobile responsive ]
-[ Add a footer with an about section ]
-[ Explain how the HTML works ]
-
-Clicking a pill automatically sends that prompt.
-
-Result:
-
-continuous improvement loop
-2. Multi-file Proposal Sets
-
-Vestaryn can stage:
-
-__PROPOSAL_SET__
-
-Instead of single file proposals.
-
-Apply logic:
-
-__APPLY_SET__
-
-This supports complex changes such as:
-
-create file
-modify file
-append file
-
-in one approval.
-
-3. Proposal UI Improvements
-
-Pending change block shows:
-
-fileId
-confirmation phrase
-preview
-Confirm & Apply button
-
-Preview displays truncated code diff.
-
-4. Verification UI
-
-Verification panel now appears inside the assistant bubble.
-
-Displays:
-
-PASS / FAIL
-command
-exit code
-duration
-failure step
-fingerprint
-
-Dismiss button resets verification state.
-
-5. Suggested Prompt Engine
-
-Assistant now ends responses with suggestion markers.
-
-Example output:
-
-__SUGGESTED_PROMPTS__:[
-"Make this page mobile responsive",
-"Add animations to the button",
-"Explain how this layout works"
-]
-
-These power the suggestion pills.
-
-4. Credit System
-
-Vestaryn uses a workspace-scoped credit ledger.
+repos/<repoId>/<fileId>/vN
 
 Database table:
 
+repo_files
+
+File lifecycle:
+
+create
+read
+propose_write
+apply_write
+version bump
+verify
+
+Important properties:
+
+deterministic storage
+
+version tracking
+
+sha256 hashing
+
+metadata in DB
+
+file content in Supabase storage
+
+signed URLs for editor
+
+Vault tools currently implemented:
+
+vault_read_text
+vault_list_files
+vault_propose_write
+vault_propose_append
+vault_apply_write
+
+Path resolution:
+
+resolveFileIdByPathOrName()
+
+Supports both:
+
+fileId
+path
+filename
+3. Proposal System
+
+Vestaryn does not edit files immediately.
+
+Instead it generates proposals.
+
+Single file:
+
+__PROPOSAL__:{json}
+
+Multi-file:
+
+__PROPOSAL_SET__:{json}
+
+Example proposal:
+
+{
+  "fileId": "...",
+  "content": "...",
+  "prevHash": "...",
+  "nextHash": "...",
+  "confirm": "APPLY <fileId> <hash>"
+}
+
+User confirms via:
+
+Confirm & Apply
+
+which sends:
+
+__APPLY__:{proposal}
+
+or
+
+__APPLY_SET__:{proposalSet}
+4. Runner / Verify System
+
+Runner executes verification commands.
+
+Current command:
+
+node_verify
+
+Runner pipeline:
+
+snapshot repo
+↓
+run lint/tests
+↓
+return result
+↓
+emit marker
+
+Verify marker:
+
+__VERIFY__:{json}
+
+Verify result fields:
+
+ok
+exitCode
+durationMs
+failureKind
+failedStep
+stdout
+stderr
+
+Verify results update UI file status:
+
+ok
+error
+pending
+5. ChatFrame (Frontend Chamber)
+
+Handles streaming assistant responses.
+
+Key responsibilities:
+
+Marker parsing
+
+Parses:
+
+__PROPOSAL__
+__PROPOSAL_SET__
+__APPLY__
+__APPLIED__
+__VERIFY__
+__ENGRAVING__
+__CREDITS__
+__MAINTENANCE__
+
+Markers are removed from visible chat.
+
+Proposal handling
+
+Stores:
+
+lastProposal
+lastProposalSet
+proposalSet
+
+Used to show:
+
+Pending change
+Confirm phrase
+Preview
+Apply flow
+Confirm & Apply
+   ↓
+handleSend("__APPLY__")
+   ↓
+applyOriginMsgIdRef
+   ↓
+runVerify()
+Verify flow
+runVerify()
+↓
+/api/repo/[repoId]/verify
+↓
+__VERIFY__ marker
+↓
+UI status update
+6. Multi-File Execution
+
+Vestaryn can now handle:
+
+multiple proposals
+multiple file edits
+proposal sets
+
+Example operations tested successfully:
+
+fix multiple scripts
+split file into modules
+refactor code
+add features
+
+Edge cases encountered:
+
+file already exists
+path resolution mismatch
+create vs write
+
+Handled via:
+
+vault_propose_write fallback logic
+7. Credit System
+
+Workspace scoped credits.
+
+Tables:
+
 workspace_credit_balances
+workspace_credit_events
+workspace_credit_charges
 
-Columns:
+HUD endpoint:
 
-workspace_id
-period_start
-tier
-credits_granted
-credits_spent
-credits_reserved
-updated_at
+/api/credits/balance
 
-Remaining credits computed as:
-
-credits_granted - credits_spent - credits_reserved
-Early Access Tier
-
-Runtime tier currently forced:
+Current tier:
 
 early_access
 
-Model:
+Credits configured:
 
-gpt-4.1-mini
+1,000,000
+8. Current Capabilities (Validated)
 
-Credit allowance planned:
+Vestaryn can:
 
-100k / week
-≈ 30–50 changes
+✓ read repository
+✓ modify multiple files
+✓ propose edits safely
+✓ apply confirmed edits
+✓ run verification pipeline
+✓ detect lint failures
+✓ fix broken scripts
+✓ perform small refactors
+✓ split files
+✓ suggest improvements
 
-Cost observed:
+Recent tests performed:
 
-250k credits ≈ €0.34
+fix broken scripts
+split module
+refactor tracker system
+vault management example
+multi-file edits
+9. Known Issues / Bugs
+1. Maintenance system
 
-Very cheap due to structured token usage.
+Auto summarization currently failing.
 
-Admin Mode
+Errors:
 
-Developer workspace set to:
+Failed to parse URL from undefined/api/.../maintenance/resummarize
+permission denied for repo_chat_summaries
 
-tier = admin
-credits_granted = 99,999,999
+Needs:
 
-Allows unlimited development without worrying about credits.
+service role
+or RLS adjustment
+2. Multi-file preview UI
 
-5. Chat API Pipeline
+Preview for newly created files not always showing.
 
-Chat endpoint:
+Likely due to:
 
-/api/repo/[repoId]/chat
+proposalSet preview mapping
+3. Split file logic
 
-Pipeline:
+Split detection recently added.
 
-request
+Helpers implemented:
+
+isSplitFileIntent()
+extractSplitTargets()
+generateSplitFileContents()
+
+Needs further real-world testing.
+
+10. Architectural Strengths
+
+Vestaryn already includes 4 of the 5 core AI engineering patterns:
+
+Repository state      ✓ Vault
+Tool interface        ✓ Vault tools
+Execution environment ✓ Runner
+Verification loop     ✓ Verify
+Iteration loop        partial
+Planning layer        future
+
+This architecture is closer to AI engineering systems than typical AI coding assistants.
+
+11. Next Development Priorities
+
+Recommended next phases:
+
+Phase 2 — Iteration Engine
+
+Enable automatic repair loops.
+
+edit
 ↓
-tier resolution
+verify
 ↓
-model execution
+failure
 ↓
-stream response
+AI reads error
 ↓
-parse tool markers
-↓
-charge credits
-↓
-send verification markers
+propose repair
+Phase 3 — Task Planning
 
-Credits charged through RPC:
-
-credits_charge
-
-Usage metadata recorded:
-
-input_tokens
-output_tokens
-model
-requestId
-estimated usage flag
-6. Current Model Strategy
-
-Active model:
-
-gpt-4.1-mini
-
-Chosen because:
-
-cheap
-
-consistent reasoning
-
-good for structured editing
-
-ideal for incremental coding loops
-
-Future model escalation:
-
-default → mini
-complex tasks → stronger model
-architecture mode → premium model
-
-Not implemented yet.
-
-7. Known Behavioral Observations
-
-Vestaryn performs best when prompts include file path or context.
+Introduce structured plan generation.
 
 Example:
 
-Bad:
+Task
+↓
+AI generates plan
+↓
+step execution
+Phase 4 — Repository Intelligence
 
-add a footer
+Add repository graph awareness.
 
-Better:
+imports
+dependencies
+entrypoints
+tests
+Phase 5 — Task Memory
 
-add a footer to my-first-website/index.html
+Persistent tasks across sessions.
 
-Reason:
+task
+progress
+state
+completion
+12. Current Development Status
 
-Model does not always infer repository targets automatically.
+Vestaryn is currently at:
 
-Potential future improvement:
+Phase 1: Engineering foundation
 
-automatic vault file discovery
-8. Current Working Features Demonstrated
+Major systems completed:
 
-Vestaryn successfully:
+Vault
+Chamber
+Runner
+Proposal system
+Verify system
+UI integration
+Credits system
 
-created a website project
+System is functionally operational.
 
-edited HTML
+13. Immediate Next Work Session
 
-added styling
+Next development focus recommended:
 
-created navigation
+1️⃣ improve multi-file proposal reliability
+2️⃣ strengthen split-file system
+3️⃣ implement first iteration loop
+4️⃣ fix maintenance summarization system
 
-added learning sections
+14. Long-Term Vision
 
-generated README
+Vestaryn aims to evolve from:
 
-proposed file edits
+AI code assistant
 
-verified changes
+to:
 
-suggested next steps
+AI engineering system
 
-Example output:
+Where AI can:
 
-A beginner website with:
+plan tasks
+execute code changes
+run verification
+iterate until success
+Final Note
 
-navigation
-landing card
-learning section
-styled button
-dark theme
+Vestaryn already has a solid architectural base.
 
-All built iteratively through the AI loop.
+Key foundations are in place:
 
-9. Current UI Layout
+deterministic repo state
+safe editing pipeline
+execution environment
+verification loop
 
-Left:
-
-Chamber chat
-
-Right:
-
-Vault explorer
-file editor
-diff preview
-
-Explorer includes:
-
-Vault files
-memory files
-
-Editor shows:
-
-live code
-proposal diffs
-10. Current Stability
-
-System status:
-
-Vault: stable
-Runner: stable
-Chat pipeline: stable
-Proposal system: stable
-Verification: stable
-Suggested prompts: working
-
-Remaining issues mostly behavioral rather than architectural.
-
-11. Next Development Priorities
-1. Improve file discovery
-
-Vestaryn should automatically understand repo files without needing explicit file paths.
-
-Possible step:
-
-vault_list_files tool
-2. Improve suggestion engine
-
-Better categorized suggestions:
-
-Improve
-Features
-Learn
-3. Multi-file reliability
-
-Ensure proposal sets consistently execute.
-
-4. Architecture Mode
-
-Future capability:
-
-Vestaryn can perform larger system design changes.
-
-5. Better prompt guidance
-
-Vestaryn could proactively suggest:
-
-possible next improvements
-
-based on repository state.
-
-12. Key Insight From This Session
-
-Vestaryn’s biggest strength is structured iteration.
-
-Instead of:
-
-prompt → code dump
-
-Vestaryn enables:
-
-idea → change → approve → verify → iterate
-
-This makes it feel like:
-
-AI pair programmer
-
-rather than a code generator.
-
-13. Current Dev Environment
-
-Stack:
-
-Next.js
-TypeScript
-Supabase
-OpenAI API
-Fly.io runner
-Vercel frontend
-
-Core systems already validated in production.
-
-14. Developer Context
-
-Developer:
-
-Romano
-
-Location:
-
-Netherlands
-
-Goal:
-
-Build Vestaryn into a fully autonomous coding environment capable of creating and evolving complete software systems.
+Future work will focus on intelligence layers, not infrastructure.

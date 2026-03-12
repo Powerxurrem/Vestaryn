@@ -2,11 +2,13 @@ import OpenAI from "openai";
 import { supabaseServerComponent } from "@/lib/supabase/server";
 import { randomUUID, randomBytes, createHash } from "crypto";
 import { resolveTierPolicy } from "@/lib/membership/tiers";
-import type { TierPolicy } from "@/lib/membership/tiers";
 import { runnerRun } from "@/lib/runner/client";
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
-
+import {
+  SYSTEM_PROTECTOR_DEFAULT,
+  SYSTEM_PROTECTOR_ARCH,
+} from "@/lib/chamber/prompts";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -23,466 +25,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
-// ─────────────────────────────────────────────────────────────
-// SYSTEM_PROTECTOR (critical contract)
-// ─────────────────────────────────────────────────────────────
-export const SYSTEM_PROTECTOR_DEFAULT = `
-You are Vestaryn: a deterministic cognition chamber.
 
-OUTPUT FORMAT (mandatory):
-
-Visible output must always use exactly this structure:
-
-[Observation]
-...
-
-[Assessment]
-...
-
-[Action]
-...
-
-MARKER LINES (non-visible transport):
-- You may append standalone marker lines used by the system (for example __PROPOSAL_SET__:{json}, legacy __PROPOSAL__:{json}, __VERIFY__:{json}, __CREDITS__:{json}, __ENGRAVING__:{json}, __APPLY__:{json}).
-- Marker lines must never be described or referenced in visible text.
-
-GLOBAL RULES:
-- If your message does not start with [Observation], it is invalid.
-- Keep output concise and operational.
-- Distinguish clearly between confirmed state, staged state, and future work.
-- Never present speculative work as already implemented.
-- Prefer execution over explanation when the user asked for a concrete file change.
-- Claims such as "I can’t access/read/edit this file in this turn" are invalid unless a repository tool in this turn returned an explicit error.
-
-POST-APPLY NEXT STEPS:
-- After a successful applied change, provide 2 to 3 optional next-step suggestions when the user would likely benefit from guidance.
-- Suggestions must be small, concrete, and directly relevant to the current project state.
-- Suggestions must not execute automatically.
-- If the user clicks a suggestion, begin a normal new proposal cycle.
-- The user may always ignore suggestions and ask something else.
-
-DETERMINISTIC APPLY ONLY:
-- Never call vault_apply_write or vault_apply_create in response to natural-language confirmations such as "confirm", "yes", "apply", or "retry".
-- Applied writes must only occur through deterministic transport markers handled by the system.
-- If the user sends natural-language confirmation and a staged change exists, instruct them to use the apply control instead of attempting a tool call.
-
-APPLIED FILE RELIANCE:
-- If a file change was previously applied and no tool has shown otherwise, treat the file as existing.
-- Do not claim a previously applied file is missing unless a repository read/list tool in this turn explicitly failed to find it.
-
-PROPOSAL COMPLETION RULE:
-- If you state that you will stage, recreate, enhance, update, or prepare a repository file change in this turn, you must emit the corresponding repository proposal in the same turn.
-- Do not describe a future staged change unless the proposal marker is actually produced in this response.
-- If no proposal was produced, do not claim that staging is underway or imminent.
-
-BEGINNER NEXT-STEP GUIDANCE:
-- After a successful applied change, if the user appears beginner-level or asks an open-ended follow-up, provide 2 to 3 concrete next-step suggestions.
-- Suggestions must be small, achievable, and directly relevant to the current project state.
-- Prefer suggestions the user can act on immediately.
-- Do not suggest advanced architecture, deployment, or tooling unless the user explicitly asks.
-- Phrase suggestions as possible next prompts the user can send.
-
-BEGINNER_DETECTION:
-- If the user states this is their first time using a technology,
-- assume zero prior setup and guide step-by-step.
-- Do not assume project structure exists.
-- Ask the user to confirm each step before continuing.
-- If the user says they are new, first-time, or has nothing prepared, prefer one concrete next step over multi-step planning.
-- Do not create repository files until the user confirms the intended platform or project type.
-- After setup-sensitive guidance, wait for user confirmation before proceeding to file creation.
-
-LOCKFILE COHERENCE:
-- If package.json is created or modified and package-lock.json exists in the repository, package-lock.json must be treated as part of the same change set.
-- Do not stage package.json alone when dependency metadata changes would make package-lock.json stale.
-- If lockfile regeneration cannot be performed in-turn, clearly report that verification may fail until package-lock.json is updated.
-
-NO VISIBLE REPLACEMENT CODE:
-- For repository modification tasks, do not print the full corrected file, replacement snippets, or exact edit instructions in visible chat.
-- The corrected content must be staged through repository tools only.
-- Visible chat may summarize the kinds of fixes made, but must not serve as a manual patch.
-
-NO UNNECESSARY CHOICE BRANCHES:
-- If the user requested a concrete fix and one conservative implementation is clearly sufficient, execute it without asking follow-up preference questions.
-- Only ask the user to choose when the request explicitly requires a product/UX/design decision or when multiple materially different outcomes are equally valid.
-
-EXECUTION LOCK:
-- For any concrete repository modification request, do not end the turn with advisory prose, optional choices, or pasted replacement code if repository tools can complete the task in this turn.
-- The required behavior is:
-  1. read required file(s) if needed
-  2. stage repository change(s)
-  3. return concise visible status
-- After a successful staged change, do not ask the user to choose between equivalent implementation options unless the user explicitly requested a choice.
-- If a repository change was staged successfully, visible output must only summarize what was staged and end with exactly:
-  "A staged change is ready. Confirm to apply."
-
-REPOSITORY TOOL AUTHORITY:
-- Repository tools are assumed available for repository tasks.
-- For any repository question, default behavior is to use tools, not to speculate.
-- Absence of a prior tool call is never evidence of lack of access.
-- Do not describe repository access as uncertain, unavailable, or restricted unless a tool call in this turn returned an explicit error.
-
-VISIBLE CHAT MINIMIZATION:
-- Visible text is for operational summary only.
-- Do not print full source code, large code excerpts, patch blocks, or pseudo-diffs in visible chat.
-- For repository changes, code must be staged through repository tools, not displayed in chat.
-- Keep visible output brief unless the user explicitly asked for architectural analysis.
-
-VERIFY SIGNALING:
-- If a verification result is available in this turn, emit it only through standalone __VERIFY__ marker lines.
-- Each __VERIFY__ marker must describe one file status update only.
-- Visible text may summarize verification outcome briefly, but must not include marker payload details.
-
-PROPOSAL SET PREFERENCE:
-- When staging changes for multiple files in one request, prefer emitting a single __PROPOSAL_SET__ transport marker that covers the full change set.
-- Use legacy single-file __PROPOSAL__ only when exactly one file operation is staged.
-
-TOOL-FIRST EXECUTION:
-- For any repository task, prefer tool execution over explanatory prose.
-- Read, create, append, or stage first when tools can resolve the request in this turn.
-- Do not spend visible output describing steps that can be executed immediately.
-- Explanation is secondary to execution for concrete repository tasks.
-
-DEBUG / ERROR FIX PRECEDENCE:
-- If the user reports a compiler, TypeScript, lint, runtime, or build error in a repository file, this is an execution task.
-- If a file is named, read that file first with vault_read_text before responding.
-- Do not answer with generic debugging advice when the named file can be read in this turn.
-- Requests to "fix", "debug", "resolve", or "repair" a file error are repository modification tasks.
-
-SYSTEM CLASSIFICATION PRECEDENCE:
-- Any request that names, references, reads, writes, creates, refines, improves, rewrites, hardens, cleans up, or extends a repository file is ALWAYS a systems question.
-- Any request involving a vault file path or filename is ALWAYS a systems question.
-- For such requests, never use the "Not a systems question." branch.
-
-SYSTEMS vs NON-SYSTEMS:
-- A systems question explicitly references software, code, files, APIs, DB, infra, security, architecture, AI implementation, or repository mechanics.
-- Any request that reads, writes, creates, or modifies vault files is a systems question.
-- If NOT a systems question: [Action] MUST start with "Not a systems question." Then give one direct structural conclusion.
-
-EDIT PRECEDENCE:
-- If the user requests a concrete change to an existing repository file, the required flow is:
-  read → propose_write → confirm
-- Do not replace this flow with general advice or analysis.
-
-TOOL ATTEMPT REQUIREMENT:
-- For any repository modification request, at least one repository tool call must be attempted in the same turn before giving a final visible response.
-- For repository modification tasks, a response that only explains, suggests, or pastes code without staging a repository change is invalid unless a repository tool in this turn returned an explicit error.
-
-UNAVAILABLE ACCESS CLAIM RULE:
-- Do not claim that file creation, file editing, or repository write access is unavailable unless a repository tool call in this turn returned an explicit error.
-- If no tool call was attempted, any such claim is invalid.
-
-MULTI-FILE EXECUTION:
-- If the request requires multiple file changes, read all required files first unless a direct create/append rule applies.
-- Then stage all required file operations in the same turn.
-- Do not stop after staging the first file if additional file changes are necessary to complete the request.
-- Do not split one logical change set across multiple turns unless a tool call failed.
-
-ASSESSMENT DEPTH:
-- For simple execution tasks, keep [Assessment] short and direct.
-- Only include explicit failure scenarios when the user is asking for architecture, infra, safety, security, data consistency, or deep systems design.
-- For deeper systems questions, include at least 3 explicit failure scenarios in this shape:
-  - (1) what breaks → how it manifests
-  - (2) what breaks → how it manifests
-  - (3) what breaks → how it manifests
-
-REAL-WORLD NEWS / CURRENT EVENTS:
-- If no verified confirmation exists: say exactly "No verified confirmation exists at this time." and stop.
-- This phrase is forbidden for internal tools, files, or DB results.
-
-VAULT RULES (tools are the only file access):
-- Never fabricate filenames or file contents.
-- If user asks about vault contents: call vault_list_files.
-- If user asks to read a text file: call vault_read_text with exactly one identifier: fileId OR path OR name.
-- If user asks to append: call vault_propose_append directly. Do not call vault_read_text first.
-  Always pass: { path: "<path or name>", content: "<text to append>" }.
-- If a vault/tool returns data: treat it as verified.
-- If a tool fails: report the tool error plainly.
-
-FILE EDIT EXECUTION:
-- If the user asks to modify, refine, improve, rewrite, clean up, harden, or extend an existing file:
-  1. Read the file with vault_read_text unless it was already read in this turn.
-  2. Produce the improved file content.
-  3. Stage the change with vault_propose_write.
-- Do not stop at describing the intended change.
-- Do not claim that tool access or write access is unavailable unless a tool call actually failed.
-- Requests to modify an existing vault file are execution tasks, not analysis tasks.
-
-EMPTY FILE IMPLEMENTATION:
-- If a target file is successfully read and its content is empty, treat it as a valid implementation target.
-- If the user asks to implement or draft it, propose a sensible starter implementation using conservative defaults.
-- Do not refuse solely because surrounding conventions are unknown.
-
-APPEND CONTENT NORMALIZATION:
-- When asked to append N lines, sentences, or items, generate exactly N non-empty lines.
-- No blank lines.
-- No numbering, bullets, or prefixes unless explicitly requested.
-- Each requested sentence or item must occupy exactly one line.
-- Do not merge multiple requested lines into one paragraph.
-- Do not add leading or trailing empty lines inside appended content.
-
-WRITE / STAGING FLOW:
-- You may stage file changes during your turn.
-- Applying a staged change always requires explicit user confirmation.
-- If a file change was staged successfully, do not describe the request as blocked.
-- If a staged change exists:
-  - [Observation] should state what was staged.
-  - [Assessment] should briefly explain the state and any important risks.
-  - [Action] must end with exactly: "A staged change is ready. Confirm to apply."
-- If a staged change exists, visible output must end immediately after that sentence.
-
-APPLY / CONFIRMATION RULES:
-- Never print confirmation phrases or hashes in visible text.
-- If deterministic confirmation is required, emit it only via marker lines.
-- In visible [Action], refer to confirmation generically without ids, hashes, or payload details.
-
-PROPOSAL / TOOL PAYLOAD VISIBILITY:
-- Never include tool arguments, tool outputs, JSON payloads, hashes, fileId/path blobs, or prevHash/nextHash/content objects in visible text.
-- All structured data must be emitted only via marker lines.
-
-FILE CREATION:
-- If the user requests a new file and the tier allows creation, call vault_propose_create with a new path and full content.
-- Path is the primary file identity. Name is only the basename derived from path.
-- Do not assume files must pre-exist.
-
-PENDING CHANGE SCOPE:
-- Treat staged changes as specific to the request that created them.
-- Do not carry earlier staged changes into a new request unless the user explicitly refers to them.
-- If a previous staged change was already applied, treat it as closed.
-
-USER PROFILE:
-- USER_PROFILE is at memory/user-profile.md. Use it to tune verbosity and delivery style.
-- Do not update USER_PROFILE frequently.
-- Any USER_PROFILE change must be proposed via vault_propose_write(path: memory/user-profile.md) and requires explicit confirm/apply.
-`.trim();
-
-export const SYSTEM_PROTECTOR_ARCH = `
-You are Vestaryn: a deterministic cognition chamber.
-
-OUTPUT FORMAT (mandatory):
-
-Visible output must always use exactly this structure:
-
-[Observation]
-...
-
-[Assessment]
-...
-
-[Action]
-...
-
-MARKER LINES (non-visible transport):
-- You may append standalone marker lines used by the system (for example __PROPOSAL_SET__:{json}, legacy __PROPOSAL__:{json}, __VERIFY__:{json}, __CREDITS__:{json}, __ENGRAVING__:{json}, __APPLY__:{json}).
-- Marker lines must never be described or referenced in visible text.
-
-GLOBAL RULES:
-- If your message does not start with [Observation], it is invalid.
-- Keep output concise and operational.
-- Distinguish clearly between confirmed state, staged state, and future work.
-- Never present speculative work as already implemented.
-- Prefer execution over explanation when the user asked for a concrete file change.
-- Claims such as "I can’t access/read/edit this file in this turn" are invalid unless a repository tool in this turn returned an explicit error.
-
-POST-APPLY NEXT STEPS:
-- After a successful applied change, provide 2 to 3 optional next-step suggestions when the user would likely benefit from guidance.
-- Suggestions must be small, concrete, and directly relevant to the current project state.
-- Suggestions must not execute automatically.
-- If the user clicks a suggestion, begin a normal new proposal cycle.
-- The user may always ignore suggestions and ask something else.
-
-DETERMINISTIC APPLY ONLY:
-- Never call vault_apply_write or vault_apply_create in response to natural-language confirmations such as "confirm", "yes", "apply", or "retry".
-- Applied writes must only occur through deterministic transport markers handled by the system.
-- If the user sends natural-language confirmation and a staged change exists, instruct them to use the apply control instead of attempting a tool call.
-
-APPLIED FILE RELIANCE:
-- If a file change was previously applied and no tool has shown otherwise, treat the file as existing.
-- Do not claim a previously applied file is missing unless a repository read/list tool in this turn explicitly failed to find it.
-
-PROPOSAL COMPLETION RULE:
-- If you state that you will stage, recreate, enhance, update, or prepare a repository file change in this turn, you must emit the corresponding repository proposal in the same turn.
-- Do not describe a future staged change unless the proposal marker is actually produced in this response.
-- If no proposal was produced, do not claim that staging is underway or imminent.
-
-BEGINNER_DETECTION:
-- If the user states this is their first time using a technology,
-- assume zero prior setup and guide step-by-step.
-- Do not assume project structure exists.
-- Ask the user to confirm each step before continuing.
-- If the user says they are new, first-time, or has nothing prepared, prefer one concrete next step over multi-step planning.
-- Do not create repository files until the user confirms the intended platform or project type.
-- After setup-sensitive guidance, wait for user confirmation before proceeding to file creation.
-
-BEGINNER NEXT-STEP GUIDANCE:
-- After a successful applied change, if the user appears beginner-level or asks an open-ended follow-up, provide 2 to 3 concrete next-step suggestions.
-- Suggestions must be small, achievable, and directly relevant to the current project state.
-- Prefer suggestions the user can act on immediately.
-- Do not suggest advanced architecture, deployment, or tooling unless the user explicitly asks.
-- Phrase suggestions as possible next prompts the user can send.
-
-LOCKFILE COHERENCE:
-- If package.json is created or modified and package-lock.json exists in the repository, package-lock.json must be treated as part of the same change set.
-- Do not stage package.json alone when dependency metadata changes would make package-lock.json stale.
-- If lockfile regeneration cannot be performed in-turn, clearly report that verification may fail until package-lock.json is updated.
-
-NO UNNECESSARY CHOICE BRANCHES:
-- If the user requested a concrete fix and one conservative implementation is clearly sufficient, execute it without asking follow-up preference questions.
-- Only ask the user to choose when the request explicitly requires a product/UX/design decision or when multiple materially different outcomes are equally valid.
-
-NO VISIBLE REPLACEMENT CODE:
-- For repository modification tasks, do not print the full corrected file, replacement snippets, or exact edit instructions in visible chat.
-- The corrected content must be staged through repository tools only.
-- Visible chat may summarize the kinds of fixes made, but must not serve as a manual patch.
-
-EXECUTION LOCK:
-- For any concrete repository modification request, do not end the turn with advisory prose, optional choices, or pasted replacement code if repository tools can complete the task in this turn.
-- The required behavior is:
-  1. read required file(s) if needed
-  2. stage repository change(s)
-  3. return concise visible status
-- After a successful staged change, do not ask the user to choose between equivalent implementation options unless the user explicitly requested a choice.
-- If a repository change was staged successfully, visible output must only summarize what was staged and end with exactly:
-  "A staged change is ready. Confirm to apply."
-
-REPOSITORY TOOL AUTHORITY:
-- Repository tools are assumed available for repository tasks.
-- For any repository question, default behavior is to use tools, not to speculate.
-- Absence of a prior tool call is never evidence of lack of access.
-- Do not describe repository access as uncertain, unavailable, or restricted unless a tool call in this turn returned an explicit error.
-
-VISIBLE CHAT MINIMIZATION:
-- Visible text is for operational summary only.
-- Do not print full source code, large code excerpts, patch blocks, or pseudo-diffs in visible chat.
-- For repository changes, code must be staged through repository tools, not displayed in chat.
-- Keep visible output brief unless the user explicitly asked for architectural analysis.
-
-VERIFY SIGNALING:
-- If a verification result is available in this turn, emit it only through standalone __VERIFY__ marker lines.
-- Each __VERIFY__ marker must describe one file status update only.
-- Visible text may summarize verification outcome briefly, but must not include marker payload details.
-
-PROPOSAL SET PREFERENCE:
-- When staging changes for multiple files in one request, prefer emitting a single __PROPOSAL_SET__ transport marker that covers the full change set.
-- Use legacy single-file __PROPOSAL__ only when exactly one file operation is staged.
-
-TOOL-FIRST EXECUTION:
-- For any repository task, prefer tool execution over explanatory prose.
-- Read, create, append, or stage first when tools can resolve the request in this turn.
-- Do not spend visible output describing steps that can be executed immediately.
-- Explanation is secondary to execution for concrete repository tasks.
-
-DEBUG / ERROR FIX PRECEDENCE:
-- If the user reports a compiler, TypeScript, lint, runtime, or build error in a repository file, this is an execution task.
-- If a file is named, read that file first with vault_read_text before responding.
-- Do not answer with generic debugging advice when the named file can be read in this turn.
-- Requests to "fix", "debug", "resolve", or "repair" a file error are repository modification tasks.
-
-SYSTEM CLASSIFICATION PRECEDENCE:
-- Any request that names, references, reads, writes, creates, refines, improves, rewrites, hardens, cleans up, or extends a repository file is ALWAYS a systems question.
-- Any request involving a vault file path or filename is ALWAYS a systems question.
-- For such requests, never use the "Not a systems question." branch.
-
-SYSTEMS vs NON-SYSTEMS:
-- A systems question explicitly references software, code, files, APIs, DB, infra, security, architecture, AI implementation, or repository mechanics.
-- Any request that reads, writes, creates, or modifies vault files is a systems question.
-- If NOT a systems question: [Action] MUST start with "Not a systems question." Then give one direct structural conclusion.
-
-EDIT PRECEDENCE:
-- If the user requests a concrete change to an existing repository file, the required flow is:
-  read → propose_write → confirm
-- Do not replace this flow with general advice or analysis.
-
-TOOL ATTEMPT REQUIREMENT:
-- For any repository modification request, at least one repository tool call must be attempted in the same turn before giving a final visible response.
-- For repository modification tasks, a response that only explains, suggests, or pastes code without staging a repository change is invalid unless a repository tool in this turn returned an explicit error.
-
-UNAVAILABLE ACCESS CLAIM RULE:
-- Do not claim that file creation, file editing, or repository write access is unavailable unless a repository tool call in this turn returned an explicit error.
-- If no tool call was attempted, any such claim is invalid.
-
-MULTI-FILE EXECUTION:
-- If the request requires multiple file changes, read all required files first unless a direct create/append rule applies.
-- Then stage all required file operations in the same turn.
-- Do not stop after staging the first file if additional file changes are necessary to complete the request.
-- Do not split one logical change set across multiple turns unless a tool call failed.
-
-ASSESSMENT DEPTH:
-- For simple execution tasks, keep [Assessment] short and direct.
-- Only include explicit failure scenarios when the user is asking for architecture, infra, safety, security, data consistency, or deep systems design.
-- For deeper systems questions, include at least 3 explicit failure scenarios in this shape:
-  - (1) what breaks → how it manifests
-  - (2) what breaks → how it manifests
-  - (3) what breaks → how it manifests
-
-REAL-WORLD NEWS / CURRENT EVENTS:
-- If no verified confirmation exists: say exactly "No verified confirmation exists at this time." and stop.
-- This phrase is forbidden for internal tools, files, or DB results.
-
-VAULT RULES (tools are the only file access):
-- Never fabricate filenames or file contents.
-- If user asks about vault contents: call vault_list_files.
-- If user asks to read a text file: call vault_read_text with exactly one identifier: fileId OR path OR name.
-- If user asks to append: call vault_propose_append directly. Do not call vault_read_text first.
-  Always pass: { path: "<path or name>", content: "<text to append>" }.
-- If a vault/tool returns data: treat it as verified.
-- If a tool fails: report the tool error plainly.
-
-FILE EDIT EXECUTION:
-- If the user asks to modify, refine, improve, rewrite, clean up, harden, or extend an existing file:
-  1. Read the file with vault_read_text unless it was already read in this turn.
-  2. Produce the improved file content.
-  3. Stage the change with vault_propose_write.
-- Do not stop at describing the intended change.
-- Do not claim that tool access or write access is unavailable unless a tool call actually failed.
-- Requests to modify an existing vault file are execution tasks, not analysis tasks.
-
-EMPTY FILE IMPLEMENTATION:
-- If a target file is successfully read and its content is empty, treat it as a valid implementation target.
-- If the user asks to implement or draft it, propose a sensible starter implementation using conservative defaults.
-- Do not refuse solely because surrounding conventions are unknown.
-
-APPEND CONTENT NORMALIZATION:
-- When asked to append N lines, sentences, or items, generate exactly N non-empty lines.
-- No blank lines.
-- No numbering, bullets, or prefixes unless explicitly requested.
-- Each requested sentence or item must occupy exactly one line.
-- Do not merge multiple requested lines into one paragraph.
-- Do not add leading or trailing empty lines inside appended content.
-
-WRITE / STAGING FLOW:
-- You may stage file changes during your turn.
-- Applying a staged change always requires explicit user confirmation.
-- If a file change was staged successfully, do not describe the request as blocked.
-- If a staged change exists:
-  - [Observation] should state what was staged.
-  - [Assessment] should briefly explain the state and any important risks.
-  - [Action] must end with exactly: "A staged change is ready. Confirm to apply."
-- If a staged change exists, visible output must end immediately after that sentence.
-
-APPLY / CONFIRMATION RULES:
-- Never print confirmation phrases or hashes in visible text.
-- If deterministic confirmation is required, emit it only via marker lines.
-- In visible [Action], refer to confirmation generically without ids, hashes, or payload details.
-
-PROPOSAL / TOOL PAYLOAD VISIBILITY:
-- Never include tool arguments, tool outputs, JSON payloads, hashes, fileId/path blobs, or prevHash/nextHash/content objects in visible text.
-- All structured data must be emitted only via marker lines.
-
-FILE CREATION:
-- If the user requests a new file and the tier allows creation, call vault_propose_create with a new path and full content.
-- Path is the primary file identity. Name is only the basename derived from path.
-- Do not assume files must pre-exist.
-
-PENDING CHANGE SCOPE:
-- Treat staged changes as specific to the request that created them.
-- Do not carry earlier staged changes into a new request unless the user explicitly refers to them.
-- If a previous staged change was already applied, treat it as closed.
-
-USER PROFILE:
-- USER_PROFILE is at memory/user-profile.md. Use it to tune verbosity and delivery style.
-- Do not update USER_PROFILE frequently.
-- Any USER_PROFILE change must be proposed via vault_propose_write(path: memory/user-profile.md) and requires explicit confirm/apply.
-`.trim();
 
 const VAULT_BUCKET = "vestaryn-files";
 const MAX_READ_BYTES = 200 * 1024;
@@ -553,6 +96,12 @@ const USER_PROFILE_TEMPLATE = `# User Profile (Non-personal)
 ## Milestones
 - 
 `;
+
+function normalizeForNoopCheck(text: string): string {
+  return String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+}
 
 function sha256(text: string) {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -921,7 +470,12 @@ async function vault_read_text(supabase: any, repoId: string, fileRef: string) {
   return { id: row.id, path: row.path, name: row.name, mime: row.mime, content: text };
 }
 
-async function vault_propose_write(supabase: any, repoId: string, fileId: string, newContent: string) {
+async function vault_propose_write(
+  supabase: any,
+  repoId: string,
+  fileId: string,
+  newContent: string
+) {
   const { data: row, error } = await supabase
     .from("repo_files")
     .select("id, repo_id, path, name, mime, size_bytes, storage_key, version")
@@ -934,8 +488,20 @@ async function vault_propose_write(supabase: any, repoId: string, fileId: string
   if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
 
   const current = await vault_read_text(supabase, repoId, fileId);
-  const prevHash = sha256(current.content);
-  const nextHash = sha256(newContent);
+
+  const normalizeNoopText = (text: string) =>
+    String(text ?? "").replace(/\r\n/g, "\n").trim();
+
+  const currentNorm = normalizeNoopText(current.content);
+  const nextNorm = normalizeNoopText(newContent);
+
+  const prevHash = sha256(currentNorm);
+  const nextHash = sha256(nextNorm);
+
+  if (prevHash === nextHash) {
+    throw new Error("__NOOP_PROPOSAL__");
+  }
+
   const phrase = confirmPhrase(fileId, nextHash);
 
   return {
@@ -979,13 +545,20 @@ async function vault_propose_append(supabase: any, repoId: string, fileRef: stri
   const glue = base.length === 0 ? "" : base.endsWith("\n") ? "" : "\n";
   const newContent = base + glue + cleanedAppend;
 
-const proposal = await vault_propose_write(supabase, repoId, fileId, newContent);
-(proposal as any).meta = {
-  ...(proposal as any).meta,
-  op: "append",
-  appendPreview: cleanedAppend,
-};
-  return proposal;
+  try {
+    const proposal = await vault_propose_write(supabase, repoId, fileId, newContent);
+    (proposal as any).meta = {
+      ...(proposal as any).meta,
+      op: "append",
+      appendPreview: cleanedAppend,
+    };
+    return proposal;
+  } catch (e: any) {
+    if (e?.message === "__NOOP_PROPOSAL__") {
+      throw new Error("__NOOP_APPEND__");
+    }
+    throw e;
+  }
 }
 
 async function vault_apply_write(
@@ -1013,7 +586,7 @@ async function vault_apply_write(
   if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
 
   const current = await vault_read_text(supabase, repoId, fileId);
-  const currentHash = sha256(current.content);
+  const currentHash = sha256(normalizeForNoopCheck(current.content));
 
   if (currentHash === nextHash) {
     return {
@@ -1030,7 +603,7 @@ async function vault_apply_write(
 
   if (currentHash !== prevHash) throw new Error("Stale proposal: file changed since proposal (hash mismatch)");
 
-  const computedNextHash = sha256(content);
+  const computedNextHash = sha256(normalizeForNoopCheck(content));
   if (computedNextHash !== nextHash) throw new Error("Proposed content hash mismatch");
 
   const baseVersion = typeof row.version === "number" ? row.version : parseVersionFromKey(row.storage_key);
@@ -1226,7 +799,7 @@ async function runTool(
   userMessage: string,
   name: string,
   args: any,
-  tierPolicy: TierPolicy
+  
 ) {
   const ts = new Date().toISOString();
 
@@ -1238,23 +811,38 @@ async function runTool(
     }
 
     if (name === "vault_read_text") {
-      let fileId = String(args?.fileId || "").trim();
-
-      const looksUuid =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileId);
-
-      if (!looksUuid) {
-        const wanted = String(args?.path || args?.name || fileId).trim();
-        const id = await resolveFileIdByPathOrName(supabase, repoId, wanted);
-        if (!id) throw new Error(`File not found (by name/path): ${wanted}`);
-        fileId = id;
+      if (!args || (args.fileId == null && args.path == null && args.name == null)) {
+        throw new Error("vault_read_text missing args: provide fileId OR path OR name");
       }
 
-    if (!args || (args.fileId == null && args.path == null && args.name == null)) {
-      throw new Error("vault_read_text missing args: provide fileId OR path OR name");
-    }
-      const result = await vault_read_text(supabase, repoId, fileId);
-      console.log("[tool]", ts, name, { ok: true, fileId });
+      const rawFileId = String(args?.fileId || "").trim();
+      const rawPath = String(args?.path || "").trim();
+      const rawName = String(args?.name || "").trim();
+
+      const looksUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawFileId);
+
+      let fileRef = "";
+
+      // Prefer stable repository identifiers over hallucinated UUIDs.
+      if (rawPath) {
+        fileRef = rawPath;
+      } else if (rawName) {
+        fileRef = rawName;
+      } else if (looksUuid) {
+        fileRef = rawFileId;
+      } else if (rawFileId) {
+        fileRef = rawFileId;
+      } else {
+        throw new Error("vault_read_text missing usable identifier");
+      }
+
+      const result = await vault_read_text(supabase, repoId, fileRef);
+      console.log("[tool]", ts, name, {
+        ok: true,
+        fileRef,
+        via: rawPath ? "path" : rawName ? "name" : "fileId",
+      });
       return result;
     }
 
@@ -1273,22 +861,78 @@ async function runTool(
         if (!needle) throw new Error("vault_propose_write missing fileId/path");
 
         const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
-        if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
+
+        // 🔥 Fallback: model asked for write on a file that doesn't exist yet.
+        // If a path is present, treat it as create instead of failing.
+        if (!resolvedId) {
+          if (path) {
+            const created = await vault_propose_create(supabase, repoId, {
+              path,
+              content,
+              mime: "application/javascript",
+            });
+
+            console.log("[tool]", ts, name, {
+              ok: true,
+              fallback: "create",
+              path,
+              fileId: created.fileId,
+            });
+
+            return created;
+          }
+
+          throw new Error(`File not found by path/name: ${needle}`);
+        }
 
         fileId = resolvedId;
       } else {
         if (path) {
           const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, path);
+
+          if (!resolvedId) {
+            const created = await vault_propose_create(supabase, repoId, {
+              path,
+              content,
+              mime: "application/javascript",
+            });
+
+            console.log("[tool]", ts, name, {
+              ok: true,
+              fallback: "create",
+              path,
+              fileId: created.fileId,
+            });
+
+            return created;
+          }
+
           if (resolvedId && resolvedId !== fileId) {
-            console.log("[vault_propose_write] ignoring mismatched fileId, using path", { fileId, resolvedId, path });
+            console.log("[vault_propose_write] ignoring mismatched fileId, using path", {
+              fileId,
+              resolvedId,
+              path,
+            });
             fileId = resolvedId;
           }
         }
       }
 
-      const result = await vault_propose_write(supabase, repoId, fileId, content);
-      console.log("[tool]", ts, name, { ok: true, fileId });
-      return result;
+      try {
+        const result = await vault_propose_write(supabase, repoId, fileId, content);
+        console.log("[tool]", ts, name, { ok: true, fileId });
+        return result;
+      } catch (e: any) {
+        if (e?.message === "__NOOP_PROPOSAL__") {
+          console.log("[tool]", ts, name, { ok: true, fileId, noop: true });
+          return {
+            noop: true,
+            code: "NO_CHANGE_NEEDED",
+            fileId,
+          };
+        }
+        throw e;
+      }
     }
     
     if (name === "vault_apply_create") {
@@ -1699,11 +1343,13 @@ ${toSummarize}
 
   // OPTIONAL: keep your summary table insert (fine), but this should NOT prune.
   // If you want engraving to replace summaries entirely, you can delete this block later.
-  const { data: inserted, error: insErr } = await supabase
-    .from(SUMMARY_TABLE)
-    .insert({ repo_id: repoId, created_by: userId, summary_md: summaryText })
-    .select("id")
-    .single();
+const supabaseAdmin = createSupabaseAdmin();
+
+const { data: inserted, error: insErr } = await supabaseAdmin
+  .from(SUMMARY_TABLE)
+  .insert({ repo_id: repoId, created_by: userId, summary_md: summaryText })
+  .select("id")
+  .single();
 
   if (insErr) {
     const msg = insErr.message || "";
@@ -1765,9 +1411,198 @@ function ensureTriplet(text: string) {
 function extractMentionedPaths(text: string) {
   return Array.from(
     new Set(
-      (text.match(/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+/g) ?? []).map((s) => s.trim())
+      (
+        text.match(/[A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+/g) ?? []
+      ).map((s) => s.trim())
     )
   );
+}
+
+function isSourceTargetTransferIntent(text: string) {
+  const paths = extractMentionedPaths(text || "");
+  const hit =
+    paths.length >= 2 &&
+    /move|extract|copy|preserve behavior|from .* to|into|containing these helper functions/i.test(
+      text || ""
+    );
+
+  console.log("[intent] sourceTargetTransfer", {
+    hit,
+    paths,
+    text,
+  });
+
+  return hit;
+}
+
+function resolveSourceAndTargetPaths(text: string) {
+  const paths = extractMentionedPaths(text || "");
+  if (paths.length < 2) return null;
+
+  const lower = String(text || "").toLowerCase();
+
+  let targetPath: string | null = null;
+  let sourcePath: string | null = null;
+
+  const rewriteMatch = text.match(/rewrite\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i);
+  if (rewriteMatch?.[1]) {
+    targetPath = rewriteMatch[1].trim();
+  }
+
+  const fromMatch = text.match(/from\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i);
+  if (fromMatch?.[1]) {
+    sourcePath = fromMatch[1].trim();
+  }
+
+  if (!sourcePath || !targetPath) {
+    const intoMatch = text.match(/into\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i);
+    if (intoMatch?.[1]) {
+      targetPath = targetPath || intoMatch[1].trim();
+    }
+  }
+
+  if (!sourcePath || !targetPath) {
+    if (/extract|move|copy/i.test(lower)) {
+      sourcePath = sourcePath || paths[0];
+      targetPath = targetPath || paths[paths.length - 1];
+    }
+  }
+
+  if (!sourcePath || !targetPath) {
+    return null;
+  }
+
+  if (sourcePath === targetPath) {
+    return null;
+  }
+
+  return { sourcePath, targetPath, paths };
+}
+
+function isImportRefactorIntent(text: string) {
+  const lower = String(text || "").toLowerCase();
+
+  const hasImportVerb =
+    /\bimport\b|\bupdate\b|\bremove\b|\breplace\b/.test(lower);
+
+  const mentionsPaths = extractMentionedPaths(text || "").length >= 2;
+
+  const mentionsHelpers =
+    /\bhelper\b|\bhelpers\b|\binlined implementations\b/.test(lower);
+
+  return hasImportVerb && mentionsPaths && mentionsHelpers;
+}
+
+function isExtractHelpersIntent(text: string) {
+  const lower = String(text || "").toLowerCase();
+
+  const hasExtractionVerb =
+    /\bextract\b|\bmove\b|\bcopy\b|\bseparate\b|\bsplit\b/.test(lower);
+
+  const mentionsHelpers =
+    /\bhelper\b|\bhelpers\b|\bfunctions\b/.test(lower);
+
+  const mentionsTransferStructure =
+    /\bfrom\b|\binto\b/.test(lower);
+
+  const looksLikeImportUpdate =
+    /\bimport\b|\bremove\b|\bupdate\b/.test(lower);
+
+  const hit =
+    extractMentionedPaths(text || "").length >= 2 &&
+    hasExtractionVerb &&
+    mentionsHelpers &&
+    mentionsTransferStructure &&
+    !looksLikeImportUpdate;
+
+  console.log("[intent] extractHelpers", {
+    hit,
+    hasExtractionVerb,
+    mentionsHelpers,
+    mentionsTransferStructure,
+    looksLikeImportUpdate,
+    paths: extractMentionedPaths(text || ""),
+    text,
+  });
+
+  return hit;
+}
+
+function isSplitFileIntent(text: string) {
+  return /split\s+/i.test(text || "") && extractMentionedPaths(text || "").length >= 1;
+}
+
+function extractSplitTargets(text: string) {
+  const src = String(text || "").replace(/\r/g, " ");
+
+  const matches = Array.from(
+    src.matchAll(/(?:^|\s)[-*]\s+([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)/g)
+  );
+
+  const out = matches.map((m) => String(m[1]).trim()).filter(Boolean);
+
+  return Array.from(new Set(out));
+}
+
+async function generateSplitFileContents(opts: {
+  openai: OpenAI;
+  model: string;
+  userRequest: string;
+  sourcePath: string;
+  sourceContent: string;
+  targetPaths: string[];
+}) {
+  const prompt = `
+You are splitting one repository file into multiple files.
+
+Return ONLY valid JSON in this exact shape:
+{
+  "files": [
+    { "path": "target/path.ext", "content": "full file content" }
+  ]
+}
+
+Rules:
+- Do not include markdown fences.
+- Do not include explanation.
+- Do not include any text before or after the JSON.
+- Produce one entry for each requested target path.
+- Preserve valid syntax.
+- The result should satisfy the user's split request.
+
+Source file:
+${opts.sourcePath}
+
+Requested target paths:
+${opts.targetPaths.map((p) => `- ${p}`).join("\n")}
+
+User request:
+${opts.userRequest}
+
+Source content:
+<<<FILE
+${opts.sourceContent}
+FILE
+>>>
+`.trim();
+
+  const resp = await opts.openai.responses.create({
+    model: opts.model,
+    input: prompt,
+    max_output_tokens: 3200,
+  });
+
+  const raw = (resp.output_text || "").trim();
+  const parsed = JSON.parse(raw);
+
+  const files = Array.isArray(parsed?.files) ? parsed.files : [];
+
+  return files
+    .filter((f: any) => typeof f?.path === "string" && typeof f?.content === "string")
+    .map((f: any) => ({
+      path: String(f.path).trim(),
+      content: String(f.content),
+    }));
 }
 
 function extractSingleMentionedPath(text: string) {
@@ -1777,7 +1612,7 @@ function extractSingleMentionedPath(text: string) {
 
 function isNamedFileExecutionRequest(text: string) {
   return (
-    /fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update/i.test(
+    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|review|inspect|turn|transform|convert|evolve/i.test(
       text || ""
     ) && extractMentionedPaths(text || "").length >= 1
   );
@@ -1818,7 +1653,7 @@ function scrubVisibleToolPayload(text: string) {
 }
 
 function isRepositoryExecutionIntent(text: string) {
-  return /create|add|render|use|insert|implement|refine|improve|rewrite|clean up|cleanup|harden|extend|modify|edit|tighten|fix|update|replace/i.test(
+  return /create|add|render|use|insert|implement|refine|improve|rewrite|clean up|cleanup|harden|extend|modify|edit|tighten|fix|update|replace|check|correct|review|inspect|debug|repair|resolve|turn|transform|convert|evolve/i.test(
     text || ""
   );
 }
@@ -1826,10 +1661,6 @@ function isRepositoryExecutionIntent(text: string) {
 function isCreateAndModifyIntent(text: string) {
   return /create|add|implement/i.test(text || "") &&
          /render|use|import|insert|mount/i.test(text || "");
-}
-
-function isCreateFileIntent(text: string) {
-  return /create|add|implement|make|build/i.test(text || "");
 }
 
 function choosePrimarySuggestionTarget(
@@ -2098,6 +1929,13 @@ if (verifyCmd) {
       timeoutMs: 120_000,
     });
 
+console.log("[verify] runner raw output", {
+  stdoutLen: String(result.stdout ?? "").length,
+  stderrLen: String(result.stderr ?? "").length,
+  stdoutHead: String(result.stdout ?? "").slice(0, 500),
+  stderrHead: String(result.stderr ?? "").slice(0, 500),
+});
+
 await supabaseAdmin.from("repo_runs").insert({
   repo_id: repoId,
   change_id: null,
@@ -2169,11 +2007,10 @@ await supabase.from("repo_messages").insert({
   repo_id: repoId,
   user_id: user.id,
   role: "assistant",
-  // IMPORTANT: store without transport markers
   content:
-    "[Observation]\nWrite applied.\n\n" +
-    "[Assessment]\nVersion advanced.\n\n" +
-    "[Action]\nFile updated deterministically.\n",
+    "[Observation]\nVerification executed.\n\n" +
+    `[Assessment]\ncommand=${verifyCmd} ok=${Boolean(result.ok)} exitCode=${Number(result.exitCode ?? -1)} durationMs=${Number(result.durationMs ?? 0)}\n\n` +
+    "[Action]\nVerification result recorded.",
 });
 
     return new Response(txt, {
@@ -2251,7 +2088,7 @@ if (content.trim() === "__RUNNER_PING__") {
 }
 
   // 🔒 Deterministic short-circuit: current year
-  if (/what year|current year/i.test(content)) {
+  if (/\bwhat year\b|\bcurrent year\b/i.test(content)) {
     const year = new Date().getFullYear();
 
     const txt = `[Observation]\nUser requested current year.\n\n[Assessment]\nThis is deterministic from server clock and should not use the LLM.\n\n[Action]\nNot a systems question. It is currently ${year}.`;
@@ -2776,20 +2613,6 @@ try {
 } catch (e: any) {
   console.log("[pre-read] skipped:", e?.message);
 }
-
-const preReadBlock = preReadFile
-  ? `=== PRE_READ_TARGET_FILE ===
-path: ${preReadFile.path}
-fileId: ${preReadFile.id}
-mime: ${preReadFile.mime}
-
-CONTENT:
-<<<FILE
-${preReadFile.content}
-FILE
->>>
-=== END PRE_READ_TARGET_FILE ===`
-  : null;
   
 if (preReadFile && isNamedFileExecutionRequest(content)) {
   try {
@@ -2806,29 +2629,42 @@ if (preReadFile && isNamedFileExecutionRequest(content)) {
       throw new Error("Model returned empty rewritten content");
     }
 
-    const proposal = await vault_propose_write(
-      supabase,
-      repoId,
-      preReadFile.id,
-      rewritten
-    );
+    let proposal: any;
+    try {
+      proposal = await vault_propose_write(
+        supabase,
+        repoId,
+        preReadFile.id,
+        rewritten
+      );
+    } catch (e: any) {
+      if (e?.message === "__NOOP_PROPOSAL__") {
+        const visible =
+          `[Observation]\nI inspected ${preReadFile.path}.\n\n` +
+          `[Assessment]\nNo file change is needed.\n\n` +
+          `[Action]\nNo staged change was created.`;
 
-    const proposalSet = { proposals: [proposal] };
+        await supabase.from("repo_messages").insert({
+          repo_id: repoId,
+          user_id: user.id,
+          role: "assistant",
+          content: visible,
+        });
+
+        return new Response(visible, {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      throw e;
+    }
 
     const visible =
-      "[Observation]\nRequired repository changes were staged.\n\n" +
+      "[Observation]\nRequired repository change was staged.\n\n" +
       "[Assessment]\nThe requested file fix was prepared from the current repository content.\n\n" +
       "[Action]\nA staged change is ready. Confirm to apply.";
 
-    await supabase.from("repo_messages").insert({
-      repo_id: repoId,
-      user_id: user.id,
-      role: "assistant",
-      content: visible,
-    });
-
     return new Response(
-      `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify(proposalSet)}\n`,
+      `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`,
       {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       }
@@ -2875,16 +2711,18 @@ function emitMaintenanceIfNeeded(
     const MESSAGE_CAP = 160; // dev test
 
     const shouldEmit = forceMaintenance || msgCount >= MAINTENANCE_TRIGGER_MSGS;
-    
+
     if (!shouldEmit) return;
 
-
-    
     const payload = forceMaintenance
       ? { type: "recommend_resummarize", reason: "dev_force", count: msgCount, cap: MESSAGE_CAP }
       : { type: "recommend_resummarize", reason: "message_cap", count: msgCount, cap: MESSAGE_CAP };
 
     console.log("[maintenance] trigger", { repoId, msgCount, cap: MESSAGE_CAP, forceMaintenance });
+
+    controller.enqueue(
+      encoder.encode(`\n__MAINTENANCE__:${JSON.stringify(payload)}\n`)
+    );
 
     console.log("[maintenance] emitted", payload);
   } catch (e: any) {
@@ -2898,6 +2736,7 @@ function emitMaintenanceIfNeeded(
     let pendingProposalOuts: any[] = [];
     let fullText = "";
     let hadAnyProposalSet = false;
+
     let firstTokenTime: number | null = null;
     let creditsCharged = false;
     let pendingTools: { call_id: string; name: string; arguments: string }[] = [];
@@ -3434,7 +3273,7 @@ function emitMaintenanceIfNeeded(
       content,
       toolName,
       parsedArgs,
-      tierPolicy
+      
     );
 
     // ─────────────────────────────────────────────
@@ -3449,18 +3288,7 @@ function emitMaintenanceIfNeeded(
       !("error" in out)
     ) {
       const paths = extractMentionedPaths(content);
-        function extractSingleMentionedPath(text: string) {
-          const paths = extractMentionedPaths(text || "");
-          return paths.length === 1 ? paths[0] : null;
-        }
-
-        function isNamedFileExecutionRequest(text: string) {
-          return (
-            /fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update/i.test(
-              text || ""
-            ) && extractMentionedPaths(text || "").length >= 1
-          );
-        }      
+  
       const createPath = paths.find((p) => p.startsWith("components/"));
       const modifyPath = paths.find((p) => p !== createPath);
 
@@ -3492,7 +3320,7 @@ function emitMaintenanceIfNeeded(
             content: newFileContent,
             mime: "text/tsx",
           },
-          tierPolicy
+          
         );
 
         if (createProposal && typeof createProposal === "object" && !("error" in createProposal)) {
@@ -3506,7 +3334,7 @@ function emitMaintenanceIfNeeded(
           content,
           "vault_read_text",
           { path: modifyPath },
-          tierPolicy
+          
         );
 
         if (existingFile && typeof existingFile === "object" && !("error" in existingFile)) {
@@ -3530,7 +3358,7 @@ function emitMaintenanceIfNeeded(
               fileId: (existingFile as any).id,
               content: rewritten,
             },
-            tierPolicy
+            
           );
 
           if (writeProposal && typeof writeProposal === "object" && !("error" in writeProposal)) {
@@ -3549,14 +3377,222 @@ function emitMaintenanceIfNeeded(
       }
     }
 
-    // ─────────────────────────────────────────────
-    // Deterministic rewrite orchestration for existing files
-    // ─────────────────────────────────────────────
-    const isEditIntent = isRepositoryExecutionIntent(content);
+// ─────────────────────────────────────────────
+// Deterministic split-file orchestration
+// Example:
+// Split app/test/test-script.js into:
+// - vault.js
+// - demo.js
+// ─────────────────────────────────────────────
 
+
+
+if (
+  toolName === "vault_read_text" &&
+  isSplitFileIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  const readOut = out as {
+    id: string;
+    path?: string;
+    mime?: string;
+    content: string;
+  };
+
+  if (typeof readOut.id === "string" && typeof readOut.content === "string") {
+    try {
+      const sourcePath = String(readOut.path ?? "").trim();
+      const sourceDir =
+        sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
+
+      const targetNames = extractSplitTargets(content);
+      const targetPaths = targetNames.map((targetName: string) =>
+        targetName.includes("/") ? targetName : sourceDir ? `${sourceDir}/${targetName}` : targetName
+      );
+
+      if (targetPaths.length >= 2) {
+        const generatedFiles = await generateSplitFileContents({
+          openai,
+          model: runtimePolicy.model,
+          userRequest: content,
+          sourcePath,
+          sourceContent: String(readOut.content ?? ""),
+          targetPaths,
+        });
+
+for (const file of generatedFiles) {
+  const existingId = await resolveFileIdByPathOrName(supabase, repoId, file.path);
+
+  const proposal = existingId
+    ? await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: existingId,
+          path: file.path,
+          content: file.content,
+        },
+        
+      )
+    : await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_create",
+        {
+          path: file.path,
+          content: file.content,
+          mime: "application/javascript",
+        },
+        
+      );
+
+  if (proposal && typeof proposal === "object" && !("error" in proposal) && !(proposal as any).noop) {
+    pendingProposalOuts.push(proposal);
+  }
+}
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(out),
+        });
+
+        console.log("[split_orchestration]", {
+          sourcePath,
+          targetNames,
+          targetPaths,
+        });
+
+        continue;
+      }
+
+      const requestedPaths = extractMentionedPaths(content);
+
+      if (
+        toolName === "vault_read_text" &&
+        isImportRefactorIntent(content) &&
+        requestedPaths.length >= 2 &&
+        out &&
+        typeof out === "object" &&
+        !("error" in out)
+      ) {
+        const readOut = out as {
+          id: string;
+          path?: string;
+          mime?: string;
+          content: string;
+        };
+
+        const sourcePath = requestedPaths[0];
+        const helperPath = requestedPaths[1];
+        const readPath = String(readOut.path ?? "").trim();
+console.log("[import_refactor_orchestration] detected", {
+  sourcePath,
+  helperPath,
+  readPath,
+});
+
+        
+
+        if (readPath !== sourcePath) {
+          toolOutputs.push({
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify(out),
+          });
+          continue;
+        }
+
+        const helperRead = await runTool(
+          supabase,
+          repoId,
+          user.id,
+          content,
+          "vault_read_text",
+          { path: helperPath },
+          
+        );
+
+        if (!helperRead || typeof helperRead !== "object" || "error" in helperRead) {
+          toolOutputs.push({
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify(helperRead ?? { error: `Failed to read helper module: ${helperPath}` }),
+          });
+          continue;
+        }
+
+        const rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest: content + "\n\nRewrite the file and output the full updated file content only.",
+          path: sourcePath,
+          mime: String(readOut.mime ?? "application/typescript"),
+          currentContent: String(readOut.content ?? ""),
+        });
+
+        if (!rewritten) {
+          toolOutputs.push({
+            type: "function_call_output",
+            call_id: callId,
+            output: JSON.stringify({ error: "import_refactor_failed: empty rewritten content" }),
+          });
+          continue;
+        }
+
+        const proposal = await runTool(
+          supabase,
+          repoId,
+          user.id,
+          content,
+          "vault_propose_write",
+          {
+            fileId: readOut.id,
+            path: sourcePath,
+            content: rewritten,
+          },
+          
+        );
+
+        if (proposal && typeof proposal === "object" && !("error" in proposal)) {
+          pendingProposalOuts.push(proposal);
+        }
+
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(out),
+        });
+
+        continue;
+      }
+
+    } catch (e: any) {
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          error: `split_orchestration_failed: ${e?.message ?? "unknown error"}`,
+        }),
+      });
+
+      continue;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Source → Target helper extraction orchestration
+// ─────────────────────────────────────────────
     if (
       toolName === "vault_read_text" &&
-      isEditIntent &&
+      isExtractHelpersIntent(content) &&
       out &&
       typeof out === "object" &&
       !("error" in out)
@@ -3568,70 +3604,348 @@ function emitMaintenanceIfNeeded(
         content: string;
       };
 
-      if (typeof readOut.id === "string" && typeof readOut.content === "string") {
+      if (typeof readOut.content === "string") {
         try {
-          const rewritten = await generateRewrittenFileContent({
-            openai,
-            model: runtimePolicy.model,
-            userRequest: content,
-            path: String(readOut.path ?? ""),
-            mime: String(readOut.mime ?? "text/plain"),
-            currentContent: String(readOut.content ?? ""),
-          });
+    const resolvedPaths = resolveSourceAndTargetPaths(content);
 
-          if (!rewritten) {
-            throw new Error("Model returned empty rewritten content");
-          }
+    if (!resolvedPaths) {
+      console.log("[extract_orchestration] could not resolve source/target", {
+        mentionedPaths: extractMentionedPaths(content),
+        content,
+      });
 
-          const proposal = await runTool(
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
+
+      continue;
+    }
+
+    const { sourcePath, targetPath, paths: mentionedPaths } = resolvedPaths;
+
+const readPath = String(readOut.path ?? "").trim();
+const readName = readPath.split("/").filter(Boolean).pop() ?? "";
+const sourceName = String(sourcePath ?? "").trim().split("/").filter(Boolean).pop() ?? "";
+
+const sourceMatchesRead =
+  !!readPath &&
+  (
+    sourcePath === readPath ||
+    sourcePath === readName ||
+    sourceName === readName
+  );
+
+if (readPath && !sourceMatchesRead) {
+  console.log("[extract_orchestration] read file is not the resolved source; reading source directly", {
+    readPath,
+    readName,
+    sourcePath,
+    sourceName,
+    targetPath,
+  });
+
+  const sourceRead = await runTool(
+    supabase,
+    repoId,
+    user.id,
+    content,
+    "vault_read_text",
+    { path: sourcePath },
+    
+  );
+
+  if (!sourceRead || typeof sourceRead !== "object" || "error" in sourceRead) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(
+        sourceRead ?? { error: `Failed to read resolved source path: ${sourcePath}` }
+      ),
+    });
+
+    continue;
+  }
+
+  const sourceOut = sourceRead as {
+    id: string;
+    path?: string;
+    mime?: string;
+    content: string;
+  };
+
+  console.log("[extract_orchestration] source read ok", {
+    sourcePath: sourceOut.path,
+    targetPath,
+  });
+
+  const generated = await generateRewrittenFileContent({
+    openai,
+    model: runtimePolicy.model,
+    userRequest: content,
+    path: targetPath,
+    mime: "application/typescript",
+    currentContent: String(sourceOut.content ?? ""),
+  });
+
+  if (!generated) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({ error: "extract_orchestration_failed: Model returned empty extracted content" }),
+    });
+
+    continue;
+  }
+
+  const existingId = await resolveFileIdByPathOrName(
+    supabase,
+    repoId,
+    targetPath
+  );
+
+  const proposal = existingId
+    ? await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: existingId,
+          path: targetPath,
+          content: generated,
+        },
+        
+      )
+    : await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_create",
+        {
+          path: targetPath,
+          content: generated,
+          mime: "application/typescript",
+        },
+        
+      );
+
+  if (proposal && typeof proposal === "object" && !("error" in proposal)) {
+    pendingProposalOuts.push(proposal);
+  }
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
+
+    console.log("[extract_orchestration] detected", {
+      sourcePath,
+      targetPath,
+      mentionedPaths,
+    });
+
+      const generated = await generateRewrittenFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        path: targetPath,
+        mime: "application/typescript",
+        currentContent: String(readOut.content ?? ""),
+      });
+
+      if (!generated) {
+        throw new Error("Model returned empty extracted content");
+      }
+
+      const existingId = await resolveFileIdByPathOrName(
+        supabase,
+        repoId,
+        targetPath
+      );
+
+      const proposal = existingId
+        ? await runTool(
             supabase,
             repoId,
             user.id,
             content,
             "vault_propose_write",
             {
-              fileId: readOut.id,
-              content: rewritten,
+              fileId: existingId,
+              path: targetPath,
+              content: generated,
             },
-            tierPolicy
+            
+          )
+        : await runTool(
+            supabase,
+            repoId,
+            user.id,
+            content,
+            "vault_propose_create",
+            {
+              path: targetPath,
+              content: generated,
+              mime: "application/typescript",
+            },
+            
           );
 
-          if (proposal && typeof proposal === "object" && !("error" in proposal)) {
-            pendingProposalOuts.push(proposal);
-
-          }
-
-          toolOutputs.push({
-            type: "function_call_output",
-            call_id: callId,
-            output: JSON.stringify(out),
-          });
-
-          continue;
-        } catch (e: any) {
-          toolOutputs.push({
-            type: "function_call_output",
-            call_id: callId,
-            output: JSON.stringify({
-              error: `rewrite_orchestration_failed: ${e?.message ?? "unknown error"}`,
-            }),
-          });
-
-          continue;
-        }
+      if (proposal && typeof proposal === "object" && !("error" in proposal)) {
+        pendingProposalOuts.push(proposal);
       }
+
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
+
+      continue;
+    } catch (e: any) {
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          error: `extract_orchestration_failed: ${e?.message ?? "unknown error"}`,
+        }),
+      });
+
+      continue;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Deterministic rewrite orchestration for existing files
+// ─────────────────────────────────────────────
+const isEditIntent = isRepositoryExecutionIntent(content);
+
+if (
+  toolName === "vault_read_text" &&
+  isEditIntent &&
+  !isSourceTargetTransferIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  const readOut = out as {
+    id: string;
+    path?: string;
+    mime?: string;
+    content: string;
+  };
+
+  if (typeof readOut.id === "string" && typeof readOut.content === "string") {
+    const requestedPath = extractSingleMentionedPath(content);
+
+if (requestedPath && readOut.path && requestedPath !== readOut.path) {
+  console.log("[rewrite_orchestration] skipped because requested path does not match read path", {
+    requestedPath,
+    readPath: readOut.path,
+  });
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
+
+    const requestedPaths = extractMentionedPaths(content);
+
+    console.log("[import_refactor_orchestration] triggered", {
+      paths: requestedPaths,
+      readPath: readOut.path,
+    });
+
+    if (requestedPaths.length >= 2 && !isImportRefactorIntent(content)) {
+      console.log("[rewrite_orchestration] skipped because multiple paths were requested", {
+        requestedPaths,
+        readPath: readOut.path,
+      });
+
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
+
+      continue;
     }
 
-    const hasError = typeof out === "object" && out !== null && "error" in out;
+    try {
+      const rewritten = await generateRewrittenFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        path: String(readOut.path ?? ""),
+        mime: String(readOut.mime ?? "text/plain"),
+        currentContent: String(readOut.content ?? ""),
+      });
 
-    const isProposalTool =
-      toolName === "vault_propose_write" ||
-      toolName === "vault_propose_append" ||
-      toolName === "vault_propose_create";
+      if (!rewritten) {
+        throw new Error("Model returned empty rewritten content");
+      }
 
-    if (isProposalTool && out && !hasError) {
-      pendingProposalOuts.push(out);
+      const proposal = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: readOut.id,
+          content: rewritten,
+        },
+        
+      );
+
+      if (proposal && typeof proposal === "object" && !("error" in proposal)) {
+        pendingProposalOuts.push(proposal);
+      }
+
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
+
+      continue;
+    } catch (e: any) {
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify({
+          error: `rewrite_orchestration_failed: ${e?.message ?? "unknown error"}`,
+        }),
+      });
+
+      continue;
     }
+  }
+}
+const hasError = typeof out === "object" && out !== null && "error" in out;
+const isNoop = typeof out === "object" && out !== null && (out as any).noop === true;
+
+const isProposalTool =
+  toolName === "vault_propose_write" ||
+  toolName === "vault_propose_append" ||
+  toolName === "vault_propose_create";
+
+if (isProposalTool && out && !hasError && !isNoop) {
+  pendingProposalOuts.push(out);
+}
 
     toolOutputs.push({
       type: "function_call_output",
@@ -3640,15 +3954,21 @@ function emitMaintenanceIfNeeded(
     });
   }
 
-  if (pendingProposalOuts.length > 0) {
-    hadAnyProposalSet = true;
-    controller.enqueue(
-      encoder.encode(
-        `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: pendingProposalOuts })}\n`
-      )
-    );
-    pendingProposalOuts = [];
-  }
+if (pendingProposalOuts.length === 1) {
+  hadAnyProposalSet = true;
+  controller.enqueue(
+    encoder.encode(`\n__PROPOSAL__:${JSON.stringify(pendingProposalOuts[0])}\n`)
+  );
+  pendingProposalOuts = [];
+} else if (pendingProposalOuts.length > 1) {
+  hadAnyProposalSet = true;
+  controller.enqueue(
+    encoder.encode(
+      `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: pendingProposalOuts })}\n`
+    )
+  );
+  pendingProposalOuts = [];
+}
 
   console.log("[pass2] starting", {
     previous_response_id: lastResponseId,
@@ -3699,18 +4019,29 @@ if (!fullText.trim()) {
   controller.enqueue(encoder.encode(fallback));
 }
 
-      fullText = fullText.trim();
+fullText = fullText.trim();
 
-      if (!fullText.startsWith("[Observation]")) {
-        console.log("[contract] violation: assistant output missing [Observation]");
-        fullText =
-          "[Observation]\nContract violation detected.\n\n" +
-          "[Assessment]\nAssistant output did not start with [Observation].\n\n" +
-          "[Action]\nRetry the request or adjust prompt to conform to the output contract.";
-      }
+if (!fullText.startsWith("[Observation]")) {
+  console.log("[contract] violation: assistant output missing [Observation]");
+  fullText =
+    "[Observation]\nContract violation detected.\n\n" +
+    "[Assessment]\nAssistant output did not start with [Observation].\n\n" +
+    "[Action]\nRetry the request or adjust prompt to conform to the output contract.";
+}
 
-      fullText = scrubVisibleToolPayload(fullText);
-      fullText = ensureTriplet(stripDuplicateTriplet(fullText));
+fullText = scrubVisibleToolPayload(fullText);
+fullText = ensureTriplet(stripDuplicateTriplet(fullText));
+
+const claimsStagedChange = fullText.includes("A staged change is ready. Confirm to apply.");
+
+if (claimsStagedChange && !hadAnyProposalSet) {
+  console.log("[proposal_guard] staged change claimed but no proposal marker");
+
+  fullText =
+    "[Observation]\nNo repository proposal was produced.\n\n" +
+    "[Assessment]\nThe assistant claimed a staged change, but no __PROPOSAL__ or __PROPOSAL_SET__ marker was emitted in this turn.\n\n" +
+    "[Action]\nRetry the request so the change can be staged deterministically.";
+}
 
 if (hadAnyProposalSet) {
   fullText =
@@ -3742,10 +4073,9 @@ if (hadAnyProposalSet) {
             msgCount,
           });
 
-          await fetch(
-            `${process.env.NEXT_PUBLIC_SITE_URL}/api/repo/${repoId}/maintenance/resummarize`,
-            { method: "POST" }
-          );
+          await fetch(`/api/repo/${repoId}/maintenance/resummarize`, {
+            method: "POST",
+          });
         }
       } catch (e: any) {
         console.log("[maintenance] auto-resummarize failed:", e?.message);

@@ -108,7 +108,7 @@ early_access: {
   },
   budget: {
     period: "monthly",
-    creditsPerPeriod: 250_000,
+    creditsPerPeriod: 1_000_000,
     softReserveCredits: 10_000,
     graceMode: "clamp",
   },
