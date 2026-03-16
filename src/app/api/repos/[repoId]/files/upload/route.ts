@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { randomUUID, createHash } from "crypto";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
+import { VAULT_BUCKET } from "@/lib/vault/buckets";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -87,7 +88,7 @@ export async function POST(req: Request, ctx: Ctx) {
   
   // 1) Upload to storage first
   const { error: upErr } = await supabase.storage
-    .from("vestaryn-files")
+    .from(VAULT_BUCKET)
     .upload(storageKey, buf, {
       contentType: mime,
       upsert: false,
@@ -114,7 +115,7 @@ export async function POST(req: Request, ctx: Ctx) {
 
   if (fileErr) {
     // Rollback storage
-    await supabase.storage.from("vestaryn-files").remove([storageKey]);
+    await supabase.storage.from(VAULT_BUCKET).remove([storageKey]);
     return json({ error: fileErr.message }, 400);
   }
 
@@ -137,7 +138,7 @@ export async function POST(req: Request, ctx: Ctx) {
       .delete()
       .eq("id", fileId)
       .eq("repo_id", repoId);
-    await supabase.storage.from("vestaryn-files").remove([storageKey]);
+    await supabase.storage.from(VAULT_BUCKET).remove([storageKey]);
     return json({ error: verErr.message }, 400);
   }
 

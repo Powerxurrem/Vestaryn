@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
 import { resolveTierPolicyWithMeta } from "@/lib/membership/tiers";
+import crypto from "crypto";
+import { VAULT_BUCKET, SNAPSHOTS_BUCKET } from "@/lib/vault/buckets";
 
 /**
  * @file app/api/repos/[repoId]/files/[fileId]/route.ts
@@ -94,7 +96,29 @@ if (mode === "export" && !tierPolicy.capabilities.allowExport) {
   const body = await req.json().catch(() => ({}));
   const content = String(body?.content ?? "");
   const mime = String(body?.mime ?? "text/plain");
+const contentHash = crypto.createHash("sha256").update(content).digest("hex");
 
+console.log("[file_put] incoming", {
+  repoId,
+  fileId,
+  mime,
+  bytes: Buffer.byteLength(content, "utf8"),
+  sha256: contentHash,
+  hasBrokenMarker: content.includes("{count};"),
+  hasCleanMarker: content.includes("{count}</div>"),
+});
+
+const interestingLines = content
+  .split(/\r?\n/)
+  .map((line, i) => ({ n: i + 1, line }))
+  .filter(
+    ({ line }) =>
+      line.includes("return ") ||
+      line.includes("{count}") ||
+      line.includes("LeakGuardTest")
+  );
+
+console.log("[file_put] interesting_lines", interestingLines);
   const bytes = new TextEncoder().encode(content);
   const buf = Buffer.from(bytes);
 
@@ -114,10 +138,21 @@ if (mode === "export" && !tierPolicy.capabilities.allowExport) {
 
   // Write blob (v1: overwrite same key)
   const { error: upErr } = await supabase.storage
-    .from("vestaryn-files")
+    .from(VAULT_BUCKET)
     .upload(storageKey, buf, { contentType: mime, upsert: true });
 
   if (upErr) return json({ error: upErr.message }, 400);
+
+const dl = await supabase.storage.from(VAULT_BUCKET).download(storageKey);
+if (dl.data) {
+  const savedText = await dl.data.text();
+  console.log("[file_put] readback", {
+    storageKey,
+    bytes: Buffer.byteLength(savedText, "utf8"),
+    hasBrokenMarker: savedText.includes("{count};"),
+    hasCleanMarker: savedText.includes("{count}</div>"),
+  });
+}
 
   // Update DB metadata (DB remains canon)
   const { error: updErr } = await supabase
@@ -176,25 +211,13 @@ export async function GET(_req: Request, ctx: Ctx) {
   if (fileErr) return json({ error: fileErr.message }, 400);
   if (!file || file.deleted_at) return json({ error: "not found" }, 404);
 
-  // Optional: latest version fallback
-  const { data: latest, error: latestErr } = await supabase
-    .from("repo_file_versions")
-    .select("version, storage_key")
-    .eq("file_id", fileId)
-    .order("version", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (latestErr) return json({ error: latestErr.message }, 400);
-
-  const storageKey: string | null = (latest?.storage_key ??
-    file.storage_key) as any;
+  const storageKey: string | null = file.storage_key as any;
 
   if (!storageKey) return json({ error: "missing storage_key" }, 400);
 
   // Sign URL (30 min)
   const { data: signed, error: signErr } = await supabase.storage
-    .from("vestaryn-files")
+    .from(VAULT_BUCKET)
     .createSignedUrl(storageKey, 60 * 30);
 
   if (signErr) return json({ error: signErr.message }, 400);
@@ -202,7 +225,7 @@ export async function GET(_req: Request, ctx: Ctx) {
 
   return json({
     file,
-    latest_version: latest?.version ?? null,
+    latest_version: null,
     signed_url: signed.signedUrl,
   });
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { randomUUID, createHash } from "crypto";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
+import { VAULT_BUCKET } from "@/lib/vault/buckets";
 
 /**
  * @file app/api/repos/[repoId]/files/create/route.ts
@@ -69,7 +70,7 @@ export async function POST(req: Request, ctx: Ctx) {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) return json({ error: "unauthorized" }, 401);
 
-  const vaultBucket = process.env.VAULT_BUCKET ?? "vestaryn-files";
+  const vaultBucket = VAULT_BUCKET;
 
   // Parse payload
 const body = await req.json()
@@ -93,6 +94,30 @@ if (path.endsWith("/")) return json({ error: "Invalid path" }, 400);
 // derive basename
 const name = path.split("/").filter(Boolean).pop() ?? "";
 if (!name) return json({ error: "Invalid path" }, 400);
+
+// Check for existing live file at the same repo/path
+const { data: existingFile, error: existingErr } = await supabase
+  .from("repo_files")
+  .select("id, path, name")
+  .eq("repo_id", repoId)
+  .eq("path", path)
+  .is("deleted_at", null)
+  .maybeSingle();
+
+if (existingErr) {
+  return json({ error: existingErr.message }, 500);
+}
+
+if (existingFile) {
+  return json(
+    {
+      error: "A file already exists at this path.",
+      code: "FILE_ALREADY_EXISTS",
+      existingFile,
+    },
+    409
+  );
+}
 
   // IDs + encoding
   const fileId = randomUUID();
@@ -122,9 +147,19 @@ if (!name) return json({ error: "Invalid path" }, 400);
     )
     .single();
 
-  if (insertErr) {
-    return json({ error: insertErr.message }, 400);
+if (insertErr) {
+  if (insertErr.message.includes("repo_files_repo_id_path_uniq")) {
+    return json(
+      {
+        error: "A file already exists at this path.",
+        code: "FILE_ALREADY_EXISTS",
+      },
+      409
+    );
   }
+
+  return json({ error: insertErr.message }, 400);
+}
 
   // 2) Upload storage object (initial v1)
   const { error: upErr } = await supabase.storage

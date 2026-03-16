@@ -54,6 +54,40 @@ function MenuItem({
   );
 }
 
+function Sigil() {
+  return (
+    <div className="relative flex items-center justify-center mt-12">
+      {/* glow */}
+      <div className="absolute h-20 w-20 rounded-full bg-blue-500/20 blur-2xl opacity-60" />
+
+      {/* border diamond */}
+      <div
+        className="relative flex items-center justify-center"
+        style={{
+          clipPath: "polygon(50% 0%,100% 50%,50% 100%,0% 50%)",
+        }}
+      >
+        <div className="h-[92px] w-[92px] bg-blue-400/25 flex items-center justify-center">
+          
+          {/* inner diamond */}
+          <div
+            className="h-[86px] w-[86px] overflow-hidden"
+            style={{
+              clipPath: "polygon(50% 0%,100% 50%,50% 100%,0% 50%)",
+            }}
+          >
+            <img
+              src="/vestaryn_avatar.png"
+              className="absolute inset-0 h-full w-full object-cover opacity-90"
+            />
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function VestarynFrame({
   repoId,
   repoName,
@@ -68,19 +102,19 @@ export function VestarynFrame({
   return (
     <div className="relative z-[1000] w-full h-full flex flex-col min-w-0">
       {/* Top rail */}
-      <div className="relative z-[1000] h-12 shrink-0 px-3 flex items-center gap-3 border-b border-white/10 bg-black/35 backdrop-blur-md overflow-visible">
+      <div className="relative z-[1000] h-12 shrink-0 px-3 flex items-center gap-3 border-b border-blue-400/35 bg-black/35 backdrop-blur-md overflow-visible  mb-15">
         <RepoHud repoId={repoId} repoName={repoName} />
 
         {/* Center nav placeholder */}
         <div className="mx-auto flex items-center gap-2">
           <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
-            Chamber
+            Cinematic (WIP)
           </button>
+<div className="px-3">
+  <Sigil />
+</div>
           <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
-            Vault
-          </button>
-          <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
-            Verify
+            Serious (WIP)
           </button>
         </div>
 

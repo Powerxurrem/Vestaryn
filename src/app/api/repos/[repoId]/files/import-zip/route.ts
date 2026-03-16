@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID, createHash } from "crypto";
 import path from "path";
 import unzipper from "unzipper";
-
+import { VAULT_BUCKET } from "@/lib/vault/buckets";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
 
@@ -101,7 +101,7 @@ console.log("[import_zip] hit", { repoId });
   const MAX_TOTAL_BYTES = 50 * 1024 * 1024; // 50MB
   const MAX_SINGLE_FILE_BYTES = 5 * 1024 * 1024; // 5MB
 
-  const vaultBucket = process.env.VAULT_BUCKET ?? "vestaryn-files";
+  const vaultBucket = VAULT_BUCKET;
 
   // Admin client for storage + DB writes
   const supabaseAdmin = createSupabaseAdmin();

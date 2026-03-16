@@ -2,8 +2,7 @@ import crypto from "crypto";
 import { supabaseServerComponent } from "@/lib/supabase/server";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { vault_write_text_new_version } from "@/lib/vault/writeVersion";
-
-const VAULT_BUCKET = "vestaryn-files";
+import { VAULT_BUCKET } from "@/lib/vault/buckets";
 
 export async function POST(
   req: Request,

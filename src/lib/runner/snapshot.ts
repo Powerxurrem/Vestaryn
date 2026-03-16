@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import crypto from "crypto";
 import archiver from "archiver";
 import { createWriteStream } from "fs";
+import { VAULT_BUCKET, SNAPSHOTS_BUCKET } from "@/lib/vault/buckets";
 
 type SupabaseLike = any;
 
@@ -17,27 +18,28 @@ export type SnapshotBuildResult = {
 };
 
 export type SnapshotBuildOpts = {
-  // Storage bucket where repo files live (your Vault bucket)
-  repoFilesBucket?: string; // default: process.env.VAULT_BUCKET or "repo_files"
-  // Storage bucket where snapshots should be uploaded
-  snapshotsBucket?: string; // default: process.env.SNAPSHOTS_BUCKET or "repo_snapshots"
-  // How long signed URL should be valid (seconds)
-  signedUrlTtlSec?: number; // default: 600 (10 min)
-
-  // Safety limits
-  maxFiles?: number; // default: 2000
-  maxTotalBytes?: number; // default: 50 * 1024 * 1024 (50MB)
+  repoFilesBucket?: string;
+  snapshotsBucket?: string;
+  signedUrlTtlSec?: number;
+  maxFiles?: number;
+  maxTotalBytes?: number;
+  overlayFiles?: Array<{
+    path: string;
+    content: string;
+    mime?: string;
+  }>;
 };
 
-type RepoFileRow = {
-  id: string;           // repo_files.id  (file id)
-  repo_id: string;      // repo_files.repo_id
-  path: string;         // repo_files.path (repo-relative path)
-  deleted_at: string | null;
 
-  // derived from latest version
+
+type RepoFileRow = {
+  id: string;
+  repo_id: string;
+  path: string;
+  deleted_at: string | null;
   storage_key: string;
   byte_size: number;
+  mime?: string;
 };
 
 // ---- public API ----
@@ -48,10 +50,11 @@ export async function buildRepoSnapshotSignedUrl(
   jobId: string,
   opts: SnapshotBuildOpts = {}
 ): Promise<SnapshotBuildResult> {
-  const repoFilesBucket =
-    opts.repoFilesBucket ?? process.env.VAULT_BUCKET ?? "repo_files";
-  const snapshotsBucket =
-    opts.snapshotsBucket ?? process.env.SNAPSHOTS_BUCKET ?? "repo_snapshots";
+const repoFilesBucket =
+  opts.repoFilesBucket ?? process.env.VAULT_BUCKET ?? "vestaryn-files";
+
+const snapshotsBucket =
+  opts.snapshotsBucket ?? process.env.SNAPSHOTS_BUCKET ?? "vestaryn-snapshots";
   const signedUrlTtlSec = opts.signedUrlTtlSec ?? 600;
 
   const maxFiles = opts.maxFiles ?? 2000;
@@ -76,6 +79,98 @@ export async function buildRepoSnapshotSignedUrl(
     );
   }
 
+  const overlayFiles = Array.isArray(opts.overlayFiles) ? opts.overlayFiles : [];
+
+console.log(
+  "[snapshot_overlay_input]",
+  overlayFiles.map((f) => ({
+    path: f.path,
+    bytes: Buffer.byteLength(String(f.content ?? ""), "utf8"),
+    interestingLines: String(f.content ?? "")
+      .split(/\r?\n/)
+      .map((line, i) => ({ n: i + 1, line }))
+      .filter(
+        ({ line }) =>
+          line.includes("return ") ||
+          line.includes("{count}") ||
+          line.includes("LeakGuardTest")
+      ),
+  }))
+);
+
+  const overlayMap = new Map(
+    overlayFiles
+      .map((f) => ({
+        path: String(f?.path ?? "").trim(),
+        content: String(f?.content ?? ""),
+        mime: f?.mime ? String(f.mime) : undefined,
+      }))
+      .filter((f) => f.path)
+      .map((f) => [f.path, f] as const)
+  );
+
+  const effectiveFiles = filtered.map((f) => {
+    const overlay = overlayMap.get(f.path);
+    if (!overlay) return { ...f, __overlay: false as const };
+
+    overlayMap.delete(f.path);
+
+    return {
+      ...f,
+      mime: overlay.mime ?? f.mime,
+      size_bytes: Buffer.byteLength(overlay.content, "utf8"),
+      __overlay: true as const,
+      __overlayContent: overlay.content,
+    };
+  });
+
+const leakGuardEffective = (effectiveFiles as any[]).find(
+  (f) => f.path === "components/LeakGuardTest.tsx"
+);
+
+if (leakGuardEffective) {
+  console.log("[snapshot_effective_source]", {
+    path: leakGuardEffective.path,
+    overlay: Boolean(leakGuardEffective.__overlay),
+    storageKey: leakGuardEffective.storage_key ?? null,
+    overlayBytes: leakGuardEffective.__overlay
+      ? Buffer.byteLength(String(leakGuardEffective.__overlayContent ?? ""), "utf8")
+      : null,
+    overlayInterestingLines: leakGuardEffective.__overlay
+      ? String(leakGuardEffective.__overlayContent ?? "")
+          .split(/\r?\n/)
+          .map((line: string, i: number) => ({ n: i + 1, line }))
+          .filter(
+            ({ line }: { line: string }) =>
+              line.includes("return ") ||
+              line.includes("{count}") ||
+              line.includes("LeakGuardTest")
+          )
+      : null,
+  });
+}
+
+  for (const overlay of overlayMap.values()) {
+    effectiveFiles.push({
+      id: `overlay:${overlay.path}`,
+      repo_id: repoId,
+      path: overlay.path,
+      name: overlay.path.split("/").filter(Boolean).pop() ?? overlay.path,
+      mime: overlay.mime ?? "text/plain",
+      size_bytes: Buffer.byteLength(overlay.content, "utf8"),
+      storage_key: null,
+      version: 0,
+      deleted_at: null,
+      __overlay: true as const,
+      __overlayContent: overlay.content,
+    } as any);
+  }
+
+  console.log(
+    "[snapshot] effective_paths",
+    effectiveFiles.map((f: any) => f.path).slice(0, 100)
+  );
+
   // If you have byte_size populated, we can pre-cap. Otherwise we cap during download.
   const preTotal = filtered.reduce((sum, f) => sum + (f.byte_size ?? 0), 0);
   if (preTotal > 0 && preTotal > maxTotalBytes) {
@@ -90,31 +185,60 @@ export async function buildRepoSnapshotSignedUrl(
   await fs.mkdir(workDir, { recursive: true });
 
   try {
-    // 4) materialize files to disk
-    let totalBytes = 0;
-    for (const f of filtered) {
-      const rel = sanitizeRelPath(f.path);
-      const abs = path.join(workDir, rel);
+// 4) materialize files to disk
+let totalBytes = 0;
 
-      await fs.mkdir(path.dirname(abs), { recursive: true });
+for (const f of effectiveFiles as any[]) {
+  const rel = sanitizeRelPath(f.path);
+  const abs = path.join(workDir, rel);
 
-      const blob = await downloadStorageObject(
-        supabase,
-        repoFilesBucket,
-        f.storage_key
-      );
+  await fs.mkdir(path.dirname(abs), { recursive: true });
 
-      const buf = Buffer.from(await blob.arrayBuffer());
-      totalBytes += buf.byteLength;
+  let buf: Buffer;
 
-      if (totalBytes > maxTotalBytes) {
-        throw new Error(
-          `Snapshot: repo too large while downloading (${totalBytes} > ${maxTotalBytes}).`
-        );
-      }
+  if (f.__overlay) {
+    buf = Buffer.from(String(f.__overlayContent ?? ""), "utf8");
+  } else {
+    const blob = await downloadStorageObject(
+      supabase,
+      repoFilesBucket,
+      f.storage_key
+    );
 
-      await fs.writeFile(abs, buf);
-    }
+    buf = Buffer.from(await blob.arrayBuffer());
+  }
+
+// DEBUG: confirm snapshot content for this test file
+if (f.path === "components/LeakGuardTest.tsx") {
+  const text = buf.toString("utf8");
+
+  console.log("[snapshot_materialize]", {
+    path: f.path,
+    bytes: buf.byteLength,
+    hasBrokenSemicolon: text.includes("{count};"),
+    hasBrokenTag: text.includes("<;div>"),
+    hasCleanReturn: text.includes("return <div>{count}</div>;"),
+    interestingLines: text
+      .split(/\r?\n/)
+      .map((line, i) => ({ n: i + 1, line }))
+      .filter(({ line }) =>
+        line.includes("return ") ||
+        line.includes("{count}") ||
+        line.includes("LeakGuardTest")
+      ),
+  });
+}
+
+  totalBytes += buf.byteLength;
+
+  if (totalBytes > maxTotalBytes) {
+    throw new Error(
+      `Snapshot: repo too large while materializing (${totalBytes} > ${maxTotalBytes}).`
+    );
+  }
+
+  await fs.writeFile(abs, buf);
+}
 
     // 5) zip it
     const zipPath = path.join(tmpRoot, `snapshot-${jobId}.zip`);
@@ -150,7 +274,7 @@ export async function buildRepoSnapshotSignedUrl(
     return {
       ok: true,
       jobId,
-      fileCount: filtered.length,
+      fileCount: effectiveFiles.length,
       zipBytes,
       snapshotObjectPath,
       snapshotSignedUrl: signed.data.signedUrl,
@@ -171,7 +295,7 @@ async function listRepoFiles(
   // IMPORTANT: if your path column isn't literally "path", change it here.
   const filesRes = await supabase
     .from("repo_files")
-    .select("id, repo_id, path, deleted_at")
+    .select("id, repo_id, path, deleted_at, storage_key, size_bytes")
     .eq("repo_id", repoId);
 
   if (filesRes.error) {
@@ -183,6 +307,8 @@ async function listRepoFiles(
     repo_id: string;
     path: string | null;
     deleted_at: string | null;
+    storage_key: string | null;
+    size_bytes?: number | null;
   }>;
 
   const alive = files.filter((f) => !f.deleted_at);
@@ -191,57 +317,29 @@ async function listRepoFiles(
   // 2) Load versions for these files (we’ll pick latest in code)
   const fileIds = alive.map((f) => f.id);
 
-  const versRes = await supabase
-    .from("repo_file_versions")
-    .select("file_id, version, storage_key, size_bytes")
-    .in("file_id", fileIds)
-    .order("file_id", { ascending: true })
-    .order("version", { ascending: false });
 
-  if (versRes.error) {
-    throw new Error(
-      `Snapshot list repo_file_versions failed: ${versRes.error.message}`
-    );
+
+const out: RepoFileRow[] = [];
+for (const f of alive) {
+  const p = (f.path ?? "").trim();
+  if (!p) continue;
+
+  const storageKey = (f.storage_key ?? "").trim();
+  if (!storageKey) {
+    continue;
   }
 
-  const versions = (versRes.data ?? []) as Array<{
-    file_id: string;
-    version: number;
-    storage_key: string;
-    size_bytes: number;
-  }>;
+  out.push({
+    id: f.id,
+    repo_id: f.repo_id,
+    path: p,
+    deleted_at: f.deleted_at,
+    storage_key: storageKey,
+    byte_size: Number((f as any).size_bytes ?? 0),
+  });
+}
 
-  // 3) Pick latest per file_id (because we ordered version desc)
-  const latestByFile = new Map<string, { storage_key: string; size_bytes: number }>();
-  for (const v of versions) {
-    if (!latestByFile.has(v.file_id)) {
-      latestByFile.set(v.file_id, { storage_key: v.storage_key, size_bytes: v.size_bytes });
-    }
-  }
-
-  // 4) Merge file metadata + latest version
-  const out: RepoFileRow[] = [];
-  for (const f of alive) {
-    const p = (f.path ?? "").trim();
-    if (!p) continue;
-
-    const latest = latestByFile.get(f.id);
-    if (!latest) {
-      // file exists but has no versions → skip
-      continue;
-    }
-
-    out.push({
-      id: f.id,
-      repo_id: f.repo_id,
-      path: p,
-      deleted_at: f.deleted_at,
-      storage_key: latest.storage_key,
-      byte_size: Number(latest.size_bytes ?? 0),
-    });
-  }
-
-  return out;
+return out;
 }
 
 async function downloadStorageObject(

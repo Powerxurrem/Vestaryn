@@ -1,14 +1,31 @@
 import OpenAI from "openai";
 import { supabaseServerComponent } from "@/lib/supabase/server";
-import { randomUUID, randomBytes, createHash } from "crypto";
 import { resolveTierPolicy } from "@/lib/membership/tiers";
 import { runnerRun } from "@/lib/runner/client";
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
-import {
-  SYSTEM_PROTECTOR_DEFAULT,
-  SYSTEM_PROTECTOR_ARCH,
-} from "@/lib/chamber/prompts";
+import { SYSTEM_PROTECTOR_DEFAULT,SYSTEM_PROTECTOR_ARCH,} from "@/lib/chamber/prompts";
+import { setRepoFileStatus } from "@/lib/vault/fileStatus";
+import { normalizeForNoopCheck, sha256,confirmPhrase,confirmCreatePhrase,normalizePath,nameFromPath,inferTextMimeFromPath,stripCodeFences,stripDuplicateTriplet,scrubVisibleToolPayload,ensureTriplet,
+} from "@/lib/vault/utils";
+import {extractMentionedPaths,extractSingleMentionedPath, isNamedFileExecutionRequest,isRepositoryExecutionIntent,
+isCreateAndModifyIntent,resolveCreateAndModifyPaths,
+isExtractToModuleIntent,looksLikeStandaloneModule,isMetaRepositoryQuestion, resolveExtractToModulePaths,contentStartsWithControlMarker, isGoalPlanningRequest
+} from "@/lib/chamber/intent";
+import {isSourceTargetTransferIntent,resolveSourceAndTargetPaths,
+isImportRefactorIntent,isExtractHelpersIntent,isSplitFileIntent,extractSplitTargets,deriveDefaultSplitTargets,extractRequestedSplitCount,  isSplitReadAllowed} from "@/lib/chamber/refactorIntent";
+import { resolveFileIdByPathOrName,vault_list_files,vault_read_text, vault_propose_create,vault_apply_write,vault_apply_create, vault_propose_append,vault_propose_write} from "@/lib/vault/tools";
+import { generateSplitFileContents,generateExtractHelpersResult,generateNewFileContent,generateRewrittenFileContent} from "@/lib/chamber/generation";
+import { isBaselinePreverifyFailure,runPreVerifyForProposalSet,shouldPreVerifyProposalSet,attemptFastPathRepair,runAutoVerifyForRepo,buildPendingVerifyPayload,buildFinalVerifyPayload,attemptRepairProposalSet} from "@/lib/chamber/verify";
+import { ensureSacredMemoryFile,ensureUserProfileFile,
+updateChamberStateDoc,maybeSummarizeAndEngraveProposal,} from "@/lib/chamber/memory";
+import { TOOLS, runTool}from "@/lib/vault/toolRuntime";
+import { choosePrimarySuggestionTarget,buildSuggestedPromptsFromAppliedFiles}from "@/lib/chamber/suggestions";
+import { hasValidAssistantContract}from "@/lib/chamber/output";
+import { SACRED_PATH,USER_PROFILE_PATH, 
+} from "@/lib/chamber/constants";
+import { finalizeProposalSet } from "@/lib/chamber/proposalFlow";
+import { inferRepoProfile } from "@/lib/chamber/repoInference";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -25,1796 +42,75 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
-
-
-const VAULT_BUCKET = "vestaryn-files";
-const MAX_READ_BYTES = 200 * 1024;
-
-const SACRED_PATH = "memory/chamber-state.md";
-const SACRED_NAME = "chamber-state.md";
-const SACRED_MIME = "text/markdown";
-
-const USER_PROFILE_PATH = "memory/user-profile.md";
-const USER_PROFILE_NAME = "user-profile.md";
-const USER_PROFILE_MIME = "text/markdown";
 const MAINTENANCE_TRIGGER_MSGS = 160;
-const SUMMARY_TRIGGER_MSGS = 160;
-const SUMMARY_KEEP_LAST = 40;
-const SUMMARY_TARGET_MSGS = 200;
 
-const SACRED_TEMPLATE = `# Chamber State (Sacred)
+function extractGoalPlan(text: string) {
+  const marker = "__GOAL_PLAN__:";
+  const s = String(text ?? "");
 
-## Identity
-- Chamber: Vestaryn
-- Mode: Deterministic workspace cognition
+  const idx = s.indexOf(marker);
+  if (idx === -1) return null;
 
-## Architectural Invariants
-- RLS canon (no deleted_at in SELECT policies)
-- DB is metadata source-of-truth
-- Storage keys: repos/<repoId>/<fileId>/vN
-- Signed URLs only (30m)
-- Soft-delete filtered at API/UI level
-- Assistant output contract: [Observation]/[Assessment]/[Action]
+  const start = idx + marker.length;
+  const after = s.slice(start);
 
-## Current Focus
-- 
+  const endIdx = after.indexOf("\n__");
+  const json = (endIdx === -1 ? after : after.slice(0, endIdx)).trim();
 
-## Decisions
-- 
-
-## Open Tasks
-- 
-
-## Risks / Watchouts
-- 
-
-## Active Files
-- 
-`;
-
-const USER_PROFILE_TEMPLATE = `# User Profile (Non-personal)
-
-## Explicit (user set)
-- skill_self_reported: 
-- verbosity: Normal   # Minimal | Normal | Deep
-- code_delivery: Diff-first  # Diff-first | Full-file | Both
-- os: Windows         # Windows | macOS | Linux
-- stacks:             # Comma-separated, e.g. React, Next.js, Supabase
-- change_tolerance: Surgical # Surgical | Bounded-refactor
-
-## Observed (Vestaryn hypothesis)
-- skill_observed: 
-- confidence: 0.50
-- evidence:
-  - 
-- strengths:
-  - 
-- frictions:
-  - 
-- last_reviewed: 
-
-## Milestones
-- 
-`;
-
-function normalizeForNoopCheck(text: string): string {
-  return String(text ?? "")
-    .replace(/\r\n/g, "\n")
-    .trim();
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }
 
-function sha256(text: string) {
-  return createHash("sha256").update(text, "utf8").digest("hex");
+function extractGoalStatus(text: string) {
+  const marker = "__GOAL_STATUS__:";
+  const s = String(text ?? "");
+
+  const idx = s.indexOf(marker);
+  if (idx === -1) return null;
+
+  const start = idx + marker.length;
+  const after = s.slice(start);
+
+  const endIdx = after.indexOf("\n");
+  const json = (endIdx === -1 ? after : after.slice(0, endIdx)).trim();
+
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
 }
 
-function confirmPhrase(fileId: string, nextHash: string) {
-  return `APPLY ${fileId} ${nextHash}`;
-}
-
-function confirmCreatePhrase(fileId: string, nextHash: string) {
-  return `CREATE ${fileId} ${nextHash}`;
-}
-
-function normalizePath(p: string) {
-  const s = (p || "").trim().replace(/^["'`]+|["'`]+$/g, "");
-  // prevent accidental leading slashes
-  return s.replace(/^\/+/, "");
-}
-
-function nameFromPath(path: string) {
-  const parts = normalizePath(path).split("/").filter(Boolean);
-  return parts[parts.length - 1] || path || "new-file.txt";
-}
-
-async function fileExistsByPath(supabase: any, repoId: string, path: string) {
-  const { data, error } = await supabase
-    .from("repo_files")
-    .select("id")
-    .eq("repo_id", repoId)
-    .eq("path", path)
-    .is("deleted_at", null)
-    .maybeSingle();
-
-  if (error) throw new Error(`fileExistsByPath failed: ${error.message}`);
-  return Boolean(data?.id);
-}
-
-/**
- * Propose creating a NEW text file (does not write).
- * Returns a normal proposal object + meta.op="create"
- */
-async function vault_propose_create(
+async function findLatestGoalStatus(
   supabase: any,
   repoId: string,
-  args: { path: string; content: string; mime?: string }
+  goalId: string
 ) {
-  const path = normalizePath(args.path);
-  if (!path) throw new Error("vault_propose_create missing path");
-
-  const content = String(args.content ?? "");
-  if (!content) throw new Error("vault_propose_create missing content");
-
-  const mime = String(args.mime ?? "text/plain");
-  if (!isTextMime(mime)) throw new Error("vault_propose_create: mime must be text-like");
-
-  // Must not already exist
-  const exists = await fileExistsByPath(supabase, repoId, path);
-  if (exists) throw new Error(`File already exists at path: ${path}`);
-
-  const fileId = typeof randomUUID === "function" ? randomUUID() : randomBytes(16).toString("hex");
-  const prevHash = sha256(""); // deterministic "empty"
-  const nextHash = sha256(content);
-  const confirm = confirmCreatePhrase(fileId, nextHash);
-
-  return {
-    fileId,
-    path,
-    name: nameFromPath(path),
-    mime,
-    prevHash,
-    nextHash,
-    confirm,
-    content,
-    bytes: Buffer.byteLength(content, "utf8"),
-    meta: {
-      op: "create",
-      path,
-      mime,
-    },
-  };
-}
-
-/**
- * Apply creation proposal (writes v1 and inserts repo_files + repo_file_versions)
- */
-async function vault_apply_create(
-  supabase: any,
-  repoId: string,
-  userId: string,
-  userMessage: string,
-  proposal: {
-    fileId: string;
-    path: string;
-    name?: string;
-    mime: string;
-    content: string;
-    prevHash: string;
-    nextHash: string;
-    confirm: string;
-    meta?: any;
-  }
-) {
-  const fileId = String(proposal.fileId || "").trim();
-  const path = normalizePath(String(proposal.path || ""));
-  const mime = String(proposal.mime || "text/plain");
-  const content = String(proposal.content ?? "");
-  const nextHash = String(proposal.nextHash || "");
-  const confirm = String(proposal.confirm || "");
-
-  if (!fileId) throw new Error("vault_apply_create missing fileId");
-  if (!path) throw new Error("vault_apply_create missing path");
-  if (!content) throw new Error("vault_apply_create missing content");
-  if (!nextHash) throw new Error("vault_apply_create missing nextHash");
-
-  const expected = confirmCreatePhrase(fileId, nextHash);
-  if (confirm !== expected) throw new Error("Bad confirm phrase");
-  if (userMessage.trim() !== expected) throw new Error("User did not confirm create");
-
-  if (!isTextMime(mime)) throw new Error("vault_apply_create: mime must be text-like");
-
-  // Re-check: path must still not exist
-  const exists = await fileExistsByPath(supabase, repoId, path);
-  if (exists) throw new Error(`Create failed: file already exists at path: ${path}`);
-
-  // Validate hash matches content
-  const computedNextHash = sha256(content);
-  if (computedNextHash !== nextHash) throw new Error("Proposed content hash mismatch");
-
-  const storageKey = `repos/${repoId}/${fileId}/v1`;
-  const sizeBytes = Buffer.byteLength(content, "utf8");
-  const name = proposal.name ? String(proposal.name) : nameFromPath(path);
-
-  // Insert metadata first (so file appears immediately)
-  const { error: insErr } = await supabase.from("repo_files").insert({
-    id: fileId,
-    repo_id: repoId,
-    path,
-    name,
-    mime,
-    size_bytes: sizeBytes,
-    storage_key: storageKey,
-    version: 1,
-    created_by: userId,
-    updated_at: new Date().toISOString(),
-  });
-const { data: verifyRow, error: verifyErr } = await supabase
-  .from("repo_files")
-  .select("id, repo_id, path, name, mime, storage_key, version, deleted_at")
-  .eq("repo_id", repoId)
-  .eq("id", fileId)
-  .maybeSingle();
-
-console.log("[vault_apply_create verify]", {
-  repoId,
-  fileId,
-  path,
-  storageKey,
-  verifyErr: verifyErr?.message ?? null,
-  verifyRow,
-});
-  if (insErr) throw new Error(`repo_files insert failed: ${insErr.message}`);
-
-  // Upload content (no upsert)
-  const blob = new Blob([content], { type: mime });
-  const { error: upErr } = await supabase.storage
-    .from(VAULT_BUCKET)
-    .upload(storageKey, blob, { upsert: false, contentType: mime });
-
-  if (upErr) {
-    // rollback metadata row
-    await supabase.from("repo_files").delete().eq("id", fileId).eq("repo_id", repoId);
-    throw new Error(`Upload failed: ${upErr.message}`);
-  }
-console.log("[vault_apply_create upload_ok]", {
-  repoId,
-  fileId,
-  path,
-  storageKey,
-  sizeBytes,
-});
-  // Version row
-  const verInsert = await supabase.from("repo_file_versions").insert({
-    file_id: fileId,
-    version: 1,
-    storage_key: storageKey,
-    size_bytes: sizeBytes,
-    mime,
-    actor: "user",
-    created_by: userId,
-    sha256: nextHash,
-  });
-
-  if (verInsert.error) {
-    console.log("[vault_apply_create] repo_file_versions insert failed:", verInsert.error.message);
-  }
-
-  return {
-    ok: true,
-    fileId,
-    path,
-    version: 1,
-    storage_key: storageKey,
-    size_bytes: sizeBytes,
-    nextHash,
-    confirm: expected,
-  };
-}
-
-function parseVersionFromKey(key: string | null | undefined) {
-  const k = key || "";
-  const m = k.match(/\/v(\d+)$/);
-  return m ? parseInt(m[1], 10) : 1;
-}
-
-function isTextMime(mime: string | null | undefined) {
-  const m = (mime || "").toLowerCase();
-  return (
-    m.startsWith("text/") ||
-    m === "application/json" ||
-    m.endsWith("+json") ||
-    m === "application/xml" ||
-    m.endsWith("+xml") ||
-    m === "application/yaml" ||
-    m === "application/x-yaml" ||
-    m === "application/toml" ||
-    m === "application/javascript" ||
-    m === "text/javascript" ||
-    m === "application/typescript" ||
-    m === "application/x-typescript"
-  );
-}
-
-async function resolveFileIdByPathOrName(supabase: any, repoId: string, wanted: string) {
-  wanted = (wanted || "").trim();
-  wanted = wanted.replace(/^path:\s*/i, "").replace(/^name:\s*/i, "").trim();
-  wanted = wanted.replace(/^["'`]+|["'`]+$/g, "").trim();
-  wanted = wanted.replace(/^\*\*|\*\*$/g, "").replace(/^\*|\*$/g, "").trim();
-
-  if (!wanted) return null;
-
-  // 1) path exact (authoritative)
-  const pathRes = await supabase
-    .from("repo_files")
-    .select("id, path, name, created_at")
+  const { data: rows, error } = await supabase
+    .from("repo_messages")
+    .select("content, created_at")
     .eq("repo_id", repoId)
-    .eq("path", wanted)
-    .is("deleted_at", null)
+    .eq("role", "assistant")
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(200);
 
-  if (pathRes.error) {
-    throw new Error(`resolve(path) failed: ${pathRes.error.message}`);
-  }
-  if (pathRes.data?.id) return pathRes.data.id;
-
-  // 2) name exact (only valid if unique among active files)
-  const nameRes = await supabase
-    .from("repo_files")
-    .select("id, path, name, created_at")
-    .eq("repo_id", repoId)
-    .eq("name", wanted)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false })
-    .limit(2);
-
-  if (nameRes.error) {
-    throw new Error(`resolve(name) failed: ${nameRes.error.message}`);
+  if (error) {
+    throw new Error(`Failed to load goal status history: ${error.message}`);
   }
 
-  const matches = nameRes.data ?? [];
-
-  if (matches.length === 1) {
-    return matches[0].id;
-  }
-
-  if (matches.length > 1) {
-    const paths = matches.map((m: any) => m.path).filter(Boolean);
-    throw new Error(
-      `Multiple active files named "${wanted}" exist. Use full path instead. Matches: ${paths.join(", ")}`
-    );
+  for (const row of rows ?? []) {
+    const txt = String(row.content ?? "");
+    const parsed = extractGoalStatus(txt);
+    if (parsed && String(parsed.goalId ?? "") === goalId) {
+      return parsed;
+    }
   }
 
   return null;
 }
-
-async function vault_list_files(supabase: any, repoId: string) {
-  console.log("[vault_list_files] ENTER", { repoId });
-
-  const { data, error } = await supabase
-    .from("repo_files")
-    .select("path, name, mime") // ✅ minimal
-    .eq("repo_id", repoId)
-    .is("deleted_at", null)
-    .order("updated_at", { ascending: false })
-    .limit(200);
-
-  if (error) {
-    console.log("[vault_list_files] select error:", error.message);
-    throw new Error(`vault_list_files failed: ${error.message}`);
-  }
-
-  const files = (data ?? []).map((f: any) => ({
-    path: String(f.path ?? ""),
-    name: String(f.name ?? ""),
-    mime: String(f.mime ?? ""),
-  }));
-
-  console.log("[vault_list_files] rows:", files.length);
-  return { files };
-}
-
-async function vault_read_text(supabase: any, repoId: string, fileRef: string) {
-  const isUuid = (v: string) =>
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-
-  let row: any = null;
-
-  if (isUuid(fileRef)) {
-    const { data, error } = await supabase
-      .from("repo_files")
-      .select(
-        "id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at"
-      )
-      .eq("repo_id", repoId)
-      .eq("id", fileRef)
-      .maybeSingle();
-
-    if (error) throw new Error(`vault_read_text metadata failed: ${error.message}`);
-    row = data;
-  } else {
-    const id = await resolveFileIdByPathOrName(supabase, repoId, fileRef);
-    if (!id) throw new Error("File not found (by name/path)");
-
-    const { data, error } = await supabase
-      .from("repo_files")
-      .select(
-        "id, repo_id, path, name, mime, size_bytes, storage_key, deleted_at, created_at"
-      )
-      .eq("repo_id", repoId)
-      .eq("id", id)
-      .maybeSingle();
-
-    if (error) throw new Error(`vault_read_text metadata failed: ${error.message}`);
-    row = data;
-  }
-
-  if (!row) throw new Error("File not found");
-  if (row.deleted_at) throw new Error("File not found");
-
-  if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
-  if ((row.size_bytes ?? 0) > MAX_READ_BYTES) throw new Error(`File too large (>${MAX_READ_BYTES} bytes)`);
-  if (!row.storage_key) throw new Error("Missing storage_key");
-
-  const { data: blob, error: dlErr } = await supabase.storage
-    .from(VAULT_BUCKET)
-    .download(row.storage_key);
-
-  if (dlErr) throw new Error(`vault_read_text download failed: ${dlErr.message}`);
-  if (!blob) return { id: row.id, path: row.path, name: row.name, mime: row.mime, content: "" };
-
-  const ab = await blob.arrayBuffer();
-  if (ab.byteLength > MAX_READ_BYTES) throw new Error(`Downloaded bytes too large (>${MAX_READ_BYTES} bytes)`);
-
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(ab);
-  return { id: row.id, path: row.path, name: row.name, mime: row.mime, content: text };
-}
-
-async function vault_propose_write(
-  supabase: any,
-  repoId: string,
-  fileId: string,
-  newContent: string
-) {
-  const { data: row, error } = await supabase
-    .from("repo_files")
-    .select("id, repo_id, path, name, mime, size_bytes, storage_key, version")
-    .eq("repo_id", repoId)
-    .eq("id", fileId)
-    .maybeSingle();
-
-  if (error) throw new Error(`vault_propose_write metadata failed: ${error.message}`);
-  if (!row) throw new Error("File not found");
-  if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
-
-  const current = await vault_read_text(supabase, repoId, fileId);
-
-  const normalizeNoopText = (text: string) =>
-    String(text ?? "").replace(/\r\n/g, "\n").trim();
-
-  const currentNorm = normalizeNoopText(current.content);
-  const nextNorm = normalizeNoopText(newContent);
-
-  const prevHash = sha256(currentNorm);
-  const nextHash = sha256(nextNorm);
-
-  if (prevHash === nextHash) {
-    throw new Error("__NOOP_PROPOSAL__");
-  }
-
-  const phrase = confirmPhrase(fileId, nextHash);
-
-  return {
-    fileId,
-    path: row.path,
-    name: row.name,
-    mime: row.mime,
-    prevHash,
-    nextHash,
-    confirm: phrase,
-    content: newContent,
-    bytes: Buffer.byteLength(newContent, "utf8"),
-  };
-}
-
-async function vault_propose_append(supabase: any, repoId: string, fileRef: string, appendText: string) {
-  const isUuid =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileRef);
-
-  let fileId = fileRef;
-  if (!isUuid) {
-    const resolved = await resolveFileIdByPathOrName(supabase, repoId, fileRef);
-    if (!resolved) throw new Error(`File not found by path/name: ${fileRef}`);
-    fileId = resolved;
-  }
-
-  const current = await vault_read_text(supabase, repoId, fileId);
-  const base = current.content ?? "";
-
-  const cleanedLines = String(appendText ?? "")
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  if (cleanedLines.length === 0) {
-    throw new Error("vault_propose_append produced empty append content after normalization");
-  }
-
-  const cleanedAppend = `${cleanedLines.join("\n")}\n`;
-  const glue = base.length === 0 ? "" : base.endsWith("\n") ? "" : "\n";
-  const newContent = base + glue + cleanedAppend;
-
-  try {
-    const proposal = await vault_propose_write(supabase, repoId, fileId, newContent);
-    (proposal as any).meta = {
-      ...(proposal as any).meta,
-      op: "append",
-      appendPreview: cleanedAppend,
-    };
-    return proposal;
-  } catch (e: any) {
-    if (e?.message === "__NOOP_PROPOSAL__") {
-      throw new Error("__NOOP_APPEND__");
-    }
-    throw e;
-  }
-}
-
-async function vault_apply_write(
-  supabase: any,
-  repoId: string,
-  userId: string,
-  userMessage: string,
-  args: { fileId: string; content: string; prevHash: string; nextHash: string; confirm: string }
-) {
-  const { fileId, content, prevHash, nextHash, confirm } = args;
-
-  const expected = confirmPhrase(fileId, nextHash);
-  if (confirm !== expected) throw new Error("Bad confirm phrase");
-  if (userMessage.trim() !== expected) throw new Error("User did not confirm apply");
-
-  const { data: row, error } = await supabase
-    .from("repo_files")
-    .select("id, repo_id, path, name, mime, storage_key, version")
-    .eq("repo_id", repoId)
-    .eq("id", fileId)
-    .maybeSingle();
-
-  if (error) throw new Error(`vault_apply_write metadata failed: ${error.message}`);
-  if (!row) throw new Error("File not found");
-  if (!isTextMime(row.mime)) throw new Error("Not a text-readable mime");
-
-  const current = await vault_read_text(supabase, repoId, fileId);
-  const currentHash = sha256(normalizeForNoopCheck(current.content));
-
-  if (currentHash === nextHash) {
-    return {
-      ok: true,
-      fileId,
-      path: row.path,
-      version: typeof row.version === "number" ? row.version : parseVersionFromKey(row.storage_key),
-      storage_key: row.storage_key,
-      nextHash,
-      confirm: expected,
-      noop: true,
-    };
-  }
-
-  if (currentHash !== prevHash) throw new Error("Stale proposal: file changed since proposal (hash mismatch)");
-
-  const computedNextHash = sha256(normalizeForNoopCheck(content));
-  if (computedNextHash !== nextHash) throw new Error("Proposed content hash mismatch");
-
-  const baseVersion = typeof row.version === "number" ? row.version : parseVersionFromKey(row.storage_key);
-
-  let nextVersion = baseVersion + 1;
-  let newKey = `repos/${repoId}/${fileId}/v${nextVersion}`;
-
-  let uploaded = false;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    newKey = `repos/${repoId}/${fileId}/v${nextVersion}`;
-    const blob = new Blob([content], { type: row.mime || "text/plain" });
-
-    const { error: upErr } = await supabase.storage
-      .from(VAULT_BUCKET)
-      .upload(newKey, blob, { upsert: false, contentType: row.mime || "text/plain" });
-
-    if (!upErr) {
-      uploaded = true;
-      break;
-    }
-
-    const msg = (upErr.message || "").toLowerCase();
-    if (msg.includes("already exists")) {
-      nextVersion += 1;
-      continue;
-    }
-
-    throw new Error(`Upload failed: ${upErr.message}`);
-  }
-
-  if (!uploaded) throw new Error("Upload failed: version collision retry exhausted");
-
-  const sizeBytes = Buffer.byteLength(content, "utf8");
-
-  const upd = await supabase
-    .from("repo_files")
-    .update({
-      storage_key: newKey,
-      size_bytes: sizeBytes,
-      mime: row.mime,
-      version: nextVersion,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", fileId)
-    .eq("repo_id", repoId);
-
-  if (upd.error) throw new Error(`repo_files update failed: ${upd.error.message}`);
-
-  const verInsert = await supabase.from("repo_file_versions").insert({
-    file_id: fileId,
-    version: nextVersion,
-    storage_key: newKey,
-    size_bytes: sizeBytes,
-    mime: row.mime,
-    actor: "user",
-    created_by: userId,
-    sha256: nextHash,
-  });
-
-  if (verInsert.error) {
-    console.log("[vault_apply_write] repo_file_versions insert failed:", verInsert.error.message);
-  }
-
-  return {
-    ok: true,
-    fileId,
-    path: row.path,
-    version: nextVersion,
-    storage_key: newKey,
-    size_bytes: sizeBytes,
-    nextHash,
-    confirm: expected,
-  };
-}
-
-const TOOLS: any[] = [
-  {
-    type: "function",
-    name: "vault_list_files",
-    description:
-      "List vault files for this repo. Returns { files: [{id,path,name,mime,updated_at,created_at,size_bytes}] }.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "vault_read_text",
-    description:
-      "Read a small text file from the vault. Accepts fileId (UUID). If only a filename or path is provided, it will be resolved automatically.",
-    parameters: {
-      type: "object",
-      properties: {
-        fileId: { type: "string" },
-        path: { type: "string" },
-        name: { type: "string" },
-      },
-      additionalProperties: false,
-    },
-  },
-{
-  type: "function",
-  name: "vault_propose_write",
-  description:
-    "Propose overwriting an EXISTING text file with new content. Does NOT write. Accepts either fileId or path/name. Returns hashes and a confirmation phrase.",
-  parameters: {
-    type: "object",
-    properties: {
-      fileId: { type: "string", description: "UUID of the file if known" },
-      path: { type: "string", description: "Existing file path or name, e.g. app/layout.tsx" },
-      content: { type: "string", description: "Full rewritten file content" },
-    },
-    required: ["content"],
-    additionalProperties: false,
-  },
-},
-{
-  type: "function",
-  name: "vault_propose_create",
-  description:
-    "Propose creating a NEW text file at a given path with content. Does NOT write. Returns hashes and a confirmation phrase.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: { type: "string", description: "New file path (must not already exist), e.g. app/pomodoro/page.tsx" },
-      content: { type: "string", description: "Full initial contents of the new file" },
-      mime: { type: "string", description: "Optional mime (defaults to text/plain)" },
-    },
-    required: ["path", "content"],
-    additionalProperties: false,
-  },
-},
-  {
-    type: "function",
-    name: "vault_propose_append",
-    description:
-      "Propose appending text to an existing text file. Does NOT write. Returns hashes and a confirmation phrase.",
-    parameters: {
-      type: "object",
-      properties: {
-        fileId: { type: "string", description: "UUID of the file (preferred if known)" },
-        path: { type: "string", description: "File path or name, e.g. pikachu.txt" },
-        content: { type: "string", description: "Text to append" },
-      },
-      required: ["content", "path"],
-      additionalProperties: false,
-    },
-  },
-  {
-    type: "function",
-    name: "vault_apply_write",
-    description:
-      "Apply a previously proposed overwrite to a text file by creating a new version vN. Requires exact user confirmation phrase.",
-    parameters: {
-      type: "object",
-      properties: {
-        fileId: { type: "string" },
-        content: { type: "string" },
-        prevHash: { type: "string" },
-        nextHash: { type: "string" },
-        confirm: { type: "string" },
-      },
-      required: ["fileId", "content", "prevHash", "nextHash", "confirm"],
-      additionalProperties: false,
-    },
-  },
-  {
-  type: "function",
-  name: "vault_apply_create",
-  description:
-    "Apply a previously proposed create by writing v1, inserting repo_files + repo_file_versions. Requires exact user confirmation phrase.",
-  parameters: {
-    type: "object",
-    properties: {
-      fileId: { type: "string" },
-      path: { type: "string" },
-      name: { type: "string" },
-      mime: { type: "string" },
-      content: { type: "string" },
-      prevHash: { type: "string" },
-      nextHash: { type: "string" },
-      confirm: { type: "string" },
-      meta: {},
-    },
-    required: ["fileId", "path", "mime", "content", "prevHash", "nextHash", "confirm"],
-    additionalProperties: false,
-  },
-},
-];
-
-async function runTool(
-  supabase: any,
-  repoId: string,
-  userId: string,
-  userMessage: string,
-  name: string,
-  args: any,
-  
-) {
-  const ts = new Date().toISOString();
-
-  try {
-    if (name === "vault_list_files") {
-      const result = await vault_list_files(supabase, repoId);
-      console.log("[tool]", ts, name, { ok: true, count: result.files?.length ?? 0 });
-      return result;
-    }
-
-    if (name === "vault_read_text") {
-      if (!args || (args.fileId == null && args.path == null && args.name == null)) {
-        throw new Error("vault_read_text missing args: provide fileId OR path OR name");
-      }
-
-      const rawFileId = String(args?.fileId || "").trim();
-      const rawPath = String(args?.path || "").trim();
-      const rawName = String(args?.name || "").trim();
-
-      const looksUuid =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawFileId);
-
-      let fileRef = "";
-
-      // Prefer stable repository identifiers over hallucinated UUIDs.
-      if (rawPath) {
-        fileRef = rawPath;
-      } else if (rawName) {
-        fileRef = rawName;
-      } else if (looksUuid) {
-        fileRef = rawFileId;
-      } else if (rawFileId) {
-        fileRef = rawFileId;
-      } else {
-        throw new Error("vault_read_text missing usable identifier");
-      }
-
-      const result = await vault_read_text(supabase, repoId, fileRef);
-      console.log("[tool]", ts, name, {
-        ok: true,
-        fileRef,
-        via: rawPath ? "path" : rawName ? "name" : "fileId",
-      });
-      return result;
-    }
-
-    if (name === "vault_propose_write") {
-      const content = String(args?.content ?? "");
-      if (!content) throw new Error("vault_propose_write missing content");
-
-      const path = String(args?.path ?? "").trim();
-      let fileId = String(args?.fileId ?? "").trim();
-
-      const isUuid =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileId);
-
-      if (!isUuid) {
-        const needle = path || fileId;
-        if (!needle) throw new Error("vault_propose_write missing fileId/path");
-
-        const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
-
-        // 🔥 Fallback: model asked for write on a file that doesn't exist yet.
-        // If a path is present, treat it as create instead of failing.
-        if (!resolvedId) {
-          if (path) {
-            const created = await vault_propose_create(supabase, repoId, {
-              path,
-              content,
-              mime: "application/javascript",
-            });
-
-            console.log("[tool]", ts, name, {
-              ok: true,
-              fallback: "create",
-              path,
-              fileId: created.fileId,
-            });
-
-            return created;
-          }
-
-          throw new Error(`File not found by path/name: ${needle}`);
-        }
-
-        fileId = resolvedId;
-      } else {
-        if (path) {
-          const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, path);
-
-          if (!resolvedId) {
-            const created = await vault_propose_create(supabase, repoId, {
-              path,
-              content,
-              mime: "application/javascript",
-            });
-
-            console.log("[tool]", ts, name, {
-              ok: true,
-              fallback: "create",
-              path,
-              fileId: created.fileId,
-            });
-
-            return created;
-          }
-
-          if (resolvedId && resolvedId !== fileId) {
-            console.log("[vault_propose_write] ignoring mismatched fileId, using path", {
-              fileId,
-              resolvedId,
-              path,
-            });
-            fileId = resolvedId;
-          }
-        }
-      }
-
-      try {
-        const result = await vault_propose_write(supabase, repoId, fileId, content);
-        console.log("[tool]", ts, name, { ok: true, fileId });
-        return result;
-      } catch (e: any) {
-        if (e?.message === "__NOOP_PROPOSAL__") {
-          console.log("[tool]", ts, name, { ok: true, fileId, noop: true });
-          return {
-            noop: true,
-            code: "NO_CHANGE_NEEDED",
-            fileId,
-          };
-        }
-        throw e;
-      }
-    }
-    
-    if (name === "vault_apply_create") {
-      const payload = {
-        fileId: String(args?.fileId ?? "").trim(),
-        path: String(args?.path ?? "").trim(),
-        name: args?.name ? String(args.name) : undefined,
-        mime: String(args?.mime ?? "text/plain"),
-        content: String(args?.content ?? ""),
-        prevHash: String(args?.prevHash ?? ""),
-        nextHash: String(args?.nextHash ?? ""),
-        confirm: String(args?.confirm ?? ""),
-        meta: args?.meta ?? null,
-      };
-
-      if (!payload.path) throw new Error("vault_apply_create missing path");
-      if (!payload.content) throw new Error("vault_apply_create missing content");
-      if (!payload.prevHash) throw new Error("vault_apply_create missing prevHash");
-      if (!payload.nextHash) throw new Error("vault_apply_create missing nextHash");
-      if (!payload.confirm) throw new Error("vault_apply_create missing confirm");
-
-      const result = await vault_apply_create(supabase, repoId, userId, payload.confirm, payload);
-      console.log("[tool]", ts, name, { ok: true, path: payload.path, fileId: payload.fileId });
-      return result;
-    }
-
-    if (name === "vault_propose_create") {
-      const path = String(args?.path ?? "").trim();
-      const content = String(args?.content ?? "");
-      const mime = String(args?.mime ?? "text/plain");
-
-      const result = await vault_propose_create(supabase, repoId, { path, content, mime });
-      console.log("[tool]", ts, name, { ok: true, path: result.path, fileId: result.fileId });
-      return result;
-    }
-
-    if (name === "vault_propose_append") {
-      const content = String(args?.content ?? "");
-      if (!content) throw new Error("vault_propose_append missing content");
-
-      const path = String(args?.path ?? "").trim();
-      const fileId = String(args?.fileId ?? "").trim();
-
-      const fileRef = path || fileId;
-      if (!fileRef) throw new Error("vault_propose_append missing fileId/path");
-
-      const result = await vault_propose_append(supabase, repoId, fileRef, content);
-      console.log("[tool]", ts, name, { ok: true, fileRef });
-      return result;
-    }
-
-    if (name === "vault_apply_write") {
-      let fileId = String(args?.fileId ?? "").trim();
-      const path = String(args?.path ?? "").trim();
-
-      const isUuid =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(fileId);
-
-      if (!isUuid) {
-        const needle = (path || fileId).trim();
-        if (!needle) throw new Error("vault_apply_write missing fileId/path");
-
-        const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, needle);
-        if (!resolvedId) throw new Error(`File not found by path/name: ${needle}`);
-
-        fileId = resolvedId;
-      } else {
-        if (path) {
-          const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, path);
-          if (resolvedId && resolvedId !== fileId) {
-            throw new Error(`vault_apply_write mismatch: fileId does not match path (${path})`);
-          }
-        }
-      }
-
-      const payload = {
-        fileId,
-        content: String(args?.content ?? ""),
-        prevHash: String(args?.prevHash ?? ""),
-        nextHash: String(args?.nextHash ?? ""),
-        confirm: String(args?.confirm ?? ""),
-      };
-
-      if (!payload.content) throw new Error("vault_apply_write missing content");
-      if (!payload.prevHash) throw new Error("vault_apply_write missing prevHash");
-      if (!payload.nextHash) throw new Error("vault_apply_write missing nextHash");
-      if (!payload.confirm) throw new Error("vault_apply_write missing confirm");
-
-      const result = await vault_apply_write(supabase, repoId, userId, payload.confirm, payload);
-      console.log("[tool]", ts, name, { ok: true, fileId: payload.fileId });
-      return result;
-    }
-
-    throw new Error(`Unknown tool: ${name}`);
-  } catch (e: any) {
-    console.log("[tool]", ts, name, { ok: false, error: e?.message });
-    return { error: e?.message || "Tool failed" };
-  }
-}
-
-async function ensureSacredMemoryFile(supabase: any, repoId: string, userId: string) {
-  const { data: existing, error: findErr } = await supabase
-    .from("repo_files")
-    .select("id, path, name, mime, storage_key, version")
-    .eq("repo_id", repoId)
-    .eq("path", SACRED_PATH)
-    .is("deleted_at", null)
-    .maybeSingle();
-
-  if (findErr) throw new Error(`ensureSacredMemoryFile lookup failed: ${findErr.message}`);
-  if (existing?.id) return existing;
-
-  const fileId = typeof randomUUID === "function" ? randomUUID() : randomBytes(16).toString("hex");
-  const storageKey = `repos/${repoId}/${fileId}/v1`;
-  const sizeBytes = Buffer.byteLength(SACRED_TEMPLATE, "utf8");
-  const fileSha = sha256(SACRED_TEMPLATE);
-
-  const { error: createErr } = await supabase.from("repo_files").insert({
-    id: fileId,
-    repo_id: repoId,
-    path: SACRED_PATH,
-    name: SACRED_NAME,
-    mime: SACRED_MIME,
-    size_bytes: sizeBytes,
-    storage_key: storageKey,
-    version: 1,
-    created_by: userId,
-    updated_at: new Date().toISOString(),
-  });
-
-  if (createErr) throw new Error(`ensureSacredMemoryFile create failed: ${createErr.message}`);
-
-  const blob = new Uint8Array(Buffer.from(SACRED_TEMPLATE, "utf8"));
-  const { error: upErr } = await supabase.storage
-    .from(VAULT_BUCKET)
-    .upload(storageKey, blob, { upsert: false, contentType: SACRED_MIME });
-
-  if (upErr) {
-    await supabase.from("repo_files").delete().eq("id", fileId).eq("repo_id", repoId);
-    throw new Error(`ensureSacredMemoryFile upload failed: ${upErr.message}`);
-  }
-
-  const ver = await supabase.from("repo_file_versions").insert({
-    file_id: fileId,
-    version: 1,
-    storage_key: storageKey,
-    size_bytes: sizeBytes,
-    mime: SACRED_MIME,
-    actor: "system",
-    created_by: userId,
-    sha256: fileSha,
-  });
-
-  if (ver.error) console.log("[ensureSacredMemoryFile] versions insert failed:", ver.error.message);
-
-  return { id: fileId, path: SACRED_PATH, storage_key: storageKey, version: 1 };
-}
-
-async function ensureUserProfileFile(supabase: any, repoId: string, userId: string) {
-  const { data: existing, error: findErr } = await supabase
-    .from("repo_files")
-    .select("id, path, name, mime, storage_key, version")
-    .eq("repo_id", repoId)
-    .eq("path", USER_PROFILE_PATH)
-    .is("deleted_at", null)
-    .maybeSingle();
-
-  if (findErr) throw new Error(`ensureUserProfileFile lookup failed: ${findErr.message}`);
-  if (existing?.id) return existing;
-
-  const fileId = typeof randomUUID === "function" ? randomUUID() : randomBytes(16).toString("hex");
-  const storageKey = `repos/${repoId}/${fileId}/v1`;
-  const sizeBytes = Buffer.byteLength(USER_PROFILE_TEMPLATE, "utf8");
-  const fileSha = sha256(USER_PROFILE_TEMPLATE);
-
-  const { error: createErr } = await supabase.from("repo_files").insert({
-    id: fileId,
-    repo_id: repoId,
-    path: USER_PROFILE_PATH,
-    name: USER_PROFILE_NAME,
-    mime: USER_PROFILE_MIME,
-    size_bytes: sizeBytes,
-    sha256: fileSha,
-    storage_key: storageKey,
-    version: 1,
-    created_by: userId,
-    updated_at: new Date().toISOString(),
-  });
-
-  if (createErr) throw new Error(`ensureUserProfileFile create failed: ${createErr.message}`);
-
-  const blob = new Uint8Array(Buffer.from(USER_PROFILE_TEMPLATE, "utf8"));
-  const { error: upErr } = await supabase.storage
-    .from(VAULT_BUCKET)
-    .upload(storageKey, blob, { upsert: false, contentType: USER_PROFILE_MIME });
-
-  if (upErr) {
-    await supabase.from("repo_files").delete().eq("id", fileId).eq("repo_id", repoId);
-    throw new Error(`ensureUserProfileFile upload failed: ${upErr.message}`);
-  }
-
-  const ver = await supabase.from("repo_file_versions").insert({
-    file_id: fileId,
-    version: 1,
-    storage_key: storageKey,
-    size_bytes: sizeBytes,
-    mime: USER_PROFILE_MIME,
-    actor: "system",
-    created_by: userId,
-    sha256: fileSha,
-  });
-
-  if (ver.error) console.log("[ensureUserProfileFile] versions insert failed:", ver.error.message);
-
-  return { id: fileId, path: USER_PROFILE_PATH, storage_key: storageKey, version: 1 };
-}
-
-async function updateChamberStateDoc(
-  supabase: any,
-  repoId: string,
-  patch: {
-    activeEngineeringArea?: string;
-    importantFiles?: string[];
-    recentChanges?: string[];
-    immediateNextSteps?: string[];
-  }
-) {
-  const { data: existing, error: readErr } = await supabase
-    .from("repo_memory_docs")
-    .select("content")
-    .eq("repo_id", repoId)
-    .eq("key", "chamber-state")
-    .maybeSingle();
-
-  if (readErr) {
-    console.log("[chamber-state] read failed:", readErr.message);
-    return;
-  }
-
-  const current = String(existing?.content ?? "").trim();
-
-  function extractSection(doc: string, heading: string) {
-    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`## ${escaped}\\n([\\s\\S]*?)(?=\\n## |$)`, "m");
-    const m = doc.match(re);
-    return m?.[1]?.trim() ?? "";
-  }
-
-  function parseBullets(sectionBody: string) {
-    return sectionBody
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => s.replace(/^- /, "").trim())
-      .filter((s) => s && s.toLowerCase() !== "not yet confirmed.");
-  }
-
-  function unique(items: string[]) {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const item of items) {
-      const clean = item.trim();
-      const key = clean.toLowerCase();
-      if (!clean) continue;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(clean);
-    }
-    return out;
-  }
-
-  const currentArea = extractSection(current, "Active Engineering Area");
-  const currentFiles = parseBullets(extractSection(current, "Important Files"))
-    .map((s) => s.replace(/^`|`$/g, ""));
-  const currentChanges = parseBullets(extractSection(current, "Recent Changes"));
-  const currentSteps = parseBullets(extractSection(current, "Immediate Next Steps"));
-
-  const nextArea = patch.activeEngineeringArea?.trim() || currentArea || "Not yet confirmed.";
-
-  const nextFiles = unique([
-    ...currentFiles,
-    ...(patch.importantFiles ?? []).map((s) => s.trim()).filter(Boolean),
-  ]);
-
-  const nextChanges = unique([
-    ...(patch.recentChanges ?? []).map((s) => s.trim()).filter(Boolean),
-    ...currentChanges,
-  ]).slice(0, 8);
-
-  const nextSteps = unique([
-    ...(patch.immediateNextSteps ?? []).map((s) => s.trim()).filter(Boolean),
-    ...currentSteps,
-  ]).slice(0, 8);
-
-  const body = `# Chamber State
-
-## Active Engineering Area
-${nextArea}
-
-## Important Files
-${nextFiles.length ? nextFiles.map((f) => `- \`${f}\``).join("\n") : "Not yet confirmed."}
-
-## Recent Changes
-${nextChanges.length ? nextChanges.map((x) => `- ${x}`).join("\n") : "Not yet confirmed."}
-
-## Immediate Next Steps
-${nextSteps.length ? nextSteps.map((x) => `- ${x}`).join("\n") : "Not yet confirmed."}
-`.trim();
-
-  const { error: upsertErr } = await supabase
-    .from("repo_memory_docs")
-    .upsert(
-      {
-        repo_id: repoId,
-        key: "chamber-state",
-        content: body,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "repo_id,key" }
-    );
-
-  if (upsertErr) {
-    console.log("[chamber-state] upsert failed:", upsertErr.message);
-  }
-}
-
-
-async function maybeSummarizeAndEngraveProposal(
-  supabase: any,
-  repoId: string,
-  userId: string,
-  opts?: { force?: boolean }
-) {
-  const SUMMARY_TABLE = "repo_chat_summaries";
-
-  // 1) count messages
-  const { count, error: countErr } = await supabase
-    .from("repo_messages")
-    .select("id", { count: "exact", head: true })
-    .eq("repo_id", repoId);
-
-  if (countErr) {
-    console.log("[engraving] count failed:", countErr.message);
-    return null;
-  }
-
-  const force = Boolean(opts?.force);
-    if (!force && (count ?? 0) < SUMMARY_TRIGGER_MSGS) return null;
-
-  // 2) fetch recent messages to summarize
-  const { data: recent, error: recentErr } = await supabase
-    .from("repo_messages")
-    .select("role, content, created_at")
-    .eq("repo_id", repoId)
-    .order("created_at", { ascending: false })
-    .limit(SUMMARY_TARGET_MSGS);
-
-  if (recentErr) {
-    console.log("[engraving] recent fetch failed:", recentErr.message);
-    return null;
-  }
-
-  const ordered = (recent ?? []).slice().reverse();
-  const clip = (s: string, n = 700) => (s.length > n ? s.slice(0, n) + "…" : s);
-
-  const toSummarize = ordered
-    .map((m: { role: string; content: string }) => `${m.role.toUpperCase()}: ${clip(m.content)}`)
-    .join("\n\n");
-
-const summaryPrompt = `
-You are updating the repository's sacred memory file: memory/chamber-state.md.
-
-This file represents LONG-TERM PROJECT STATE, not temporary user tasks.
-
-Rewrite it as STRICT markdown using exactly this structure:
-
-# Handover Summary
-## Current Focus
-## Architectural Decisions / Invariants
-## Confirmed Working Systems
-## Active Problems
-## Next Engineering Actions
-## Risk Surface
-
-Rules:
-- Capture durable project state (architecture, runner behavior, UI markers, vault rules).
-- Ignore short-lived user tasks unless they affect core system design.
-- Prefer concrete references (routes, markers, runner behavior, invariants).
-- Be concise but specific.
-- Do NOT include raw logs or conversational fluff.
-- Do NOT invent features that were not discussed.
-- If something was confirmed working, mark it clearly.
-- If something was experimental, mark it clearly.
-
-CHAT CONTEXT:
-${toSummarize}
-`.trim();
-
-
-
-  const resp = await openai.responses.create({
-    model: "gpt-4o-mini",
-    input: summaryPrompt,
-    max_output_tokens: 400,
-  });
-
-  const summaryText = (resp.output_text || "").trim() || "# Handover Summary\n\n(Empty summary produced)";
-
-  // OPTIONAL: keep your summary table insert (fine), but this should NOT prune.
-  // If you want engraving to replace summaries entirely, you can delete this block later.
-const supabaseAdmin = createSupabaseAdmin();
-
-const { data: inserted, error: insErr } = await supabaseAdmin
-  .from(SUMMARY_TABLE)
-  .insert({ repo_id: repoId, created_by: userId, summary_md: summaryText })
-  .select("id")
-  .single();
-
-  if (insErr) {
-    const msg = insErr.message || "";
-    if (msg.includes("schema cache") || msg.includes("Could not find the table")) {
-      console.log("[engraving] disabled (table missing in schema cache)");
-      // do NOT bail; you can still propose engraving even if table missing
-    } else {
-      console.log("[engraving] insert failed:", msg);
-      // also do NOT bail; still propose engraving
-    }
-  }
-
-  
-  // 3) compute prune plan (same logic), BUT DO NOT DELETE HERE
-  const { data: keep, error: keepErr } = await supabase
-    .from("repo_messages")
-    .select("id")
-    .eq("repo_id", repoId)
-    .order("created_at", { ascending: false })
-    .limit(SUMMARY_KEEP_LAST);
-
-  if (keepErr) {
-    console.log("[engraving] keep fetch failed:", keepErr.message);
-    return null; // pruning plan is required for safe apply->prune
-  }
-
-  const keepIds = (keep ?? []).map((x: any) => x.id).filter(Boolean);
-  if (keepIds.length === 0) return null;
-
-// 4) Build engraving marker using a REAL vault proposal (so __APPLY__ works)
-const sacred = await ensureSacredMemoryFile(supabase, repoId, userId);
-const sacredFileId = sacred.id;
-
-// Make a normal vault proposal (contains fileId/prevHash/nextHash/confirm/content)
-const proposal = await vault_propose_write(supabase, repoId, sacredFileId, summaryText);
-
-// Attach prune plan into proposal.meta so APPLY can prune after success
-(proposal as any).meta = { kind: "engraving", keepIds };
-
-const marker = {
-  kind: "engraving",
-  reason: `Message threshold reached (${count}). Suggest engraving into sacred memory.`,
-  stats: { messageCount: count },
-  proposal, // ✅ vault proposal shape
-  prune: { keepIds },
-  summaryId: inserted?.id ?? null,
-};
-
-return { marker };
-}
-function ensureTriplet(text: string) {
-  const t = (text || "").trim();
-  if (!t) return "";
-  if (t.startsWith("[Observation]")) return t;
-
-  return `[Observation]\nAssistant produced a non-contract response.\n\n[Assessment]\nThe raw output did not start with the required marker, so it would be hidden by contract-based rendering.\n\n[Action]\n${t}`.trim();
-}
-
-function extractMentionedPaths(text: string) {
-  return Array.from(
-    new Set(
-      (
-        text.match(/[A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+/g) ?? []
-      ).map((s) => s.trim())
-    )
-  );
-}
-
-function isSourceTargetTransferIntent(text: string) {
-  const paths = extractMentionedPaths(text || "");
-  const hit =
-    paths.length >= 2 &&
-    /move|extract|copy|preserve behavior|from .* to|into|containing these helper functions/i.test(
-      text || ""
-    );
-
-  console.log("[intent] sourceTargetTransfer", {
-    hit,
-    paths,
-    text,
-  });
-
-  return hit;
-}
-
-function resolveSourceAndTargetPaths(text: string) {
-  const paths = extractMentionedPaths(text || "");
-  if (paths.length < 2) return null;
-
-  const lower = String(text || "").toLowerCase();
-
-  let targetPath: string | null = null;
-  let sourcePath: string | null = null;
-
-  const rewriteMatch = text.match(/rewrite\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i);
-  if (rewriteMatch?.[1]) {
-    targetPath = rewriteMatch[1].trim();
-  }
-
-  const fromMatch = text.match(/from\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i);
-  if (fromMatch?.[1]) {
-    sourcePath = fromMatch[1].trim();
-  }
-
-  if (!sourcePath || !targetPath) {
-    const intoMatch = text.match(/into\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i);
-    if (intoMatch?.[1]) {
-      targetPath = targetPath || intoMatch[1].trim();
-    }
-  }
-
-  if (!sourcePath || !targetPath) {
-    if (/extract|move|copy/i.test(lower)) {
-      sourcePath = sourcePath || paths[0];
-      targetPath = targetPath || paths[paths.length - 1];
-    }
-  }
-
-  if (!sourcePath || !targetPath) {
-    return null;
-  }
-
-  if (sourcePath === targetPath) {
-    return null;
-  }
-
-  return { sourcePath, targetPath, paths };
-}
-
-function isImportRefactorIntent(text: string) {
-  const lower = String(text || "").toLowerCase();
-
-  const hasImportVerb =
-    /\bimport\b|\bupdate\b|\bremove\b|\breplace\b/.test(lower);
-
-  const mentionsPaths = extractMentionedPaths(text || "").length >= 2;
-
-  const mentionsHelpers =
-    /\bhelper\b|\bhelpers\b|\binlined implementations\b/.test(lower);
-
-  return hasImportVerb && mentionsPaths && mentionsHelpers;
-}
-
-function isExtractHelpersIntent(text: string) {
-  const lower = String(text || "").toLowerCase();
-
-  const hasExtractionVerb =
-    /\bextract\b|\bmove\b|\bcopy\b|\bseparate\b|\bsplit\b/.test(lower);
-
-  const mentionsHelpers =
-    /\bhelper\b|\bhelpers\b|\bfunctions\b/.test(lower);
-
-  const mentionsTransferStructure =
-    /\bfrom\b|\binto\b/.test(lower);
-
-  const looksLikeImportUpdate =
-    /\bimport\b|\bremove\b|\bupdate\b/.test(lower);
-
-  const hit =
-    extractMentionedPaths(text || "").length >= 2 &&
-    hasExtractionVerb &&
-    mentionsHelpers &&
-    mentionsTransferStructure &&
-    !looksLikeImportUpdate;
-
-  console.log("[intent] extractHelpers", {
-    hit,
-    hasExtractionVerb,
-    mentionsHelpers,
-    mentionsTransferStructure,
-    looksLikeImportUpdate,
-    paths: extractMentionedPaths(text || ""),
-    text,
-  });
-
-  return hit;
-}
-
-function isSplitFileIntent(text: string) {
-  return /split\s+/i.test(text || "") && extractMentionedPaths(text || "").length >= 1;
-}
-
-function extractSplitTargets(text: string) {
-  const src = String(text || "").replace(/\r/g, " ");
-
-  const matches = Array.from(
-    src.matchAll(/(?:^|\s)[-*]\s+([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)/g)
-  );
-
-  const out = matches.map((m) => String(m[1]).trim()).filter(Boolean);
-
-  return Array.from(new Set(out));
-}
-
-async function generateSplitFileContents(opts: {
-  openai: OpenAI;
-  model: string;
-  userRequest: string;
-  sourcePath: string;
-  sourceContent: string;
-  targetPaths: string[];
-}) {
-  const prompt = `
-You are splitting one repository file into multiple files.
-
-Return ONLY valid JSON in this exact shape:
-{
-  "files": [
-    { "path": "target/path.ext", "content": "full file content" }
-  ]
-}
-
-Rules:
-- Do not include markdown fences.
-- Do not include explanation.
-- Do not include any text before or after the JSON.
-- Produce one entry for each requested target path.
-- Preserve valid syntax.
-- The result should satisfy the user's split request.
-
-Source file:
-${opts.sourcePath}
-
-Requested target paths:
-${opts.targetPaths.map((p) => `- ${p}`).join("\n")}
-
-User request:
-${opts.userRequest}
-
-Source content:
-<<<FILE
-${opts.sourceContent}
-FILE
->>>
-`.trim();
-
-  const resp = await opts.openai.responses.create({
-    model: opts.model,
-    input: prompt,
-    max_output_tokens: 3200,
-  });
-
-  const raw = (resp.output_text || "").trim();
-  const parsed = JSON.parse(raw);
-
-  const files = Array.isArray(parsed?.files) ? parsed.files : [];
-
-  return files
-    .filter((f: any) => typeof f?.path === "string" && typeof f?.content === "string")
-    .map((f: any) => ({
-      path: String(f.path).trim(),
-      content: String(f.content),
-    }));
-}
-
-function extractSingleMentionedPath(text: string) {
-  const paths = extractMentionedPaths(text || "");
-  return paths.length === 1 ? paths[0] : null;
-}
-
-function isNamedFileExecutionRequest(text: string) {
-  return (
-    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|review|inspect|turn|transform|convert|evolve/i.test(
-      text || ""
-    ) && extractMentionedPaths(text || "").length >= 1
-  );
-}
-
-function stripDuplicateTriplet(text: string) {
-  const first = text.indexOf("[Observation]");
-  if (first === -1) return text.trim();
-
-  const second = text.indexOf("[Observation]", first + 12);
-  if (second !== -1) return text.slice(0, second).trim();
-
-  return text.trim();
-}
-
-function scrubVisibleToolPayload(text: string) {
-  let out = (text || "");
-
-  // 1) Remove full JSON-ish blobs containing proposal/tool keys
-  out = out.replace(
-    /\{[\s\S]*?(prevHash|nextHash|fileId|storage_key|confirm|mime|bytes|content|preview_lines|op|path|status)[\s\S]*?\}/g,
-    ""
-  );
-
-  // 2) If structured payload leaks after the allowed visible sentence, hard-truncate it
-  out = out.replace(
-    /(A staged change is ready\. Confirm to apply\.)[\s\S]*$/m,
-    "$1"
-  );
-
-  // 3) Remove common broken tail fragments if they appear on their own
-  out = out.replace(
-    /(^|\n)\s*["',{][\s\S]*?(preview_lines|fileId|path|op|status)[\s\S]*$/m,
-    ""
-  );
-
-  return out.trim();
-}
-
-function isRepositoryExecutionIntent(text: string) {
-  return /create|add|render|use|insert|implement|refine|improve|rewrite|clean up|cleanup|harden|extend|modify|edit|tighten|fix|update|replace|check|correct|review|inspect|debug|repair|resolve|turn|transform|convert|evolve/i.test(
-    text || ""
-  );
-}
-
-function isCreateAndModifyIntent(text: string) {
-  return /create|add|implement/i.test(text || "") &&
-         /render|use|import|insert|mount/i.test(text || "");
-}
-
-function choosePrimarySuggestionTarget(
-  appliedFiles: Array<{ path?: string | null; mime?: string | null }>
-) {
-  const files = appliedFiles
-    .map((f) => ({
-      path: String(f.path ?? "").trim(),
-      mime: String(f.mime ?? "").trim(),
-    }))
-    .filter((f) => f.path);
-
-  if (files.length === 0) return null;
-
-  const preferred = files.find((f) =>
-    /\.(html|tsx|ts|jsx|js|css|md)$/i.test(f.path) &&
-    !f.path.startsWith("memory/")
-  );
-  if (preferred) return preferred;
-
-  const nonMemory = files.find((f) => !f.path.startsWith("memory/"));
-  if (nonMemory) return nonMemory;
-
-  return files[0];
-}
-
-function buildSuggestedPromptsFromAppliedFiles(
-  appliedFiles: Array<{ path?: string | null; mime?: string | null }>
-) {
-  const target = choosePrimarySuggestionTarget(appliedFiles);
-  const path = String(target?.path ?? "").trim();
-  const lower = path.toLowerCase();
-
-  if (!path) {
-    return [
-      "Suggest the next beginner-friendly step for this project",
-      "Explain what was just changed",
-      "Add one small next improvement to this project",
-    ];
-  }
-
-  if (lower.endsWith(".html")) {
-    return [
-      `Update ${path} to make the page mobile responsive`,
-      `Update ${path} to add a footer with a short about section`,
-      `Explain how the HTML and CSS in ${path} work`,
-    ];
-  }
-
-  if (lower.endsWith(".css")) {
-    return [
-      `Update ${path} to improve spacing and overall polish`,
-      `Update ${path} to add hover effects and smoother styling`,
-      `Explain what each section of ${path} does`,
-    ];
-  }
-
-  if (lower.endsWith(".tsx") || lower.endsWith(".ts") || lower.endsWith(".jsx") || lower.endsWith(".js")) {
-    return [
-      `Update ${path} to add one small next feature`,
-      `Refactor ${path} to be easier for a beginner to understand`,
-      `Explain what ${path} does step by step`,
-    ];
-  }
-
-  if (lower.endsWith("readme.md")) {
-    return [
-      `Create the next project files described in ${path}`,
-      `Update ${path} to make the setup steps easier for a beginner`,
-      `Explain the setup steps in ${path} more simply`,
-    ];
-  }
-
-  return [
-    `Update ${path} with one small next improvement`,
-    `Explain what was changed in ${path}`,
-    `Suggest the next beginner-friendly change for ${path}`,
-  ];
-}
-async function generateNewFileContent(opts: {
-  openai: OpenAI;
-  model: string;
-  userRequest: string;
-  path: string;
-  mime: string;
-}) {
-  const prompt = `
-You are creating a NEW repository file.
-
-Return ONLY the full file contents.
-
-Rules:
-- Do not include markdown fences.
-- Do not include explanation.
-- Do not include [Observation]/[Assessment]/[Action].
-- Do not include JSON.
-- Produce valid code/content for the target path.
-
-Target file: ${opts.path}
-
-User request:
-${opts.userRequest}
-`.trim();
-
-  const resp = await opts.openai.responses.create({
-    model: opts.model,
-    input: prompt,
-    max_output_tokens: 3200,
-  });
-
-  return (resp.output_text || "").trim();
-}
-
-async function generateRewrittenFileContent(opts: {
-  openai: OpenAI;
-  model: string;
-  userRequest: string;
-  path: string;
-  mime: string;
-  currentContent: string;
-}) {
-  const prompt = `
-You are rewriting an existing repository file.
-
-Return ONLY the full rewritten file content.
-
-Rules:
-- Do not include markdown fences.
-- Do not include explanation.
-- Do not include [Observation]/[Assessment]/[Action].
-- Do not include JSON.
-- Preserve valid syntax.
-
-Target file: ${opts.path}
-
-User request:
-${opts.userRequest}
-
-Current file content:
-<<<FILE
-${opts.currentContent}
-FILE
->>>
-`.trim();
-
-  const resp = await opts.openai.responses.create({
-    model: opts.model,
-    input: prompt,
-    max_output_tokens: 3200,
-  });
-
-  return (resp.output_text || "").trim();
-}
-
 // ─────────────────────────────────────────────────────────────
 // Route: POST /api/repo/[repoId]/chat
 // ─────────────────────────────────────────────────────────────
@@ -1844,6 +140,196 @@ if (!isMember) {
 }
   const { content } = await req.json();
   if (!content?.trim()) return new Response("Missing content", { status: 400 });
+  const planningRequest = isGoalPlanningRequest(content);
+
+console.log("[goal_debug_content]", JSON.stringify(content));
+
+async function findLatestGoalPlan(
+  supabase: any,
+  repoId: string
+) {
+  const { data: rows, error } = await supabase
+    .from("repo_messages")
+    .select("content, created_at")
+    .eq("repo_id", repoId)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(200);
+
+  if (error) {
+    throw new Error(`Failed to load goal history: ${error.message}`);
+  }
+
+  for (const row of rows ?? []) {
+    const txt = String(row.content ?? "");
+    const parsed = extractGoalPlan(txt);
+
+    if (parsed) {
+      console.log("[findLatestGoalPlan] found", {
+        goalId: parsed.goalId,
+        title: parsed.title,
+      });
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────
+// GOAL STOP (deterministic)
+// ─────────────────────────────────────────
+if (content.trim() === "__GOAL_STOP__") {
+  const plan = await findLatestGoalPlan(supabase, repoId);
+
+  if (!plan) {
+    return new Response("No active goal found", { status: 400 });
+  }
+
+  const statusPayload = {
+    goalId: String(plan.goalId ?? ""),
+    status: "cancelled",
+    currentStepId: null,
+    note: "Goal stopped by user.",
+  };
+
+  const final = `__GOAL_STATUS__:${JSON.stringify(statusPayload)}`;
+
+  console.log("[goal_stop]", {
+    repoId,
+    goalId: statusPayload.goalId,
+  });
+
+  await supabase.from("repo_messages").insert([
+    {
+      repo_id: repoId,
+      user_id: user.id,
+      role: "user",
+      content,
+    },
+    {
+      repo_id: repoId,
+      user_id: user.id,
+      role: "assistant",
+      content: final,
+    },
+  ]);
+
+  return new Response(final, {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
+if (content.trim() === "__GOAL_APPROVE__") {
+  const { data: rows, error } = await supabase
+    .from("repo_messages")
+    .select("content, created_at")
+    .eq("repo_id", repoId)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(200);
+
+
+    
+  if (error) {
+    return new Response(
+      "[Observation]\nGoal approval failed.\n\n[Assessment]\nCould not load recent assistant messages.\n\n[Action]\nRetry approval.",
+      {
+        status: 500,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+
+  const latestGoalPlanMsg = (rows ?? []).find((r: any) =>
+    String(r.content ?? "").trim().startsWith("__GOAL_PLAN__:")
+  );
+
+  if (!latestGoalPlanMsg) {
+    return new Response(
+      "[Observation]\nGoal approval failed.\n\n[Assessment]\nNo pending goal plan was found.\n\n[Action]\nCreate a plan first.",
+      {
+        status: 400,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+
+  const raw = String(latestGoalPlanMsg.content ?? "").trim();
+  const json = raw.slice("__GOAL_PLAN__:".length);
+
+  let plan: any;
+  try {
+    plan = JSON.parse(json);
+  } catch (e: any) {
+    return new Response(
+      "[Observation]\nGoal approval failed.\n\n[Assessment]\nStored goal plan JSON was invalid.\n\n[Action]\nRegenerate the plan.",
+      {
+        status: 500,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+
+  const statusPayload = {
+    goalId: String(plan.goalId ?? ""),
+    status: "running",
+    currentStepId:
+      Array.isArray(plan.steps) && plan.steps.length > 0
+        ? String(plan.steps[0].id ?? "")
+        : null,
+  };
+
+console.log("[goal_approve]", {
+  repoId,
+  goalId: statusPayload.goalId,
+  currentStepId: statusPayload.currentStepId,
+  stepCount: Array.isArray(plan.steps) ? plan.steps.length : 0,
+});
+
+  const final = `__GOAL_STATUS__:${JSON.stringify(statusPayload)}`;
+
+  await supabase.from("repo_messages").insert([
+    {
+      repo_id: repoId,
+      user_id: user.id,
+      role: "user",
+      content,
+    },
+    {
+      repo_id: repoId,
+      user_id: user.id,
+      role: "assistant",
+      content: final,
+    },
+  ]);
+
+  return new Response(final, {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+  
+const { data: repoFiles, error: repoFilesErr } = await supabase
+  .from("repo_files")
+  .select("path")
+  .eq("repo_id", repoId)
+  .is("deleted_at", null);
+
+if (repoFilesErr) {
+  console.log("[repo_inference] repo file load failed:", repoFilesErr.message);
+}
+
+const filePaths = (repoFiles ?? [])
+  .map((f: any) => String(f.path ?? "").trim())
+  .filter(Boolean);
+
+const inference = inferRepoProfile(filePaths);
+
+console.log("[repo_inference]", {
+  repoId,
+  fileCount: filePaths.length,
+  inference,
+});
 
   let preReadFile: {
   id: string;
@@ -1854,6 +340,92 @@ if (!isMember) {
 } | null = null;
 
   console.log("[chat] content_head:", content.slice(0, 40));
+
+// ─────────────────────────────────────────
+// GOAL CONTINUE
+// ─────────────────────────────────────────
+if (content.trim() === "__GOAL_CONTINUE__") {
+
+const plan = await findLatestGoalPlan(supabase, repoId);
+
+if (!plan) {
+  return new Response(
+    "[Observation]\nNo active goal was found.\n\n[Assessment]\nThe latest goal plan could not be located.\n\n[Action]\nCreate a new plan or reload the chamber.",
+    {
+      status: 400,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }
+  );
+}
+
+const latestStatus = await findLatestGoalStatus(
+  supabase,
+  repoId,
+  String(plan.goalId ?? "")
+);
+
+const effectiveCurrentStepId =
+  typeof latestStatus?.currentStepId === "string"
+    ? latestStatus.currentStepId
+    : typeof plan.currentStepId === "string"
+    ? plan.currentStepId
+    : null;
+
+const steps = Array.isArray(plan.steps) ? plan.steps : [];
+const idx = steps.findIndex((s: any) => s.id === effectiveCurrentStepId);
+
+let nextStepId: string | null = null;
+
+if (idx >= 0 && idx + 1 < steps.length) {
+  nextStepId = String(steps[idx + 1].id);
+}
+
+const statusPayload = {
+  goalId: String(plan.goalId ?? ""),
+  status: nextStepId ? "running" : "completed",
+  currentStepId: nextStepId,
+};
+
+const stepToExecute = steps.find((s: any) => s.id === effectiveCurrentStepId) ?? null;
+
+const executePayload =
+  stepToExecute && statusPayload.status === "running"
+    ? {
+        goalId: String(plan.goalId ?? ""),
+        stepId: String(stepToExecute.id ?? ""),
+        instruction: String(stepToExecute.description ?? "").trim(),
+      }
+    : null;
+
+const parts = [
+  `__GOAL_STATUS__:${JSON.stringify(statusPayload)}`,
+];
+
+if (executePayload?.instruction) {
+  parts.push(`__GOAL_EXECUTE__:${JSON.stringify(executePayload)}`);
+}
+
+const final = parts.join("\n");
+
+await supabase.from("repo_messages").insert([
+    {
+      repo_id: repoId,
+      user_id: user.id,
+      role: "user",
+      content
+    },
+    {
+      repo_id: repoId,
+      user_id: user.id,
+      role: "assistant",
+      content: final
+    }
+  ]);
+
+  return new Response(final, {
+    headers: { "Content-Type": "text/plain; charset=utf-8" }
+  });
+}
 
   // ─────────────────────────────────────────────────────────────
   // Membership tier policy (server clamp)
@@ -1894,7 +466,130 @@ console.log("[policy]", {
   mode: resolvedMode,
 });
 
+if (planningRequest) {
+  await supabase.from("repo_messages").insert({
+    repo_id: repoId,
+    user_id: user.id,
+    role: "user",
+    content,
+  });
+
+const goalPlanInstructions = `
+You are generating a GoalPlan object for Vestaryn.
+
+Return only valid JSON.
+Do not return markdown.
+Do not use code fences.
+Do not add prose before or after the JSON.
+
+Schema:
+{
+  "goalId": string,
+  "title": string,
+  "summary": string,
+  "status": "awaiting_approval",
+  "scope": "small" | "medium" | "large",
+  "estimatedTouchedFiles": string[],
+  "steps": [
+    {
+      "id": string,
+      "title": string,
+      "description": string,
+      "status": "pending",
+      "files": string[]
+    }
+  ]
+}
+
+Rules:
+- Honor the user's requested number of steps exactly if specified.
+- This is planning only.
+- Keep the JSON compact.
+- summary must be one short sentence.
+- each step title must be short.
+- each step description must be one short sentence only.
+- keep estimatedTouchedFiles minimal.
+- do not emit repository proposal markers.
+- do not emit prose outside the JSON.
+`;
+
+  try {
+    const resp = await openai.responses.create({
+      model: tierPolicy.model,
+      instructions: goalPlanInstructions,
+      input: [{ role: "user", content }],
+      tool_choice: "none",
+      max_output_tokens: 1900,
+    });
+
+    const raw = String(resp.output_text ?? "").trim();
+
+    console.log("[goal_plan] raw", raw);
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e: any) {
+      console.log("[goal_plan] invalid_json", {
+        message: e?.message,
+        raw,
+      });
+
+      return new Response(
+        "[Observation]\nGoal plan generation failed.\n\n[Assessment]\nThe model did not return valid GoalPlan JSON.\n\n[Action]\nRetry with the dedicated planning contract.",
+        {
+          status: 500,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        }
+      );
+    }
+
+    const final = `__GOAL_PLAN__:${JSON.stringify(parsed)}`;
+
+    await supabase.from("repo_messages").insert({
+      repo_id: repoId,
+      user_id: user.id,
+      role: "assistant",
+      content: final,
+    });
+
+    return new Response(final, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  } catch (e: any) {
+    console.log("[goal_plan] failed", e?.message);
+
+    return new Response(
+      "[Observation]\nGoal plan generation failed.\n\n[Assessment]\nThe dedicated planning branch failed before a valid marker could be created.\n\n[Action]\nCheck server logs for [goal_plan].",
+      {
+        status: 500,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+}
+
 console.log("[verify_probe] content:", JSON.stringify(content));
+
+const baselineVerify = await runAutoVerifyForRepo({ repoId });
+
+console.log("[baseline_verify]", {
+  ok: baselineVerify.verifyPayload.ok,
+  failedStep: baselineVerify.verifyPayload.failedStep,
+});
+
+if (!baselineVerify.verifyPayload.ok) {
+  console.log("[baseline_verify] repo currently broken, repair needed");
+}
+
+console.log("[baseline_verify]", {
+  ok: baselineVerify.verifyPayload.ok,
+  failedStep: baselineVerify.verifyPayload.failedStep,
+});
+
+if (!baselineVerify.verifyPayload.ok) {
+  console.log("[baseline_verify] repo currently broken, repair needed");
+}
 
 const verifyCmd =
   content.trim() === "__VERIFY_ALL__" ? "node_verify" :
@@ -2197,18 +892,104 @@ if (content.startsWith("__APPLY_SET__:")) {
       appliedFiles,
     };
 
-const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles(appliedFiles);
+    const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles(appliedFiles);
 
-const txt =
-  `[Observation]\nWrites applied.\n\n` +
-  `[Assessment]\nMultiple file versions advanced.\n\n` +
-  `[Action]\nFiles updated deterministically.\n` +
-  `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
-  `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n`;
+    const pendingVerifyPayload = buildPendingVerifyPayload({
+      fileIds: touchedFileIds,
+      command: "node_verify",
+    });
+
+    let finalVerifyPayload: any;
+    let verifySummaryText = "";
+
+    try {
+      const { verifyPayload } = await runAutoVerifyForRepo({
+        repoId,
+        verifyCmd: "node_verify",
+      });
+
+    for (const fid of touchedFileIds) {
+      await setRepoFileStatus(
+        repoId,
+        fid,
+        verifyPayload.ok ? "ok" : "error",
+        verifyPayload.ok ? null : (verifyPayload.failureKind ?? "verify_failed"),
+        "verify"
+      );
+    }
+      
+      finalVerifyPayload = buildFinalVerifyPayload({
+        base: verifyPayload,
+        fileIds: touchedFileIds,
+      });
+
+      try {
+        await updateChamberStateDoc(supabase, repoId, {
+          activeEngineeringArea: "Verification and repository integrity checks.",
+          recentChanges: [
+            `Applied multi-file staged change set.`,
+            `Auto-verify result: ${verifyPayload.ok ? "PASS" : "FAIL"}.`,
+          ],
+          immediateNextSteps: verifyPayload.ok
+            ? ["Continue implementation or stage the next change."]
+            : ["Review verify output and fix failing files before continuing."],
+        });
+      } catch (e: any) {
+        console.log("[chamber-state] apply_set auto-verify update skipped:", e?.message);
+        for (const fid of touchedFileIds) {
+          await setRepoFileStatus(
+            repoId,
+            fid,
+            "error",
+            "verify_internal_error",
+            "verify"
+          );
+        }
+      }
+
+      verifySummaryText =
+        `\n[Observation]\nAuto verification executed.\n\n` +
+        `[Assessment]\ncommand=${finalVerifyPayload.command} ok=${finalVerifyPayload.ok} exitCode=${finalVerifyPayload.exitCode} durationMs=${finalVerifyPayload.durationMs}\n\n` +
+        `[Action]\nVerification result recorded.\n`;
+    } catch (e: any) {
+      finalVerifyPayload = buildFinalVerifyPayload({
+        base: {
+          command: "node_verify",
+          ok: false,
+          exitCode: -1,
+          durationMs: 0,
+          stdout: "",
+          stderr: "",
+          error: e?.message ?? "Auto verify failed",
+          jobId: null,
+          fingerprint: null,
+          failedStep: "verify_boot",
+          failureKind: "internal_error",
+          timedOut: false,
+        },
+        fileIds: touchedFileIds,
+      });
+
+      verifySummaryText =
+        `\n[Observation]\nAuto verification failed.\n\n` +
+        `[Assessment]\n${e?.message ?? "Unknown auto-verify error"}\n\n` +
+        `[Action]\nReview verify pipeline logs.\n`;
+    }
+
+    const txt =
+      `[Observation]\nWrites applied.\n\n` +
+      `[Assessment]\nMultiple file versions advanced.\n\n` +
+      `[Action]\nFiles updated deterministically.\n` +
+      `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
+      `\n__VERIFY__:${JSON.stringify(pendingVerifyPayload)}\n` +
+      `\n__VERIFY__:${JSON.stringify(finalVerifyPayload)}\n` +
+      `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n` +
+      verifySummaryText;
 
     return new Response(txt, {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
+
   } catch (e: any) {
     return new Response(
       `[Observation]\nApply failed.\n\n[Assessment]\n${e?.message ?? "Unknown error"}\n\n[Action]\nRecreate proposal set.`,
@@ -2322,12 +1103,14 @@ if (content.startsWith("__APPLY__:")) {
 
     const didEngraving = proposal?.meta?.kind === "engraving";
 
+    const touchedFileIds = [String(proposal.fileId)].filter(Boolean);
+
     const applyPayload = {
       ok: true,
       repoId,
       requestId,
       changeId: typeof proposal?.meta?.changeId === "string" ? proposal.meta.changeId : null,
-      touchedFileIds: [String(proposal.fileId)].filter(Boolean),
+      touchedFileIds,
       appliedFile: {
         fileId: applied?.fileId ?? String(proposal.fileId),
         path: applied?.path ?? proposal?.path ?? null,
@@ -2344,7 +1127,7 @@ if (content.startsWith("__APPLY__:")) {
           `Applied staged change to ${String(applied?.path ?? proposal?.path ?? "a repository file")}.`,
         ],
         immediateNextSteps: [
-          "Run verification on touched files.",
+          "Auto verification is running.",
           "Continue with the next engineering task.",
         ],
       });
@@ -2352,20 +1135,102 @@ if (content.startsWith("__APPLY__:")) {
       console.log("[chamber-state] apply update skipped:", e?.message);
     }
 
-const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles([
-  {
-    path: applied?.path ?? proposal?.path ?? null,
-    mime: proposal?.mime ?? null,
-  },
-]);
+    const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles([
+      {
+        path: applied?.path ?? proposal?.path ?? null,
+        mime: proposal?.mime ?? null,
+      },
+    ]);
 
-const txt =
-  `[Observation]\nWrite applied.\n\n` +
-  `[Assessment]\nVersion advanced.\n\n` +
-  `[Action]\nFile updated deterministically.\n` +
-  `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
-  `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n` +
-  (didEngraving ? `\n__RESET__\n` : "");
+    const pendingVerifyPayload = buildPendingVerifyPayload({
+      fileIds: touchedFileIds,
+      command: "node_verify",
+    });
+
+    let finalVerifyPayload: any;
+    let verifySummaryText = "";
+
+    try {
+      const { verifyPayload } = await runAutoVerifyForRepo({
+        repoId,
+        verifyCmd: "node_verify",
+      });
+
+      await setRepoFileStatus(
+        repoId,
+        applied?.fileId ?? proposal.fileId,
+        verifyPayload.ok ? "ok" : "error",
+        verifyPayload.ok ? null : (verifyPayload.failureKind ?? "verify_failed"),
+        "verify"
+      );
+
+      finalVerifyPayload = buildFinalVerifyPayload({
+        base: verifyPayload,
+        fileIds: touchedFileIds,
+      });
+
+      try {
+        await updateChamberStateDoc(supabase, repoId, {
+          activeEngineeringArea: "Verification and repository integrity checks.",
+          importantFiles: [String(applied?.path ?? proposal?.path ?? "repository file")].filter(Boolean),
+          recentChanges: [
+            `Applied staged change to ${String(applied?.path ?? proposal?.path ?? "a repository file")}.`,
+            `Auto-verify result: ${verifyPayload.ok ? "PASS" : "FAIL"}.`,
+          ],
+          immediateNextSteps: verifyPayload.ok
+            ? ["Continue implementation or stage the next change."]
+            : ["Review verify output and fix failing files before continuing."],
+        });
+      } catch (e: any) {
+        console.log("[chamber-state] single apply auto-verify update skipped:", e?.message);
+        await setRepoFileStatus(
+          repoId,
+          applied?.fileId ?? proposal.fileId,
+          "error",
+          "verify_internal_error",
+          "verify"
+        );
+      }
+
+      verifySummaryText =
+        `\n[Observation]\nAuto verification executed.\n\n` +
+        `[Assessment]\ncommand=${finalVerifyPayload.command} ok=${finalVerifyPayload.ok} exitCode=${finalVerifyPayload.exitCode} durationMs=${finalVerifyPayload.durationMs}\n\n` +
+        `[Action]\nVerification result recorded.\n`;
+    } catch (e: any) {
+      finalVerifyPayload = buildFinalVerifyPayload({
+        base: {
+          command: "node_verify",
+          ok: false,
+          exitCode: -1,
+          durationMs: 0,
+          stdout: "",
+          stderr: "",
+          error: e?.message ?? "Auto verify failed",
+          jobId: null,
+          fingerprint: null,
+          failedStep: "verify_boot",
+          failureKind: "internal_error",
+          timedOut: false,
+        },
+        fileIds: touchedFileIds,
+      });
+
+      verifySummaryText =
+        `\n[Observation]\nAuto verification failed.\n\n` +
+        `[Assessment]\n${e?.message ?? "Unknown auto-verify error"}\n\n` +
+        `[Action]\nReview verify pipeline logs.\n`;
+    }
+
+    const txt =
+      `[Observation]\nWrite applied.\n\n` +
+      `[Assessment]\nVersion advanced.\n\n` +
+      `[Action]\nFile updated deterministically.\n` +
+      `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
+      `\n__VERIFY__:${JSON.stringify(pendingVerifyPayload)}\n` +
+      `\n__VERIFY__:${JSON.stringify(finalVerifyPayload)}\n` +
+      `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n` +
+      verifySummaryText +
+      (didEngraving ? `\n__RESET__\n` : "");
 
     console.log("[apply] didEngraving=", didEngraving);
 
@@ -2554,7 +1419,15 @@ try {
   const orderedHistory = (history ?? []).slice().reverse();
   const cleanedHistory = orderedHistory.filter((m: any) => {
     if (m.role !== "assistant") return true;
-    return String(m.content || "").trim().startsWith("[Observation]");
+
+    const text = String(m.content || "").trim();
+
+    return (
+      text.startsWith("[Observation]") ||
+      text.startsWith("__GOAL_PLAN__:") ||
+      text.startsWith("__GOAL_STATUS__:") ||
+      text.startsWith("__GOAL_DONE__:")
+    );
   });
 
   const sacredBlock = sacredText.trim()
@@ -2597,7 +1470,11 @@ const ledgerBlock = ledger.trim()
 try {
   const targetPath = extractSingleMentionedPath(content);
 
-  if (targetPath && isNamedFileExecutionRequest(content)) {
+  if (
+  targetPath &&
+  isNamedFileExecutionRequest(content) &&
+  !isMetaRepositoryQuestion(content)
+) {
     const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
 
     if (resolvedId) {
@@ -2663,14 +1540,444 @@ if (preReadFile && isNamedFileExecutionRequest(content)) {
       "[Assessment]\nThe requested file fix was prepared from the current repository content.\n\n" +
       "[Action]\nA staged change is ready. Confirm to apply.";
 
+    let preverifyMarker = "";
+
+    try {
+      const proposals = [
+        {
+          ...proposal,
+          path: proposal.path ?? preReadFile.path,
+          mime: proposal.mime ?? preReadFile.mime,
+          meta: proposal.meta ?? null,
+        },
+      ];
+
+      if (shouldPreVerifyProposalSet(proposals)) {
+        console.log("[fast-path preverify] starting", {
+          repoId,
+          path: proposal.path ?? preReadFile.path,
+          fileId: proposal.fileId,
+        });
+
+        const preverify = await runPreVerifyForProposalSet({
+          repoId,
+          proposals,
+        });
+
+        const baselineNoise = isBaselinePreverifyFailure(
+          
+  baselineVerify.verifyPayload,
+  preverify
+
+);console.log("[baseline_classifier]", {
+  baselineFailedStep: baselineVerify.verifyPayload.failedStep,
+  proposalFailedStep: preverify.failedStep,
+  baselineNoise,
+});
+        console.log("[baseline_classifier input]", {
+  failedStep: preverify.failedStep,
+  failureKind: preverify.failureKind,
+  stderrHead: String(preverify.stderr ?? "").slice(0, 2000),
+  stdoutHead: String(preverify.stdout ?? "").slice(0, 1000),
+  error: preverify.error ?? null,
+});
+console.log("[fast-path preverify] stderr head", String(preverify.stderr ?? "").slice(0, 1200));
+console.log("[fast-path preverify] stdout head", String(preverify.stdout ?? "").slice(0, 1200));
+console.log("[fast-path preverify] baseline?", baselineNoise);
+console.log("[fast-path preverify] result", {
+  ok: preverify.ok,
+  failedStep: preverify.failedStep,
+  failureKind: preverify.failureKind,
+  baseline: baselineNoise,
+  fileIds: preverify.fileIds,
+});
+
+        if (!preverify.ok && !baselineNoise) {
+          await setRepoFileStatus(
+            repoId,
+            proposal.fileId,
+            "error",
+            preverify.failureKind ?? "preverify_failed",
+            "preverify"
+          );
+        }
+
+        if (!preverify.ok && !baselineNoise) {
+          console.log("[fast-path repair] attempting repair", {
+            failedStep: preverify.failedStep,
+            kind: preverify.failureKind,
+          });
+
+          const repaired = await attemptFastPathRepair({
+            repoId,
+            path: proposal.path ?? preReadFile.path,
+            fileId: proposal.fileId ?? preReadFile.id,
+            failedStep: preverify.failedStep,
+            userRequest: content,
+            currentContent: proposal.content,
+            stdout: String(preverify.stdout ?? ""),
+            stderr: String(preverify.stderr ?? ""),
+            error: preverify.error ?? null,
+          });
+
+          if (repaired?.ok) {
+            console.log("[fast-path repair] repair succeeded");
+
+            const repairedRaw =
+              typeof repaired.proposal === "string" ? repaired.proposal : "";
+
+            const repairedContent = stripCodeFences(repairedRaw);
+
+            if (!repairedContent) {
+              throw new Error("fast-path repair returned empty content");
+            }
+
+            const repairedProposal = await vault_propose_write(
+              supabase,
+              repoId,
+              preReadFile.id,
+              repairedContent
+            );
+
+            console.log("[fast-path repair] reverify starting", {
+              repoId,
+              path: repairedProposal.path ?? preReadFile.path,
+              fileId: repairedProposal.fileId,
+            });
+
+            const repairedPreverify = await runPreVerifyForProposalSet({
+              repoId,
+              proposals: [
+                {
+                  fileId: repairedProposal.fileId,
+                  path: repairedProposal.path ?? preReadFile.path,
+                  content: repairedProposal.content,
+                  mime: repairedProposal.mime ?? preReadFile.mime,
+                  meta: null,
+                },
+              ],
+            });
+
+            const repairedBaseline = isBaselinePreverifyFailure(
+              baselineVerify.verifyPayload,
+              repairedPreverify
+            );
+
+            console.log("[fast-path repair] reverify result", {
+              ok: repairedPreverify.ok,
+              failedStep: repairedPreverify.failedStep,
+              failureKind: repairedPreverify.failureKind,
+              baseline: repairedBaseline,
+              fileIds: repairedPreverify.fileIds,
+            });
+
+            preverifyMarker = `\n__PREVERIFY__:${JSON.stringify({
+              ...repairedPreverify,
+              baseline: repairedBaseline,
+            })}\n`;
+
+            if (!repairedPreverify.ok) {
+              console.log("[fast-path] proposal rejected after failed repair");
+
+              await setRepoFileStatus(
+                repoId,
+                repairedProposal.fileId ?? preReadFile.id,
+                "error",
+                repairedPreverify.failureKind ?? "repair_reverify_failed",
+                "verify"
+              );
+
+              return new Response(`${visible}\n\n${preverifyMarker}\n`, {
+                headers: { "Content-Type": "text/plain; charset=utf-8" },
+              });
+            }
+
+            proposal = repairedProposal;
+
+            await setRepoFileStatus(
+              repoId,
+              proposal.fileId ?? preReadFile.id,
+              "pending",
+              "verify_running",
+              "verify"
+            );
+          } else {
+            console.log("[fast-path repair] repair failed");
+          }
+        }
+
+        if (!preverifyMarker) {
+          preverifyMarker = `\n__PREVERIFY__:${JSON.stringify({
+            ...preverify,
+            baselineVerify,
+          })}\n`;
+        }
+      }
+    } catch (e: any) {
+      console.log("[fast-path preverify] failed:", e?.message);
+
+      preverifyMarker = `\n__PREVERIFY__:${JSON.stringify({
+        ok: false,
+        command: "node_verify",
+        exitCode: -1,
+        durationMs: 0,
+        stdout: "",
+        stderr: "",
+        error: e?.message ?? "Pre-verify failed",
+        failedStep: "preverify_boot",
+        failureKind: "internal_error",
+        timedOut: false,
+        fileIds: [String(proposal.fileId)].filter(Boolean),
+        paths: [String(proposal.path ?? preReadFile.path ?? "")].filter(Boolean),
+        baseline: false,
+      })}\n`;
+    }
+
     return new Response(
-      `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`,
+      `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}${preverifyMarker}\n`,
       {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       }
     );
   } catch (e: any) {
     console.log("[fast-path rewrite] failed:", e?.message);
+  }
+}
+
+const createModifyPaths =
+  isCreateAndModifyIntent(content)
+    ? resolveCreateAndModifyPaths(content)
+    : null;
+
+if (createModifyPaths) {
+  try {
+    const { createPath, modifyPath } = createModifyPaths;
+
+    const createExists = await resolveFileIdByPathOrName(supabase, repoId, createPath);
+    const modifyExists = await resolveFileIdByPathOrName(supabase, repoId, modifyPath);
+
+    console.log("[create_modify_short_circuit]", {
+      createPath,
+      modifyPath,
+      createExists: Boolean(createExists),
+      modifyExists: Boolean(modifyExists),
+    });
+
+    if (!createExists && modifyExists) {
+      const existingFile = await vault_read_text(supabase, repoId, modifyExists);
+
+      const newFileContent = await generateNewFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        path: createPath,
+        mime: inferTextMimeFromPath(createPath),
+      });
+
+const createProposal = await vault_propose_create(
+  supabase,
+  repoId,
+  {
+    path: createPath,
+    content: newFileContent,
+    mime: inferTextMimeFromPath(createPath),
+  }
+);
+
+      const rewritten = await generateRewrittenFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        path: existingFile.path,
+        mime: existingFile.mime,
+        currentContent: existingFile.content,
+      });
+
+      const writeProposal = await vault_propose_write(
+        supabase,
+        repoId,
+        existingFile.id,
+        rewritten
+      );
+
+      const proposals = [createProposal, writeProposal].filter(Boolean);
+
+      let preverifyMarker = "";
+
+      if (shouldPreVerifyProposalSet(proposals)) {
+        const result = await finalizeProposalSet({
+          openai,
+          model: runtimePolicy.model,
+          repoId,
+          userRequest: content,
+          baselineVerifyPayload: baselineVerify.verifyPayload,
+          proposals,
+        });
+
+        const finalProposalSet = result.repaired ? result.finalProposals : proposals;
+
+        const visible =
+          "[Observation]\nRequired repository changes were staged.\n\n" +
+          "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
+          "[Action]\nA staged change is ready. Confirm to apply.";
+
+        return new Response(
+          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
+          {
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          }
+        );
+      }
+
+      const visible =
+        "[Observation]\nRequired repository changes were staged.\n\n" +
+        "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
+        "[Action]\nA staged change is ready. Confirm to apply.";
+
+      return new Response(
+        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n${preverifyMarker}`,
+        {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        }
+      );
+    }
+  } catch (e: any) {
+    console.log("[create_modify_short_circuit] failed:", e?.message);
+  }
+}
+
+const extractToModulePaths =
+  isExtractToModuleIntent(content) && !isImportRefactorIntent(content)
+    ? resolveExtractToModulePaths(content)
+    : null;
+
+if (extractToModulePaths) {
+  try {
+    const { sourcePath, targetPath } = extractToModulePaths;
+
+    const sourceId = await resolveFileIdByPathOrName(supabase, repoId, sourcePath);
+    const targetId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
+
+    console.log("[extract_to_module_short_circuit]", {
+      sourcePath,
+      targetPath,
+      sourceExists: Boolean(sourceId),
+      targetExists: Boolean(targetId),
+    });
+
+    if (sourceId) {
+      const sourceFile = await vault_read_text(supabase, repoId, sourceId);
+
+      const generated = await generateExtractHelpersResult({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        sourcePath,
+        sourceContent: String(sourceFile.content ?? ""),
+        targetPath,
+      });
+
+const normalizedOriginalSource = normalizeForNoopCheck(
+  String(sourceFile.content ?? "")
+);
+const normalizedGeneratedSource = normalizeForNoopCheck(String(generated.sourceContent ?? ""));
+
+if (normalizedOriginalSource === normalizedGeneratedSource) {
+  throw new Error("Generated source rewrite is identical to the current source file");
+}
+
+      if (!generated.targetContent.trim() || !generated.sourceContent.trim()) {
+        throw new Error("Model returned empty extraction result");
+      }
+
+      let sourceProposal;
+console.log("[intent] extractToModulePaths", {
+  hit: Boolean(extractToModulePaths),
+  resolved: extractToModulePaths,
+  text: content,
+});
+      try {
+        sourceProposal = await vault_propose_write(
+          supabase,
+          repoId,
+          sourceFile.id,
+          generated.sourceContent
+        );
+      } catch (e: any) {
+        if (e?.message === "__NOOP_PROPOSAL__") {
+          const visible =
+            `[Observation]\nI inspected ${sourcePath} and ${targetPath}.\n\n` +
+            `[Assessment]\nNo file change is needed.\n\n` +
+            `[Action]\nNo staged change was created.`;
+
+          await supabase.from("repo_messages").insert({
+            repo_id: repoId,
+            user_id: user.id,
+            role: "assistant",
+            content: visible,
+          });
+
+          return new Response(visible, {
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          });
+        }
+
+        throw e;
+      }
+
+      const targetProposal = targetId
+        ? await vault_propose_write(
+            supabase,
+            repoId,
+            targetId,
+            generated.targetContent
+          )
+        : await vault_propose_create(
+            supabase,
+            repoId,
+            {
+              path: targetPath,
+              content: generated.targetContent,
+              mime: inferTextMimeFromPath(targetPath),
+            }
+          );
+
+      const proposals = [sourceProposal, targetProposal].filter(Boolean);
+
+      const visible =
+        "[Observation]\nRequired repository changes were staged.\n\n" +
+        "[Assessment]\nThe requested extraction was prepared from the current repository content.\n\n" +
+        "[Action]\nA staged change is ready. Confirm to apply.";
+
+      if (shouldPreVerifyProposalSet(proposals)) {
+        const result = await finalizeProposalSet({
+          openai,
+          model: runtimePolicy.model,
+          repoId,
+          userRequest: content,
+          baselineVerifyPayload: baselineVerify.verifyPayload,
+          proposals,
+        });
+
+        const finalProposalSet = result.repaired ? result.finalProposals : proposals;
+
+        return new Response(
+          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
+          {
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          }
+        );
+      }
+
+      return new Response(
+        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
+        {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        }
+      );
+    }
+  } catch (e: any) {
+    console.log("[extract_to_module_short_circuit] failed:", e?.message);
   }
 }
 
@@ -2730,15 +2037,228 @@ function emitMaintenanceIfNeeded(
   }
 }
 
+function dedupePendingProposals(
+  proposals: Array<{
+    fileId?: string;
+    path?: string | null;
+    meta?: any;
+    [key: string]: any;
+  }>
+) {
+  const byKey = new Map<string, any>();
+
+  for (const proposal of proposals) {
+    const op = String(proposal?.meta?.op ?? "").trim().toLowerCase();
+    const fileId = String(proposal?.fileId ?? "").trim();
+    const path = String(proposal?.path ?? proposal?.meta?.path ?? "").trim();
+
+    const key =
+      op === "create"
+        ? (path ? `create:${path}` : "")
+        : fileId
+          ? `file:${fileId}`
+          : path
+            ? `path:${path}`
+            : "";
+
+    if (!key) continue;
+console.log("[proposal_dedupe key]", {
+  op,
+  fileId,
+  path,
+  key,
+});
+    // last proposal wins
+    byKey.set(key, proposal);
+  }
+
+  return Array.from(byKey.values());
+}
+
+function isProbablyBrokenSplitFile(path: string, content: string) {
+  const text = String(content ?? "").trim();
+  const lower = text.toLowerCase();
+
+  if (!text) {
+    return { broken: true, reason: "empty_file" };
+  }
+
+  if (text.length < 40) {
+    return { broken: true, reason: "too_small" };
+  }
+
+  const hasDefaultExport = /\bexport\s+default\s+([A-Za-z0-9_]+)\s*;?/.test(text);
+  const defaultExportMatch = text.match(/\bexport\s+default\s+([A-Za-z0-9_]+)\s*;?/);
+  const defaultExportName = defaultExportMatch?.[1] ?? null;
+
+  if (hasDefaultExport && defaultExportName) {
+    const definesLocally =
+      new RegExp(`\\bconst\\s+${defaultExportName}\\b`).test(text) ||
+      new RegExp(`\\bfunction\\s+${defaultExportName}\\b`).test(text) ||
+      new RegExp(`\\bclass\\s+${defaultExportName}\\b`).test(text);
+
+    const importsName =
+      new RegExp(`\\bimport\\s+${defaultExportName}\\b`).test(text) ||
+      new RegExp(`\\bimport\\s*\\{[^}]*\\b${defaultExportName}\\b[^}]*\\}`).test(text);
+
+    if (!definesLocally && !importsName) {
+      return { broken: true, reason: "dangling_default_export" };
+    }
+  }
+
+  const placeholderPatterns = [
+    "rest of file unchanged",
+    "other code remains unchanged",
+    "the rest of the file",
+    "omitted",
+    "...",
+  ];
+
+  if (placeholderPatterns.some((p) => lower.includes(p))) {
+    return { broken: true, reason: "placeholder_text" };
+  }
+
+  return { broken: false as const, reason: null };
+}
+
+function validateGeneratedSplitFiles(args: {
+  sourcePath: string;
+  sourceContent: string;
+  targetPaths: string[];
+  files: Array<{ path: string; content: string }>;
+}) {
+  const { sourcePath, sourceContent, targetPaths, files } = args;
+
+  if (!Array.isArray(files) || files.length !== targetPaths.length) {
+    return {
+      ok: false,
+      reason: "target_count_mismatch",
+      details: {
+        expected: targetPaths.length,
+        actual: Array.isArray(files) ? files.length : 0,
+      },
+    };
+  }
+
+  const returnedPaths = files.map((f) => String(f.path ?? "").trim());
+  const expectedPaths = targetPaths.map((p) => String(p).trim());
+
+  for (let i = 0; i < expectedPaths.length; i++) {
+    if (returnedPaths[i] !== expectedPaths[i]) {
+      return {
+        ok: false,
+        reason: "target_path_mismatch",
+        details: {
+          expectedPaths,
+          returnedPaths,
+        },
+      };
+    }
+  }
+
+  const badFiles: Array<{ path: string; reason: string }> = [];
+
+  for (const file of files) {
+    const content = String(file.content ?? "");
+
+    if (!content.trim()) {
+      badFiles.push({
+        path: file.path,
+        reason: "empty_content",
+      });
+      continue;
+    }
+
+    const check = isProbablyBrokenSplitFile(file.path, content);
+    if (check.broken) {
+      badFiles.push({ path: file.path, reason: String(check.reason) });
+      continue;
+    }
+
+    if (!looksLikeStandaloneModule(file.path, content)) {
+      badFiles.push({
+        path: file.path,
+        reason: "not_standalone_module",
+      });
+      continue;
+    }
+  }
+
+  if (badFiles.length > 0) {
+    return {
+      ok: false,
+      reason: "invalid_split_shape",
+      details: { badFiles },
+    };
+  }
+
+  const sourceLen = String(sourceContent ?? "").trim().length;
+  const fileLens = files.map((f) => String(f.content ?? "").trim().length);
+  const tinyCount = fileLens.filter((n) => n < Math.max(60, Math.floor(sourceLen * 0.08))).length;
+
+  if (files.length >= 2 && tinyCount >= Math.max(1, files.length - 1)) {
+    return {
+      ok: false,
+      reason: "over_fragmented_split",
+      details: { fileLens, sourceLen },
+    };
+  }
+
+  return {
+    ok: true as const,
+    reason: null,
+    details: null,
+  };
+}
+
+function assertCanonicalProposal(proposal: any) {
+  const content = String(proposal?.content ?? "");
+  const fileId = String(proposal?.fileId ?? "");
+  const nextHash = String(proposal?.nextHash ?? "");
+  const op = String(proposal?.meta?.op ?? "");
+  const confirm = String(proposal?.confirm ?? "");
+
+  const recomputedHash = sha256(normalizeForNoopCheck(content));
+  const expectedConfirm =
+    op === "create"
+      ? confirmCreatePhrase(fileId, recomputedHash)
+      : confirmPhrase(fileId, recomputedHash);
+
+  console.log("[proposal_canonical_check]", {
+    fileId,
+    path: proposal?.path ?? null,
+    op,
+    nextHash,
+    recomputedHash,
+    confirm,
+    expectedConfirm,
+    contentHead: content.slice(0, 80),
+  });
+
+  if (nextHash !== recomputedHash) {
+    throw new Error(
+      `Non-canonical proposal hash for ${proposal?.path ?? fileId}: expected ${recomputedHash}, got ${nextHash}`
+    );
+  }
+
+  if (confirm !== expectedConfirm) {
+    throw new Error(
+      `Non-canonical proposal confirm for ${proposal?.path ?? fileId}`
+    );
+  }
+}
+
  const stream = new ReadableStream<Uint8Array>({
   async start(controller) {
     let lastResponseId: string | null = null;
     let pendingProposalOuts: any[] = [];
     let fullText = "";
     let hadAnyProposalSet = false;
-
+    let handledSplitTurn = false;
     let firstTokenTime: number | null = null;
     let creditsCharged = false;
+    let requestHandledByOrchestration = false;
+    let deterministicToolHandled = false;
     let pendingTools: { call_id: string; name: string; arguments: string }[] = [];
     const toolArgsByCallId = new Map<string, string>();
     
@@ -2755,7 +2275,7 @@ function emitMaintenanceIfNeeded(
           const e: any = event;
 
           if (
-            (e.type === "response.created" || e.type === "response.in_progress") &&
+            (e.type === "response.created" || e.type === "response.running") &&
             e.response?.id
           ) {
             lastResponseId = e.response.id;
@@ -2801,12 +2321,7 @@ function emitMaintenanceIfNeeded(
                 console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
               }
 
-              if (mode === "pass1") {
-                buffer += txt;
-              } else {
-                fullText += txt;
-                controller.enqueue(encoder.encode(txt));
-              }
+            buffer += txt;
             }
             continue;
           }
@@ -2841,12 +2356,8 @@ function emitMaintenanceIfNeeded(
             const chunk = e.delta ?? "";
             if (!chunk) continue;
 
-            if (mode === "pass1") {
+            
               buffer += chunk;
-            } else {
-              fullText += chunk;
-              controller.enqueue(encoder.encode(chunk));
-            }
             continue;
           }
 
@@ -2860,12 +2371,7 @@ function emitMaintenanceIfNeeded(
               console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
             }
 
-            if (mode === "pass1") {
-              buffer += txt;
-            } else {
-              fullText += txt;
-              controller.enqueue(encoder.encode(txt));
-            }
+            buffer += txt;
             continue;
           }
 
@@ -2873,160 +2379,93 @@ function emitMaintenanceIfNeeded(
             const finalText = (e.response?.output_text ?? "").toString();
 
             if (finalText) {
-              if (mode === "pass1") {
-                if (!buffer.trim()) buffer += finalText;
-              } else {
-                if (!fullText.trim()) {
-                  fullText += finalText;
-                  controller.enqueue(encoder.encode(finalText));
-                }
-              }
+              buffer += finalText;
             }
 
-            const textForBilling = mode === "pass1" ? buffer : fullText;
+            const textForBilling = buffer;
 
-            if (!creditsCharged) {
-              creditsCharged = true;
+                if (!creditsCharged) {
+                  creditsCharged = true;
 
-              const usage = e.response?.usage ?? null;
-              const inputTokens = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0) || 0;
-              const outputTokens =
-                Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0) || 0;
+                  const usage = e.response?.usage ?? null;
+                  const inputTokens = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0) || 0;
+                  const outputTokens =
+                    Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0) || 0;
 
-              const estimated = inputTokens === 0 && outputTokens === 0;
+                  const estimated = inputTokens === 0 && outputTokens === 0;
 
-              const amount = estimated
-                ? Math.max(1, Math.ceil(textForBilling.length / 4))
-                : Math.max(1, inputTokens + outputTokens);
+                  const amount = estimated
+                    ? Math.max(1, Math.ceil(textForBilling.length / 4))
+                    : Math.max(1, inputTokens + outputTokens);
 
-              const meta = {
-                requestId,
-                mode,
-                tier: tierPolicy.tier,
-                runtimeTier: runtimePolicy.tier,
-                model: runtimePolicy.model,
-                estimated,
-                inputTokens,
-                outputTokens,
-                responseId: lastResponseId,
-              };
-
-              if (!creditsCharged) {
-                creditsCharged = true;
-
-                const usage = e.response?.usage ?? null;
-                const inputTokens = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0) || 0;
-                const outputTokens =
-                  Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0) || 0;
-
-                const estimated = inputTokens === 0 && outputTokens === 0;
-
-                const amount = estimated
-                  ? Math.max(1, Math.ceil(textForBilling.length / 4))
-                  : Math.max(1, inputTokens + outputTokens);
-
-                const meta = {
-                  requestId,
-                  mode,
-                  tier: tierPolicy.tier,
-                  runtimeTier: runtimePolicy.tier,
-                  model: runtimePolicy.model,
-                  estimated,
-                  inputTokens,
-                  outputTokens,
-                  responseId: lastResponseId,
-                };
-
-                if (runtimePolicy.tier === "admin") {
-                  controller.enqueue(
-                    encoder.encode(
-                      `\n__CREDITS__:${JSON.stringify({
-                        remaining: 99999999,
-                        charged: 0,
-                        duplicated: false,
-                        requestId,
-                      })}\n`
-                    )
-                  );
-
-                  console.log("[credits] admin tier - skipping deduction", {
+                  const meta = {
                     requestId,
-                    repoId,
-                    workspaceId,
+                    mode,
+                    tier: tierPolicy.tier,
+                    runtimeTier: runtimePolicy.tier,
                     model: runtimePolicy.model,
+                    estimated,
                     inputTokens,
                     outputTokens,
-                    estimated,
-                  });
-                } else {
-                  const { data: chargeRows, error: chErr } = await supabase.rpc("credits_charge", {
-                    _workspace_id: workspaceId,
-                    _period_start: periodStart,
-                    _request_id: requestId,
-                    _amount: amount,
-                    _repo_id: repoId,
-                    _meta: meta,
-                  });
+                    responseId: lastResponseId,
+                  };
 
-                  if (!chErr) {
-                    const charge = Array.isArray(chargeRows) ? chargeRows[0] : chargeRows;
-
+                  if (runtimePolicy.tier === "admin") {
                     controller.enqueue(
                       encoder.encode(
                         `\n__CREDITS__:${JSON.stringify({
-                          remaining: Number(charge?.remaining ?? 0),
-                          charged: amount,
-                          duplicated: Boolean(charge?.duplicated),
+                          remaining: 99999999,
+                          charged: 0,
+                          duplicated: false,
                           requestId,
                         })}\n`
                       )
                     );
 
-                    console.log("[credits] charged", {
-                      amount,
-                      ok: charge?.ok,
-                      duplicated: charge?.duplicated,
-                      remaining: charge?.remaining,
+                    console.log("[credits] admin tier - skipping deduction", {
+                      requestId,
+                      repoId,
+                      workspaceId,
+                      model: runtimePolicy.model,
+                      inputTokens,
+                      outputTokens,
+                      estimated,
                     });
                   } else {
-                    console.log("[credits] charge failed:", chErr.message);
+                    const { data: chargeRows, error: chErr } = await supabase.rpc("credits_charge", {
+                      _workspace_id: workspaceId,
+                      _period_start: periodStart,
+                      _request_id: requestId,
+                      _amount: amount,
+                      _repo_id: repoId,
+                      _meta: meta,
+                    });
+
+                    if (!chErr) {
+                      const charge = Array.isArray(chargeRows) ? chargeRows[0] : chargeRows;
+
+                      controller.enqueue(
+                        encoder.encode(
+                          `\n__CREDITS__:${JSON.stringify({
+                            remaining: Number(charge?.remaining ?? 0),
+                            charged: amount,
+                            duplicated: Boolean(charge?.duplicated),
+                            requestId,
+                          })}\n`
+                        )
+                      );
+
+                      console.log("[credits] charged", {
+                        amount,
+                        ok: charge?.ok,
+                        duplicated: charge?.duplicated,
+                        remaining: charge?.remaining,
+                      });
+                    } else {
+                      console.log("[credits] charge failed:", chErr.message);
+                    }
                   }
                 }
-              }
-
-              const { data: chargeRows, error: chErr } = await supabase.rpc("credits_charge", {
-                _workspace_id: workspaceId,
-                _period_start: periodStart,
-                _request_id: requestId,
-                _amount: amount,
-                _repo_id: repoId,
-                _meta: meta,
-              });
-
-              if (!chErr) {
-                const charge = Array.isArray(chargeRows) ? chargeRows[0] : chargeRows;
-
-                controller.enqueue(
-                  encoder.encode(
-                    `\n__CREDITS__:${JSON.stringify({
-                      remaining: Number(charge?.remaining ?? 0),
-                      charged: amount,
-                      duplicated: Boolean(charge?.duplicated),
-                      requestId,
-                    })}\n`
-                  )
-                );
-
-                console.log("[credits] charged", {
-                  amount,
-                  ok: charge?.ok,
-                  duplicated: charge?.duplicated,
-                  remaining: charge?.remaining,
-                });
-              } else {
-                console.log("[credits] charge failed:", chErr.message);
-              }
-            }
 
             break;
           }
@@ -3056,7 +2495,7 @@ function emitMaintenanceIfNeeded(
         out = ensureTriplet(stripDuplicateTriplet(out));
         out = out.trim();
 
-        if (!out.startsWith("[Observation]")) {
+        if (!hasValidAssistantContract(out)) {
           console.log("[contract] violation: pass1 missing [Observation]");
           out =
             "[Observation]\nContract violation detected.\n\n" +
@@ -3287,6 +2726,14 @@ function emitMaintenanceIfNeeded(
       typeof out === "object" &&
       !("error" in out)
     ) {
+      if (requestHandledByOrchestration) {
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(out),
+        });
+        continue;
+      }
       const paths = extractMentionedPaths(content);
   
       const createPath = paths.find((p) => p.startsWith("components/"));
@@ -3306,7 +2753,7 @@ function emitMaintenanceIfNeeded(
           model: runtimePolicy.model,
           userRequest: content,
           path: createPath,
-          mime: "text/tsx",
+          mime: inferTextMimeFromPath(createPath),
         });
 
         const createProposal = await runTool(
@@ -3318,7 +2765,7 @@ function emitMaintenanceIfNeeded(
           {
             path: createPath,
             content: newFileContent,
-            mime: "text/tsx",
+            mime: inferTextMimeFromPath(createPath),
           },
           
         );
@@ -3390,6 +2837,7 @@ function emitMaintenanceIfNeeded(
 if (
   toolName === "vault_read_text" &&
   isSplitFileIntent(content) &&
+  !isCreateAndModifyIntent(content) &&
   out &&
   typeof out === "object" &&
   !("error" in out)
@@ -3401,26 +2849,164 @@ if (
     content: string;
   };
 
+  const mentionedPaths = extractMentionedPaths(content);
+  const splitTargets = extractSplitTargets(content);
+
+  const sourcePathForSplit =
+    mentionedPaths.find((p) => !splitTargets.includes(p)) ??
+    mentionedPaths[0] ??
+    null;
+
+  if (!isSplitReadAllowed(sourcePathForSplit, readOut.path ?? null)) {
+    console.log("[split_guard] blocked unrelated read", {
+      sourcePath: sourcePathForSplit,
+      attempted: readOut.path ?? null,
+    });
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        error: "Split operation restricted to the target file only.",
+      }),
+    });
+
+    continue;
+  }
+if (isExtractToModuleIntent(content)) {
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+  continue;
+}
   if (typeof readOut.id === "string" && typeof readOut.content === "string") {
     try {
       const sourcePath = String(readOut.path ?? "").trim();
       const sourceDir =
         sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
 
-      const targetNames = extractSplitTargets(content);
-      const targetPaths = targetNames.map((targetName: string) =>
-        targetName.includes("/") ? targetName : sourceDir ? `${sourceDir}/${targetName}` : targetName
-      );
+let targetNames = extractSplitTargets(content);
 
-      if (targetPaths.length >= 2) {
-        const generatedFiles = await generateSplitFileContents({
-          openai,
-          model: runtimePolicy.model,
-          userRequest: content,
-          sourcePath,
-          sourceContent: String(readOut.content ?? ""),
-          targetPaths,
-        });
+if (targetNames.length < 2) {
+  const requestedCount = extractRequestedSplitCount(content) ?? 2;
+
+  console.log("[split_orchestration] deriving default targets", {
+    sourcePath,
+    requestedCount,
+  });
+
+  targetNames = deriveDefaultSplitTargets(sourcePath, requestedCount).map((p) =>
+    p.split("/").pop() ?? p
+  );
+}
+if (
+  toolName === "vault_read_text" &&
+  isSplitFileIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  const readOut = out as {
+    id: string;
+    path?: string;
+    mime?: string;
+    content: string;
+  };
+
+  const mentionedPaths = extractMentionedPaths(content);
+  const explicitTargets = extractSplitTargets(content);
+
+  const sourcePathForSplit =
+    mentionedPaths.find((p) => !explicitTargets.includes(p)) ??
+    mentionedPaths[0] ??
+    null;
+
+  if (handledSplitTurn) {
+    console.log("[split_guard] skipping extra split read after turn already handled", {
+      sourcePath: sourcePathForSplit,
+      attempted: readOut.path ?? null,
+    });
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        skipped: true,
+        reason: "split_already_handled",
+        path: readOut.path ?? null,
+      }),
+    });
+
+    continue;
+  }
+
+  if (!isSplitReadAllowed(sourcePathForSplit, readOut.path ?? null)) {
+    console.log("[split_guard] blocked unrelated read", {
+      sourcePath: sourcePathForSplit,
+      attempted: readOut.path ?? null,
+    });
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        skipped: true,
+        reason: "split_read_blocked",
+        path: readOut.path ?? null,
+      }),
+    });
+
+    continue;
+  }
+
+  try {
+    const sourcePath = String(readOut.path ?? "").trim();
+
+    let targetPaths = extractSplitTargets(content);
+
+    if (targetPaths.length < 2) {
+      const requestedCount = extractRequestedSplitCount(content) ?? 2;
+
+      console.log("[split_orchestration] deriving default targets", {
+        sourcePath,
+        requestedCount,
+      });
+
+      targetPaths = deriveDefaultSplitTargets(sourcePath, requestedCount);
+    }
+
+const generatedFiles = await generateSplitFileContents({
+  openai,
+  model: runtimePolicy.model,
+  userRequest: content,
+  sourcePath,
+  sourceContent: String(readOut.content ?? ""),
+  targetPaths,
+});
+
+const splitValidation = validateGeneratedSplitFiles({
+  sourcePath,
+  sourceContent: String(readOut.content ?? ""),
+  targetPaths,
+  files: generatedFiles,
+});
+
+if (!splitValidation.ok) {
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify({
+      error: `split_validation_failed: ${splitValidation.reason}`,
+      details: splitValidation.details ?? null,
+    }),
+  });
+
+  continue;
+}
+
+const localSplitProposals: any[] = [];
 
 for (const file of generatedFiles) {
   const existingId = await resolveFileIdByPathOrName(supabase, repoId, file.path);
@@ -3436,8 +3022,7 @@ for (const file of generatedFiles) {
           fileId: existingId,
           path: file.path,
           content: file.content,
-        },
-        
+        }
       )
     : await runTool(
         supabase,
@@ -3448,35 +3033,131 @@ for (const file of generatedFiles) {
         {
           path: file.path,
           content: file.content,
-          mime: "application/javascript",
-        },
-        
+          mime: inferTextMimeFromPath(file.path),
+        }
       );
 
-  if (proposal && typeof proposal === "object" && !("error" in proposal) && !(proposal as any).noop) {
-    pendingProposalOuts.push(proposal);
+  if (!proposal || typeof proposal !== "object" || "error" in proposal || (proposal as any).noop) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        error: "split_proposal_failed",
+        details: {
+          path: file.path,
+          proposal: proposal ?? null,
+        },
+      }),
+    });
+
+    continue;
+  }
+
+  localSplitProposals.push(proposal);
+}
+
+if (localSplitProposals.length !== generatedFiles.length) {
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify({
+      error: "split_incomplete_proposal_set",
+      details: {
+        expected: generatedFiles.length,
+        actual: localSplitProposals.length,
+        targetPaths,
+      },
+    }),
+  });
+
+  continue;
+}
+
+const splitShouldPreverify = shouldPreVerifyProposalSet(localSplitProposals);
+
+console.log("[split_preverify] proposal_count", localSplitProposals.length);
+console.log("[split_preverify] should_run", splitShouldPreverify);
+console.log(
+  "[split_preverify] proposal_paths",
+  localSplitProposals.map((p) => String(p?.path ?? p?.meta?.path ?? ""))
+);
+
+if (splitShouldPreverify) {
+  console.log("[split_preverify] starting");
+
+  const result = await finalizeProposalSet({
+    openai,
+    model: runtimePolicy.model,
+    repoId,
+    userRequest: content,
+    baselineVerifyPayload: baselineVerify.verifyPayload,
+    proposals: localSplitProposals,
+  });
+
+  controller.enqueue(
+    encoder.encode(
+      `\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`
+    )
+  );
+
+  if (!result.preverifyPayload?.ok && !result.preverifyPayload?.baseline) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        error: "split_preverify_failed",
+        details: result.preverifyPayload,
+      }),
+    });
+
+    continue;
+  }
+
+  localSplitProposals.length = 0;
+  localSplitProposals.push(...result.finalProposals);
+}
+    pendingProposalOuts.push(...localSplitProposals);
+    handledSplitTurn = true;
+
+    console.log("[split_orchestration]", {
+      sourcePath,
+      targetPaths,
+      generatedCount: generatedFiles.length,
+    });
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        ok: true,
+        handled: "split",
+        sourcePath,
+        targetPaths,
+      }),
+    });
+
+    continue;
+  } catch (e: any) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        error: `split_orchestration_failed: ${e?.message ?? "unknown error"}`,
+      }),
+    });
+
+    continue;
   }
 }
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify(out),
-        });
 
-        console.log("[split_orchestration]", {
-          sourcePath,
-          targetNames,
-          targetPaths,
-        });
-
-        continue;
-      }
-
-      const requestedPaths = extractMentionedPaths(content);
-
+const requestedPaths = extractMentionedPaths(content);
       if (
         toolName === "vault_read_text" &&
         isImportRefactorIntent(content) &&
+        !/\bcreate\b/i.test(content) &&
+        !/\bmove\b/i.test(content) &&
+        !/\bextract\b/i.test(content) &&
+        !/\bthen update\b/i.test(content) &&
         requestedPaths.length >= 2 &&
         out &&
         typeof out === "object" &&
@@ -3489,16 +3170,85 @@ for (const file of generatedFiles) {
           content: string;
         };
 
-        const sourcePath = requestedPaths[0];
-        const helperPath = requestedPaths[1];
-        const readPath = String(readOut.path ?? "").trim();
+const readPath = String(readOut.path ?? "").trim();
+
+const sourcePath = requestedPaths[0] ?? "";
+const helperPath = requestedPaths.find((p) => p !== sourcePath) ?? "";
+
+if (!sourcePath || !helperPath) {
+  console.log("[import_refactor_guard] skipped because source/helper could not be resolved", {
+    requestedPaths,
+    readPath,
+  });
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
+
+if (readPath !== sourcePath) {
+  console.log("[import_refactor_guard] blocked non-source read", {
+    requestedPaths,
+    sourcePath,
+    helperPath,
+    readPath,
+  });
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
+
+if (!helperPath) {
+  console.log("[import_refactor_guard] skipped because helper path could not be resolved", {
+    requestedPaths,
+    readPath,
+  });
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
+
+const sourceExists = await resolveFileIdByPathOrName(supabase, repoId, sourcePath);
+const helperExists = await resolveFileIdByPathOrName(supabase, repoId, helperPath);
+
 console.log("[import_refactor_orchestration] detected", {
   sourcePath,
   helperPath,
   readPath,
+  sourceExists: Boolean(sourceExists),
+  helperExists: Boolean(helperExists),
 });
 
-        
+if (!sourceExists || !helperExists) {
+  console.log("[import_refactor_guard] skipped because one or more requested paths do not already exist", {
+    sourcePath,
+    helperPath,
+    sourceExists: Boolean(sourceExists),
+    helperExists: Boolean(helperExists),
+  });
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
 
         if (readPath !== sourcePath) {
           toolOutputs.push({
@@ -3546,31 +3296,44 @@ console.log("[import_refactor_orchestration] detected", {
           continue;
         }
 
-        const proposal = await runTool(
-          supabase,
-          repoId,
-          user.id,
-          content,
-          "vault_propose_write",
-          {
-            fileId: readOut.id,
-            path: sourcePath,
-            content: rewritten,
-          },
-          
-        );
+ const proposal = await runTool(
+  supabase,
+  repoId,
+  user.id,
+  content,
+  "vault_propose_write",
+  {
+    fileId: readOut.id,
+    content: rewritten,
+  },
+);
 
-        if (proposal && typeof proposal === "object" && !("error" in proposal)) {
-          pendingProposalOuts.push(proposal);
-        }
+if (proposal && typeof proposal === "object" && !("error" in proposal)) {
 
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify(out),
-        });
+  if ((proposal as any).noop === true) {
+    const noopText =
+      "[Observation]\nThe requested file already reflects this goal step.\n\n" +
+      `[Assessment]\nNo staged change was needed because ${readOut.path} already contains the requested update.\n\n` +
+      "[Action]\nContinue to the next goal step.";
 
-        continue;
+    deterministicToolHandled = true;
+    fullText = noopText;
+
+    controller.enqueue(encoder.encode(noopText));
+
+    continue;
+  }
+
+  pendingProposalOuts.push(proposal);
+}
+
+toolOutputs.push({
+  type: "function_call_output",
+  call_id: callId,
+  output: JSON.stringify(out),
+});
+
+continue;
       }
 
     } catch (e: any) {
@@ -3588,154 +3351,353 @@ console.log("[import_refactor_orchestration] detected", {
 }
 
 // ─────────────────────────────────────────────
-// Source → Target helper extraction orchestration
+// Source → Target helper extraction / extract orchestration
 // ─────────────────────────────────────────────
-    if (
-      toolName === "vault_read_text" &&
-      isExtractHelpersIntent(content) &&
-      out &&
-      typeof out === "object" &&
-      !("error" in out)
-    ) {
-      const readOut = out as {
-        id: string;
-        path?: string;
-        mime?: string;
-        content: string;
-      };
-
-      if (typeof readOut.content === "string") {
-        try {
-    const resolvedPaths = resolveSourceAndTargetPaths(content);
-
-    if (!resolvedPaths) {
-      console.log("[extract_orchestration] could not resolve source/target", {
-        mentionedPaths: extractMentionedPaths(content),
-        content,
-      });
-
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify(out),
-      });
-
-      continue;
-    }
-
-    const { sourcePath, targetPath, paths: mentionedPaths } = resolvedPaths;
-
-const readPath = String(readOut.path ?? "").trim();
-const readName = readPath.split("/").filter(Boolean).pop() ?? "";
-const sourceName = String(sourcePath ?? "").trim().split("/").filter(Boolean).pop() ?? "";
-
-const sourceMatchesRead =
-  !!readPath &&
-  (
-    sourcePath === readPath ||
-    sourcePath === readName ||
-    sourceName === readName
-  );
-
-if (readPath && !sourceMatchesRead) {
-  console.log("[extract_orchestration] read file is not the resolved source; reading source directly", {
-    readPath,
-    readName,
-    sourcePath,
-    sourceName,
-    targetPath,
-  });
-
-  const sourceRead = await runTool(
-    supabase,
-    repoId,
-    user.id,
-    content,
-    "vault_read_text",
-    { path: sourcePath },
-    
-  );
-
-  if (!sourceRead || typeof sourceRead !== "object" || "error" in sourceRead) {
-    toolOutputs.push({
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify(
-        sourceRead ?? { error: `Failed to read resolved source path: ${sourcePath}` }
-      ),
-    });
-
-    continue;
-  }
-
-  const sourceOut = sourceRead as {
+if (
+  toolName === "vault_read_text" &&
+  isSourceTargetTransferIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  const readOut = out as {
     id: string;
     path?: string;
     mime?: string;
     content: string;
   };
 
-  console.log("[extract_orchestration] source read ok", {
-    sourcePath: sourceOut.path,
-    targetPath,
-  });
+  if (typeof readOut.content === "string") {
+    try {
+      const resolvedPaths = resolveSourceAndTargetPaths(content);
 
-  const generated = await generateRewrittenFileContent({
-    openai,
-    model: runtimePolicy.model,
-    userRequest: content,
-    path: targetPath,
-    mime: "application/typescript",
-    currentContent: String(sourceOut.content ?? ""),
-  });
+      if (!resolvedPaths) {
+        console.log("[extract_orchestration] could not resolve source/target", {
+          mentionedPaths: extractMentionedPaths(content),
+          content,
+        });
 
-  if (!generated) {
-    toolOutputs.push({
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify({ error: "extract_orchestration_failed: Model returned empty extracted content" }),
-    });
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(out),
+        });
 
-    continue;
-  }
+        continue;
+      }
 
-  const existingId = await resolveFileIdByPathOrName(
-    supabase,
-    repoId,
-    targetPath
-  );
+      const { sourcePath, targetPath, paths: mentionedPaths } = resolvedPaths;
+      if (!targetPath.includes("/")) {
+        throw new Error(`extract_orchestration_failed: target path is not specific enough (${targetPath})`);
+      }
 
-  const proposal = existingId
-    ? await runTool(
+      const readPath = String(readOut.path ?? "").trim();
+      const readName = readPath.split("/").filter(Boolean).pop() ?? "";
+      const sourceName = String(sourcePath ?? "")
+        .trim()
+        .split("/")
+        .filter(Boolean)
+        .pop() ?? "";
+
+      const sourceMatchesRead =
+        !!readPath &&
+        (sourcePath === readPath || sourcePath === readName || sourceName === readName);
+
+      if (!sourceMatchesRead) {
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(out),
+        });
+
+        continue;
+      }
+
+      console.log("[extract_orchestration] detected", {
+        sourcePath,
+        targetPath,
+        mentionedPaths,
+      });
+
+const generated = await generateExtractHelpersResult({
+  openai,
+  model: runtimePolicy.model,
+  userRequest: content,
+  sourcePath,
+  sourceContent: String(readOut.content ?? ""),
+  targetPath,
+});
+
+if (!generated?.targetContent?.trim() || !generated?.sourceContent?.trim()) {
+  throw new Error("Model returned empty extraction result");
+}
+
+const sourceText = String(generated?.sourceContent ?? "");
+const targetText = String(generated?.targetContent ?? "");
+const originalSourceText = String(readOut.content ?? "");
+
+const placeholderPatterns = [
+  "rest of file unchanged",
+  "other code remains unchanged",
+  "the rest of the file",
+  "omitted",
+  "...",
+];
+
+const lowerSource = sourceText.toLowerCase();
+
+if (placeholderPatterns.some((p) => lowerSource.includes(p))) {
+  throw new Error("Source rewrite contains placeholder text instead of full file content");
+}
+
+if (sourceText.length < originalSourceText.length * 0.4) {
+  throw new Error("Source rewrite is too small relative to original file");
+}
+
+const targetFileName = (targetPath ?? "").split("/").pop() || targetPath || "";
+const targetBaseName = targetFileName.replace(/\.[^.]+$/, "");
+const targetDir = targetPath.includes("/")
+  ? targetPath.slice(0, targetPath.lastIndexOf("/"))
+  : "";
+const sourceDir = sourcePath.includes("/")
+  ? sourcePath.slice(0, sourcePath.lastIndexOf("/"))
+  : "";
+
+const targetImportBase =
+  sourceDir && targetDir && sourceDir === targetDir
+    ? `./${targetBaseName}`
+    : targetBaseName;
+
+const escapedImportBase = targetImportBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapedFileName = targetFileName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapedBaseName = targetBaseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const sourceWithoutImports = sourceText.replace(
+  /^import[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm,
+  ""
+);
+
+const hasTargetReference =
+  new RegExp(`from\\s+['"]${escapedImportBase}['"]`).test(sourceText) ||
+  new RegExp(`from\\s+['"]${escapedImportBase}\\.ts['"]`).test(sourceText) ||
+  new RegExp(`from\\s+['"]${escapedFileName}['"]`).test(sourceText) ||
+  new RegExp(`\\b${escapedBaseName}\\b`).test(sourceWithoutImports);
+
+if (!hasTargetReference) {
+  throw new Error(`Source rewrite did not reference ${targetFileName}`);
+}
+
+console.log("[extract_orchestration] generated", {
+  sourcePath,
+  targetPath,
+  sourceBytes: Buffer.byteLength(generated.sourceContent, "utf8"),
+  targetBytes: Buffer.byteLength(generated.targetContent, "utf8"),
+});
+
+      const existingTargetId = await resolveFileIdByPathOrName(
+        supabase,
+        repoId,
+        targetPath
+      );
+
+      let existingTargetText = "";
+
+      if (existingTargetId) {
+        const existingTargetFile = await vault_read_text(
+          supabase,
+          repoId,
+          existingTargetId
+        );
+
+        existingTargetText = String(existingTargetFile.content ?? "");
+      }
+
+      const targetProposal = existingTargetId
+        ? await runTool(
+            supabase,
+            repoId,
+            user.id,
+            content,
+            "vault_propose_write",
+            {
+              fileId: existingTargetId,
+              path: targetPath,
+              content: generated.targetContent,
+            }
+          )
+        : await runTool(
+            supabase,
+            repoId,
+            user.id,
+            content,
+            "vault_propose_create",
+            {
+              path: targetPath,
+              content: generated.targetContent,
+              mime: inferTextMimeFromPath(targetPath),
+            }
+          );
+
+      const sourceProposal = await runTool(
         supabase,
         repoId,
         user.id,
         content,
         "vault_propose_write",
         {
-          fileId: existingId,
-          path: targetPath,
-          content: generated,
-        },
-        
-      )
-    : await runTool(
-        supabase,
-        repoId,
-        user.id,
-        content,
-        "vault_propose_create",
-        {
-          path: targetPath,
-          content: generated,
-          mime: "application/typescript",
-        },
-        
+          fileId: readOut.id,
+          path: sourcePath,
+          content: generated.sourceContent,
+        }
       );
 
-  if (proposal && typeof proposal === "object" && !("error" in proposal)) {
-    pendingProposalOuts.push(proposal);
+      const targetIsUsable =
+        targetProposal &&
+        typeof targetProposal === "object" &&
+        !("error" in targetProposal) &&
+        !(targetProposal as any).noop;
+
+      const sourceIsUsable =
+        sourceProposal &&
+        typeof sourceProposal === "object" &&
+        !("error" in sourceProposal) &&
+        !(sourceProposal as any).noop;
+
+      let allowTargetNoop = false;
+      let allowSourceNoop = false;
+
+      if (!targetIsUsable) {
+        const normalizedExistingTarget = normalizeForNoopCheck(existingTargetText);
+        const normalizedGeneratedTarget = normalizeForNoopCheck(
+          String(generated.targetContent ?? "")
+        );
+
+        const targetAlreadyMatches =
+          !!existingTargetText &&
+          normalizedExistingTarget === normalizedGeneratedTarget;
+
+        if (!targetAlreadyMatches) {
+          throw new Error("Target extraction proposal was empty or noop");
+        }
+
+        allowTargetNoop = true;
+
+        console.log("[extract_orchestration] target noop accepted", {
+          sourcePath,
+          targetPath,
+          reason: "target already matches extracted module",
+        });
+      }
+
+      if (!sourceIsUsable) {
+        const sourceStillNeedsRewrite = sourceStillLooksUnextracted(
+          String(readOut.content ?? ""),
+          targetPath
+        );
+
+        if (sourceStillNeedsRewrite) {
+          throw new Error(
+            "Source rewrite was noop; extraction did not actually modify the source file"
+          );
+        }
+
+        allowSourceNoop = true;
+
+        console.log("[extract_orchestration] source noop accepted", {
+          sourcePath,
+          targetPath,
+          reason: "source already references extracted module",
+        });
+      }
+
+function targetStillLooksExtracted(text: string) {
+  return (
+    /\bcardBaseStyle\b/.test(text) &&
+    /\bcardHoverStyle\b/.test(text)
+  );
+}
+
+if (!targetIsUsable) {
+  const targetStillValid = targetStillLooksExtracted(
+    String(generated.targetContent ?? "")
+  );
+
+  if (!targetStillValid) {
+    throw new Error("Target extraction proposal was empty or noop");
   }
+
+}
+
+if (!sourceIsUsable) {
+  const sourceStillNeedsRewrite = sourceStillLooksUnextracted(
+    String(readOut.content ?? ""),
+    targetPath
+  );
+
+  if (sourceStillNeedsRewrite) {
+    throw new Error(
+      "Source rewrite was noop; extraction did not actually modify the source file"
+    );
+  }
+
+  console.log("[extract_orchestration] source noop accepted", {
+    sourcePath,
+    targetPath,
+    reason: "source already references extracted module",
+  });
+}
+
+
+function sourceStillLooksUnextracted(sourceContent: string, targetPath: string) {
+  const text = String(sourceContent ?? "");
+  const targetFileName = targetPath.split("/").pop() ?? targetPath;
+  const targetBaseName = targetFileName.replace(/\.[^.]+$/, "");
+
+  const lower = text.toLowerCase();
+  const targetBaseLower = targetBaseName.toLowerCase();
+
+  const referencesTarget =
+    lower.includes(`./${targetBaseLower}`) ||
+    lower.includes(targetBaseLower);
+
+  const stillDefinesStyleObjects =
+    /\bconst\s+cardBaseStyle\b/.test(text) ||
+    /\bconst\s+cardHoverStyle\b/.test(text) ||
+    /\bcardBaseStyle\s*=\s*\{/.test(text) ||
+    /\bcardHoverStyle\s*=\s*\{/.test(text);
+
+  return stillDefinesStyleObjects || !referencesTarget;
+}
+
+if (!sourceIsUsable) {
+const sourceStillNeedsRewrite = sourceStillLooksUnextracted(
+  String(readOut.content ?? ""),
+  targetPath
+);
+
+  if (sourceStillNeedsRewrite) {
+    throw new Error(
+      "Source rewrite was noop; extraction did not actually modify the source file"
+    );
+  }
+
+  console.log("[extract_orchestration] source noop accepted", {
+    sourcePath,
+    targetPath,
+    reason: "source already references extracted module",
+  });
+}
+
+if (
+  !targetIsUsable &&
+  !sourceIsUsable &&
+  allowTargetNoop &&
+  allowSourceNoop
+) {
+  console.log("[extract_orchestration] extraction already satisfied", {
+    sourcePath,
+    targetPath,
+  });
 
   toolOutputs.push({
     type: "function_call_output",
@@ -3746,62 +3708,24 @@ if (readPath && !sourceMatchesRead) {
   continue;
 }
 
-    console.log("[extract_orchestration] detected", {
-      sourcePath,
-      targetPath,
-      mentionedPaths,
-    });
+if (
+  !targetIsUsable &&
+  !sourceIsUsable &&
+  !allowTargetNoop &&
+  !allowSourceNoop
+) {
+  throw new Error(
+    "Extraction produced no effective change in either source or target"
+  );
+}
 
-      const generated = await generateRewrittenFileContent({
-        openai,
-        model: runtimePolicy.model,
-        userRequest: content,
-        path: targetPath,
-        mime: "application/typescript",
-        currentContent: String(readOut.content ?? ""),
-      });
+if (targetIsUsable) {
+  pendingProposalOuts.push(targetProposal);
+}
 
-      if (!generated) {
-        throw new Error("Model returned empty extracted content");
-      }
-
-      const existingId = await resolveFileIdByPathOrName(
-        supabase,
-        repoId,
-        targetPath
-      );
-
-      const proposal = existingId
-        ? await runTool(
-            supabase,
-            repoId,
-            user.id,
-            content,
-            "vault_propose_write",
-            {
-              fileId: existingId,
-              path: targetPath,
-              content: generated,
-            },
-            
-          )
-        : await runTool(
-            supabase,
-            repoId,
-            user.id,
-            content,
-            "vault_propose_create",
-            {
-              path: targetPath,
-              content: generated,
-              mime: "application/typescript",
-            },
-            
-          );
-
-      if (proposal && typeof proposal === "object" && !("error" in proposal)) {
-        pendingProposalOuts.push(proposal);
-      }
+if (sourceIsUsable) {
+  pendingProposalOuts.push(sourceProposal);
+}
 
       toolOutputs.push({
         type: "function_call_output",
@@ -3821,6 +3745,145 @@ if (readPath && !sourceMatchesRead) {
 
       continue;
     }
+  }
+}
+
+if (
+  toolName === "vault_read_text" &&
+  isCreateAndModifyIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  const readOut = out as {
+    id: string;
+    path?: string;
+    mime?: string;
+    content: string;
+  };
+
+  const mentionedPaths = extractMentionedPaths(content);
+  const readPath = String(readOut.path ?? "").trim();
+
+  const createPath =
+    mentionedPaths.find((p) => p !== readPath) ?? "";
+
+  const modifyPath = readPath;
+
+  if (!createPath || !modifyPath) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
+    continue;
+  }
+
+  const createExists = await resolveFileIdByPathOrName(supabase, repoId, createPath);
+  const modifyExists = await resolveFileIdByPathOrName(supabase, repoId, modifyPath);
+
+  console.log("[create_modify_read_orchestration] detected", {
+    createPath,
+    modifyPath,
+    createExists: Boolean(createExists),
+    modifyExists: Boolean(modifyExists),
+    readPath,
+  });
+
+  if (createExists || !modifyExists) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
+    continue;
+  }
+
+requestHandledByOrchestration = true;
+
+  try {
+    const newFileContent = await generateNewFileContent({
+      openai,
+      model: runtimePolicy.model,
+      userRequest: content,
+      path: createPath,
+      mime: inferTextMimeFromPath(createPath),
+    });
+
+    const createProposal = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_propose_create",
+      {
+        path: createPath,
+        content: newFileContent,
+        mime: inferTextMimeFromPath(createPath),
+      }
+    );
+
+    if (
+      createProposal &&
+      typeof createProposal === "object" &&
+      !("error" in createProposal) &&
+      !(createProposal as any).noop
+    ) {
+      pendingProposalOuts.push(createProposal);
+    }
+
+    const rewritten = await generateRewrittenFileContent({
+      openai,
+      model: runtimePolicy.model,
+      userRequest: content,
+      path: modifyPath,
+      mime: String(readOut.mime ?? "text/plain"),
+      currentContent: String(readOut.content ?? ""),
+    });
+
+    const writeProposal = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_propose_write",
+      {
+        fileId: readOut.id,
+        path: modifyPath,
+        content: rewritten,
+      }
+    );
+
+    if (
+      writeProposal &&
+      typeof writeProposal === "object" &&
+      !("error" in writeProposal) &&
+      !(writeProposal as any).noop
+    ) {
+      pendingProposalOuts.push(writeProposal);
+    }
+
+requestHandledByOrchestration = true;
+
+toolOutputs.push({
+  type: "function_call_output",
+  call_id: callId,
+  output: JSON.stringify(out),
+});
+
+continue;
+
+    continue;
+  } catch (e: any) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        error: `create_modify_read_orchestration_failed: ${e?.message ?? "unknown error"}`,
+      }),
+    });
+
+    continue;
   }
 }
 
@@ -3864,12 +3927,10 @@ if (requestedPath && readOut.path && requestedPath !== readOut.path) {
 
     const requestedPaths = extractMentionedPaths(content);
 
-    console.log("[import_refactor_orchestration] triggered", {
-      paths: requestedPaths,
-      readPath: readOut.path,
-    });
+    const isMultiPath = requestedPaths.length >= 2;
+    const hasRewriteTarget = Boolean(readOut?.path);
 
-    if (requestedPaths.length >= 2 && !isImportRefactorIntent(content)) {
+    if (isMultiPath && !isImportRefactorIntent(content) && !hasRewriteTarget) {
       console.log("[rewrite_orchestration] skipped because multiple paths were requested", {
         requestedPaths,
         readPath: readOut.path,
@@ -3883,6 +3944,31 @@ if (requestedPath && readOut.path && requestedPath !== readOut.path) {
 
       continue;
     }
+if (
+  /\bcreate\b/i.test(content) ||
+  /\bmove\b/i.test(content) ||
+  /\bextract\b/i.test(content) ||
+  /\bthen update\b/i.test(content)
+) {
+  console.log("[rewrite_orchestration] skipped for create/move/extract request", {
+    content,
+    requestedPaths,
+    readPath: readOut.path,
+  });
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
+
+console.log("[rewrite_orchestration] triggered", {
+  paths: requestedPaths,
+  readPath: readOut.path,
+});
 
     try {
       const rewritten = await generateRewrittenFileContent({
@@ -3942,9 +4028,94 @@ const isProposalTool =
   toolName === "vault_propose_write" ||
   toolName === "vault_propose_append" ||
   toolName === "vault_propose_create";
+  
+const isFallbackCreate =
+  toolName === "vault_propose_write" &&
+  out &&
+  typeof out === "object" &&
+  (out as any).fallback === "create";
 
-if (isProposalTool && out && !hasError && !isNoop) {
+if (
+  isProposalTool &&
+  out &&
+  !hasError &&
+  !isNoop &&
+  !(isCreateAndModifyIntent(content) && isFallbackCreate)
+) {
   pendingProposalOuts.push(out);
+}
+
+if (
+  toolName === "vault_propose_create" &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out) &&
+  isCreateAndModifyIntent(content) &&
+  !requestHandledByOrchestration
+  
+) {
+  const created = out as {
+    fileId: string;
+    path?: string;
+    mime?: string;
+    content?: string;
+  };
+
+  const mentionedPaths = extractMentionedPaths(content);
+  const createPath = String(created.path ?? "").trim();
+
+  const modifyPath =
+    mentionedPaths.find((p) => p !== createPath) ||
+    (content.includes("app/page.tsx") ? "app/page.tsx" : "");
+
+  if (modifyPath) {
+    console.log("[create_modify_fallback] triggered", {
+      createPath,
+      modifyPath,
+    });
+
+    const existingFile = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_read_text",
+      { path: modifyPath }
+    );
+
+    if (existingFile && typeof existingFile === "object" && !("error" in existingFile)) {
+      const rewritten = await generateRewrittenFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        path: String((existingFile as any).path ?? modifyPath),
+        mime: String((existingFile as any).mime ?? "text/plain"),
+        currentContent: String((existingFile as any).content ?? ""),
+      });
+
+      const writeProposal = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: (existingFile as any).id,
+          path: modifyPath,
+          content: rewritten,
+        }
+      );
+
+      if (
+        writeProposal &&
+        typeof writeProposal === "object" &&
+        !("error" in writeProposal) &&
+        !(writeProposal as any).noop
+      ) {
+        pendingProposalOuts.push(writeProposal);
+      }
+    }
+  }
 }
 
     toolOutputs.push({
@@ -3954,22 +4125,193 @@ if (isProposalTool && out && !hasError && !isNoop) {
     });
   }
 
+  pendingProposalOuts = pendingProposalOuts.filter(
+  (p) => !(p && typeof p === "object" && (p as any).noop === true)
+);
+const beforeDedupe = pendingProposalOuts.length;
+pendingProposalOuts = dedupePendingProposals(pendingProposalOuts);
+
+if (beforeDedupe !== pendingProposalOuts.length) {
+  console.log("[proposal_dedupe]", {
+    before: beforeDedupe,
+    after: pendingProposalOuts.length,
+    keys: pendingProposalOuts.map((p) =>
+      String(p?.fileId ?? p?.path ?? p?.meta?.path ?? "")
+    ),
+  });
+}
+
 if (pendingProposalOuts.length === 1) {
   hadAnyProposalSet = true;
+
+  const proposals = [...pendingProposalOuts];
+  const proposal = proposals[0];
+
   controller.enqueue(
-    encoder.encode(`\n__PROPOSAL__:${JSON.stringify(pendingProposalOuts[0])}\n`)
+    encoder.encode(`\n__PROPOSAL__:${JSON.stringify(proposal)}\n`)
   );
+
+  console.log("[preverify] proposal_count", proposals.length);
+  console.log("[preverify] should_run", shouldPreVerifyProposalSet(proposals));
+  console.log(
+    "[preverify] proposal_paths",
+    proposals.map((p) => String(p.path ?? p.meta?.path ?? ""))
+  );
+
+  try {
+    if (shouldPreVerifyProposalSet(proposals)) {
+      console.log("[preverify] starting");
+
+      const result = await finalizeProposalSet({
+        openai,
+        model: runtimePolicy.model,
+        repoId,
+        userRequest: content,
+        baselineVerifyPayload: baselineVerify.verifyPayload,
+        proposals,
+      });
+
+if (result.repaired) {
+  for (const p of result.finalProposals) {
+    assertCanonicalProposal(p);
+  }
+
+  if (result.finalProposals.length === 1) {
+    controller.enqueue(
+      encoder.encode(
+        `\n__PROPOSAL__:${JSON.stringify(result.finalProposals[0])}\n`
+      )
+    );
+  } else {
+    controller.enqueue(
+      encoder.encode(
+        `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: result.finalProposals })}\n`
+      )
+    );
+  }
+}
+
+      controller.enqueue(
+        encoder.encode(
+          `\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`
+        )
+      );
+    }
+  } catch (e: any) {
+    console.log("[preverify] failed", e?.message);
+
+    controller.enqueue(
+      encoder.encode(
+        `\n__PREVERIFY__:${JSON.stringify({
+          ok: false,
+          command: "node_verify",
+          exitCode: -1,
+          durationMs: 0,
+          stdout: "",
+          stderr: "",
+          error: e?.message ?? "Pre-verify failed",
+          failedStep: "preverify_boot",
+          failureKind: "internal_error",
+          timedOut: false,
+          fileIds: proposals.map((p) => String(p.fileId)).filter(Boolean),
+          paths: proposals.map((p) => String(p.path ?? p.meta?.path ?? "")).filter(Boolean),
+          baseline: false,
+        })}\n`
+      )
+    );
+  }
+
   pendingProposalOuts = [];
+ 
 } else if (pendingProposalOuts.length > 1) {
   hadAnyProposalSet = true;
+
+  const proposals = [...pendingProposalOuts];
+  const proposalSet = { proposals };
+
   controller.enqueue(
     encoder.encode(
-      `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: pendingProposalOuts })}\n`
+      `\n__PROPOSAL_SET__:${JSON.stringify(proposalSet)}\n`
     )
   );
+
+  console.log("[preverify] proposal_count", proposals.length);
+  console.log("[preverify] should_run", shouldPreVerifyProposalSet(proposals));
+  console.log(
+    "[preverify] proposal_paths",
+    proposals.map((p) => String(p.path ?? p.meta?.path ?? ""))
+  );
+
+  try {
+    if (shouldPreVerifyProposalSet(proposals)) {
+      console.log("[preverify] starting");
+
+      const result = await finalizeProposalSet({
+        openai,
+        model: runtimePolicy.model,
+        repoId,
+        userRequest: content,
+        baselineVerifyPayload: baselineVerify.verifyPayload,
+        proposals,
+      });
+
+if (result.repaired) {
+  for (const p of result.finalProposals) {
+    assertCanonicalProposal(p);
+  }
+
+  if (result.finalProposals.length === 1) {
+    controller.enqueue(
+      encoder.encode(
+        `\n__PROPOSAL__:${JSON.stringify(result.finalProposals[0])}\n`
+      )
+    );
+  } else {
+    controller.enqueue(
+      encoder.encode(
+        `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: result.finalProposals })}\n`
+      )
+    );
+  }
+}
+
+      controller.enqueue(
+        encoder.encode(
+          `\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`
+        )
+      );
+    }
+  } catch (e: any) {
+    console.log("[preverify] failed", e?.message);
+
+    controller.enqueue(
+      encoder.encode(
+        `\n__PREVERIFY__:${JSON.stringify({
+          ok: false,
+          command: "node_verify",
+          exitCode: -1,
+          durationMs: 0,
+          stdout: "",
+          stderr: "",
+          error: e?.message ?? "Pre-verify failed",
+          failedStep: "preverify_boot",
+          failureKind: "internal_error",
+          timedOut: false,
+          fileIds: proposals.map((p) => String(p.fileId)).filter(Boolean),
+          paths: proposals.map((p) => String(p.path ?? p.meta?.path ?? "")).filter(Boolean),
+          baseline: false,
+        })}\n`
+      )
+    );
+  }
+
   pendingProposalOuts = [];
 }
 
+
+if (deterministicToolHandled) {
+  console.log("[pass2] skipped due to deterministic tool handling");
+} else {
   console.log("[pass2] starting", {
     previous_response_id: lastResponseId,
     toolOutputsCount: toolOutputs.length,
@@ -3993,7 +4335,8 @@ if (pendingProposalOuts.length === 1) {
       max_output_tokens: runtimePolicy.output.maxOutputTokens,
     });
 
-    await streamResponse(resp, "pass2");
+    const pass2 = await streamResponse(resp, "pass2");
+    fullText = pass2.buffer ?? "";
   } catch (err: any) {
     console.log("[pass2] error", {
       message: err?.message,
@@ -4021,11 +4364,11 @@ if (!fullText.trim()) {
 
 fullText = fullText.trim();
 
-if (!fullText.startsWith("[Observation]")) {
-  console.log("[contract] violation: assistant output missing [Observation]");
+if (!hasValidAssistantContract(fullText)) {
+  console.log("[contract] violation: assistant output missing valid contract markers");
   fullText =
     "[Observation]\nContract violation detected.\n\n" +
-    "[Assessment]\nAssistant output did not start with [Observation].\n\n" +
+    "[Assessment]\nAssistant output did not include a valid triplet or repository proposal marker.\n\n" +
     "[Action]\nRetry the request or adjust prompt to conform to the output contract.";
 }
 
@@ -4038,9 +4381,9 @@ if (claimsStagedChange && !hadAnyProposalSet) {
   console.log("[proposal_guard] staged change claimed but no proposal marker");
 
   fullText =
-    "[Observation]\nNo repository proposal was produced.\n\n" +
-    "[Assessment]\nThe assistant claimed a staged change, but no __PROPOSAL__ or __PROPOSAL_SET__ marker was emitted in this turn.\n\n" +
-    "[Action]\nRetry the request so the change can be staged deterministically.";
+    "[Observation]\nA staged change was claimed but no repository proposal was produced.\n\n" +
+    "[Assessment]\nThe chamber described a staged change without emitting a __PROPOSAL__ or __PROPOSAL_SET__ marker for this turn.\n\n" +
+    "[Action]\nRetry required. The chamber must stage the change through vault tools before claiming it is ready to apply.";
 }
 
 if (hadAnyProposalSet) {
@@ -4091,7 +4434,8 @@ if (hadAnyProposalSet) {
       } catch (e: any) {
         console.log("[engraving] skipped:", e?.message);
       }
-    } catch (err: any) {
+    }
+  }  catch (err: any) {
       console.error("LLM error:", err?.message);
       controller.enqueue(encoder.encode("System: LLM unavailable. Check billing/quota."));
     } finally {

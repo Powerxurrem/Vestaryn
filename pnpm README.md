@@ -1,278 +1,245 @@
-Vestaryn — Master Handover
+Vestaryn — Master Handover (March 2026)
+Project Overview
 
-(Status: Early Access Phase / Phase 1 Complete)
+Vestaryn is an AI-powered autonomous coding chamber combining:
 
-1. Core Concept
+conversational reasoning
 
-Vestaryn is an AI-driven development environment designed to behave like a structured engineering partner, not a chat assistant.
+deterministic tool execution
 
-The system focuses on:
+repository state awareness
 
-deterministic repository state
+controlled code mutation
 
-safe AI-driven edits
+automatic verification
 
-human approval loops
+The system acts like a hybrid of ChatGPT + VS Code + CI runner.
 
-automated verification
-
-scalable architecture
-
-Core workflow:
+Core concept:
 
 User request
-   ↓
-Observation
-   ↓
-Assessment
-   ↓
-Action (proposal)
-   ↓
-User approval
-   ↓
-Apply change
-   ↓
-Verify (runner)
-   ↓
-Next suggestions
+→ AI reasoning
+→ deterministic tool orchestration
+→ staged file proposals
+→ verify pipeline
+→ user approval
+→ apply change
+Current Architecture
+Core Components
+1️⃣ Chamber (LLM orchestration)
 
-The AI never directly edits files.
-All edits go through the proposal → apply → verify pipeline.
+Location:
 
-2. System Architecture
-Chamber
-
-The reasoning environment.
+app/api/repo/[repoId]/chat/route.ts
 
 Responsibilities:
 
-interpret user intent
+stream OpenAI responses
 
-read repository
+execute tool calls
 
-generate proposals
+orchestrate deterministic behaviors
 
-orchestrate tools
+stage proposals
 
-maintain structured reasoning contract
+run preverify
 
-Output contract:
+enforce output contract
 
-[Observation]
-[Assessment]
-[Action]
+Key structure:
 
-Markers emitted during execution:
+ReadableStream
+ ├─ pass1 (LLM reasoning)
+ ├─ tool execution loop
+ ├─ orchestration layers
+ ├─ proposal staging
+ ├─ preverify
+ └─ pass2 (optional LLM completion)
+2️⃣ Vault (repository abstraction)
 
-__PROPOSAL__
-__PROPOSAL_SET__
-__APPLY__
-__APPLIED__
-__VERIFY__
-__ENGRAVING__
-__RESET__
-__MAINTENANCE__
-Vault (Repository System)
+Stores files in Supabase.
 
-Deterministic file system abstraction.
+Tables:
 
-Storage structure:
+repo_files
+repo_file_versions
+repo_changes
+repo_messages
+
+Files stored as:
 
 repos/<repoId>/<fileId>/vN
 
-Database table:
+Capabilities:
 
-repo_files
-
-File lifecycle:
-
-create
-read
-propose_write
-apply_write
-version bump
-verify
-
-Important properties:
-
-deterministic storage
-
-version tracking
-
-sha256 hashing
-
-metadata in DB
-
-file content in Supabase storage
-
-signed URLs for editor
-
-Vault tools currently implemented:
-
-vault_read_text
 vault_list_files
+vault_read_text
 vault_propose_write
+vault_propose_create
 vault_propose_append
-vault_apply_write
 
-Path resolution:
+Vault guarantees:
 
-resolveFileIdByPathOrName()
+deterministic file references
 
-Supports both:
+versioned history
 
-fileId
-path
-filename
-3. Proposal System
+staged proposals
 
-Vestaryn does not edit files immediately.
+3️⃣ Runner (verification engine)
 
-Instead it generates proposals.
+External service running commands:
 
-Single file:
+lint
+typecheck
+test
 
-__PROPOSAL__:{json}
+Input:
 
-Multi-file:
+snapshot zip
+overlay proposal files
 
-__PROPOSAL_SET__:{json}
+Output:
 
-Example proposal:
+verifyPayload
+
+Example result:
 
 {
-  "fileId": "...",
-  "content": "...",
-  "prevHash": "...",
-  "nextHash": "...",
-  "confirm": "APPLY <fileId> <hash>"
+  ok: false,
+  failedStep: "typecheck"
 }
 
-User confirms via:
+Runner integration:
 
-Confirm & Apply
+runnerRun()
+buildRepoSnapshotSignedUrl()
+4️⃣ Preverify System
 
-which sends:
+Before staging proposals:
 
-__APPLY__:{proposal}
+proposal
+→ overlay snapshot
+→ run verify
+→ optional auto repair
+→ return final proposals
+
+Implemented in:
+
+finalizeProposalSet()
+Deterministic Orchestration Layers
+
+Vestaryn includes several specialized execution paths:
+
+Generic Rewrite
+read file
+→ generate rewritten file
+→ propose write
+
+Used for:
+
+"edit"
+"modify"
+"replace"
+Create + Modify
+
+Example request:
+
+Create components/Footer.tsx
+and use it in app/page.tsx
+
+Flow:
+
+vault_list_files
+→ detect missing file
+→ generate new file
+→ propose create
+→ rewrite referencing file
+Split File
+
+Example:
+
+Split app/test.js into vault.js and demo.js
+
+Flow:
+
+read source
+→ generate multiple files
+→ validate split
+→ propose create/write
+→ preverify
+Extract Module
+
+Example:
+
+Extract styles into styles.ts
+
+Flow:
+
+read source
+→ generate module
+→ rewrite source
+→ validate import
+Import Refactor
+
+Example:
+
+Replace inline footer with Footer component
+
+Flow:
+
+read source
+→ rewrite file
+→ propose write
+Proposal System
+
+Changes are never applied immediately.
+
+Instead Vestaryn emits:
+
+__PROPOSAL__
 
 or
 
-__APPLY_SET__:{proposalSet}
-4. Runner / Verify System
+__PROPOSAL_SET__
 
-Runner executes verification commands.
+Example:
 
-Current command:
+__PROPOSAL__:{ fileId, path, content }
 
-node_verify
+UI then displays staged change.
 
-Runner pipeline:
+User must confirm before apply.
 
-snapshot repo
-↓
-run lint/tests
-↓
-return result
-↓
-emit marker
+Preverify Marker
 
-Verify marker:
+Before commit the chamber emits:
 
-__VERIFY__:{json}
+__PREVERIFY__
 
-Verify result fields:
+Example:
 
-ok
-exitCode
-durationMs
-failureKind
-failedStep
-stdout
-stderr
+{
+  ok: true,
+  command: "node_verify",
+  exitCode: 0
+}
+Additional Stream Markers
 
-Verify results update UI file status:
-
-ok
-error
-pending
-5. ChatFrame (Frontend Chamber)
-
-Handles streaming assistant responses.
-
-Key responsibilities:
-
-Marker parsing
-
-Parses:
+Vestaryn uses structured stream markers:
 
 __PROPOSAL__
 __PROPOSAL_SET__
-__APPLY__
-__APPLIED__
+__PREVERIFY__
 __VERIFY__
 __ENGRAVING__
 __CREDITS__
-__MAINTENANCE__
 
-Markers are removed from visible chat.
+These are parsed by the frontend.
 
-Proposal handling
+Credit System
 
-Stores:
-
-lastProposal
-lastProposalSet
-proposalSet
-
-Used to show:
-
-Pending change
-Confirm phrase
-Preview
-Apply flow
-Confirm & Apply
-   ↓
-handleSend("__APPLY__")
-   ↓
-applyOriginMsgIdRef
-   ↓
-runVerify()
-Verify flow
-runVerify()
-↓
-/api/repo/[repoId]/verify
-↓
-__VERIFY__ marker
-↓
-UI status update
-6. Multi-File Execution
-
-Vestaryn can now handle:
-
-multiple proposals
-multiple file edits
-proposal sets
-
-Example operations tested successfully:
-
-fix multiple scripts
-split file into modules
-refactor code
-add features
-
-Edge cases encountered:
-
-file already exists
-path resolution mismatch
-create vs write
-
-Handled via:
-
-vault_propose_write fallback logic
-7. Credit System
-
-Workspace scoped credits.
+Workspace scoped.
 
 Tables:
 
@@ -280,181 +247,463 @@ workspace_credit_balances
 workspace_credit_events
 workspace_credit_charges
 
-HUD endpoint:
+Charging occurs on:
 
-/api/credits/balance
+response.completed
 
-Current tier:
+Billing uses token usage if available.
 
-early_access
+Fallback:
 
-Credits configured:
+characters / 4
+Tier System
 
-1,000,000
-8. Current Capabilities (Validated)
+Defined in:
 
-Vestaryn can:
+lib/membership/tiers.ts
 
-✓ read repository
-✓ modify multiple files
-✓ propose edits safely
-✓ apply confirmed edits
-✓ run verification pipeline
-✓ detect lint failures
-✓ fix broken scripts
-✓ perform small refactors
-✓ split files
-✓ suggest improvements
+Controls:
 
-Recent tests performed:
+models
+tool rounds
+max output tokens
+capabilities
 
-fix broken scripts
-split module
-refactor tracker system
-vault management example
-multi-file edits
-9. Known Issues / Bugs
-1. Maintenance system
+Example capability flags:
 
-Auto summarization currently failing.
+allowCreateFiles
+allowExport
+allowMultiExport
+Current UI
 
-Errors:
+Layout:
 
-Failed to parse URL from undefined/api/.../maintenance/resummarize
-permission denied for repo_chat_summaries
+┌──────────────┬──────────────┐
+│ Chat         │ Editor       │
+│              │              │
+│ Goal cards   │ Tabs         │
+│              │ Vault files  │
+└──────────────┴──────────────┘
 
-Needs:
+Explorer contains:
 
-service role
-or RLS adjustment
-2. Multi-file preview UI
+Vault file tree
+Engraving pane
+Current Known Issues
+1️⃣ Noop rewrite still triggers pass2
 
-Preview for newly created files not always showing.
+Needs deterministic skip.
 
-Likely due to:
+2️⃣ Baseline verify detection
 
-proposalSet preview mapping
-3. Split file logic
+Sometimes incorrectly thinks repo broken.
 
-Split detection recently added.
+3️⃣ Long route.ts
 
-Helpers implemented:
+~4500 lines
+should eventually be modularized.
 
-isSplitFileIntent()
-extractSplitTargets()
-generateSplitFileContents()
+Next Immediate Improvements
 
-Needs further real-world testing.
+(Not required for early access)
 
-10. Architectural Strengths
+Extract orchestration modules
+handleSplit()
+handleRewrite()
+handleCreateModify()
+handleExtract()
+handleImportRefactor()
+Improve baseline verify detection
 
-Vestaryn already includes 4 of the 5 core AI engineering patterns:
+Fix typecheck detection script.
 
-Repository state      ✓ Vault
-Tool interface        ✓ Vault tools
-Execution environment ✓ Runner
-Verification loop     ✓ Verify
-Iteration loop        partial
-Planning layer        future
+Add auto-verify after APPLY
+proposal → apply → verify
+Long Term Vision
 
-This architecture is closer to AI engineering systems than typical AI coding assistants.
+Vestaryn becomes:
 
-11. Next Development Priorities
+Autonomous AI development environment
 
-Recommended next phases:
+Capabilities planned:
 
-Phase 2 — Iteration Engine
+multi-file refactors
+dependency installs
+test generation
+project scaffolding
+architecture planning
+autonomous repair loops
+Current System Status
 
-Enable automatic repair loops.
+✔ Streaming stable
+✔ Vault deterministic
+✔ Proposal system stable
+✔ Preverify functional
+✔ Runner integrated
+✔ Credit accounting active
+✔ Tier system active
 
-edit
-↓
-verify
-↓
-failure
-↓
-AI reads error
-↓
-propose repair
-Phase 3 — Task Planning
+Vestaryn is now proto-autonomous.
 
-Introduce structured plan generation.
+Dev Philosophy
+
+Vestaryn prioritizes:
+
+determinism
+traceability
+tool-first execution
+explicit proposals
+verification before apply
+
+LLM reasoning is assistive, not authoritative.
+
+------------------------------------------------------------
+
+Vestaryn operates as a staged AI development environment.
+
+User
+  ↓
+Chamber (AI reasoning layer)
+  ↓
+Intent Detection
+  ↓
+Vault Reads
+  ↓
+Proposal Generation
+  ↓
+Proposal Set
+  ↓
+Pre-Verify
+  ↓
+User Approval
+  ↓
+Apply Change
+  ↓
+Vault Write
+  ↓
+Repo Snapshot
+  ↓
+Runner Execution
+  ↓
+Verify Result
+  ↓
+Repo File Status Update
+
+This pipeline guarantees:
+
+deterministic code edits
+
+safe execution
+
+recoverable state
+
+traceable history
+
+Vestaryn Repository Structure
+
+Root project structure.
+
+vestaryn
+│
+├─ engineering_playbook.md
+├─ memberships.md
+├─ visual-architecture.md
+├─ eslint.config.mjs
+├─ next.config.ts
+├─ middleware.ts
+├─ tsconfig.json
+├─ postcss.config.mjs
+│
+├─ sql
+│   └─ database definitions / migrations
+│
+├─ public
+│   └─ static assets
+│
+├─ types
+│   └─ shared types
+│
+└─ src
+16.3 Application Layer
+src
+│
+├─ app
+│   │
+│   ├─ api
+│   │   │
+│   │   ├─ repos
+│   │   │   └─ [repoId]
+│   │   │       └─ files
+│   │   │           ├─ create
+│   │   │           │   └─ route.ts
+│   │   │           ├─ upload
+│   │   │           │   └─ route.ts
+│   │   │           └─ import-zip
+│   │   │               └─ route.ts
+│   │   │
+│   │   └─ repo
+│   │       └─ [repoId]
+│   │           │
+│   │           ├─ memory
+│   │           │   ├─ route.ts
+│   │           │   └─ bootstrap
+│   │           │       └─ route.ts
+│   │           │
+│   │           ├─ export
+│   │           │   └─ route.ts
+│   │           │
+│   │           └─ changes
+│   │               └─ [changeId]
+│   │                   ├─ apply
+│   │                   │   └─ route.ts
+│   │                   ├─ revert
+│   │                   │   └─ route.ts
+│   │                   └─ verify
+│   │                       └─ route.ts
+│   │
+│   └─ repo
+│       └─ [repoId]
+│           └─ main repo UI page
+│
+├─ lib
+│ 
+│ 
+├─ types
+│   ├─ goalMarkers.ts
+│   ├─ goalPlan.ts
+│   └─ goalPlanCard.ts
+16.4 Library Layer
+src/lib
+│
+├─ supabase
+│   ├─ admin.ts
+│   ├─ client.ts
+│   └─ middleware.ts
+│
+├─ vault
+│   ├─ buckets.ts
+│   ├─ writeVersion.ts
+│   └─ vault helpers
+│
+├─ membership
+│   └─ tiers.ts
+│
+├─ runner
+│   ├─ snapshot.ts
+│   └─ client.ts
+│
+└─ other shared helpers
+16.5 Frontend Component Architecture
+
+Primary interface layout:
+
+ChamberWithVault
+│
+├─ RepoHud
+│   ├─ tier display
+│   ├─ credit usage
+│   └─ repo state
+│
+├─ RepoVault
+│   ├─ file explorer
+│   ├─ file verification states
+│   └─ import/export actions
+│
+├─ VaultEditorPane
+│   ├─ editor
+│   ├─ proposal overlays
+│   └─ save/apply controls
+│
+└─ ChatFrame
+    ├─ streaming AI responses
+    ├─ marker extraction
+    ├─ proposal tracking
+    ├─ verify state tracking
+    └─ chamber maintenance triggers
+
+UI layout resembles a simplified IDE.
+
+Explorer | Editor | Chamber
+16.6 Backend API Architecture
+File Management
+POST /api/repos/[repoId]/files/create
+POST /api/repos/[repoId]/files/upload
+POST /api/repos/[repoId]/files/import-zip
+
+Handles:
+
+new file creation
+
+file uploads
+
+project imports
+
+Repo Change Execution
+POST /api/repo/[repoId]/changes/[changeId]/apply
+POST /api/repo/[repoId]/changes/[changeId]/revert
+POST /api/repo/[repoId]/changes/[changeId]/verify
+
+Handles:
+
+applying staged changes
+
+reverting changes
+
+running verification
+
+Repo Memory
+POST /api/repo/[repoId]/memory/bootstrap
+GET  /api/repo/[repoId]/memory
+
+Handles persistent chamber memory.
+
+Repo Export
+GET /api/repo/[repoId]/export
+
+Exports conversation history.
+
+16.7 Storage Architecture
+
+Vault files stored in Supabase Storage.
+
+Key format:
+
+repos/<repoId>/<fileId>/vN
 
 Example:
 
-Task
-↓
-AI generates plan
-↓
-step execution
-Phase 4 — Repository Intelligence
+repos/db252773-bced-4d45-8bea-6aec9faa51d9/4f92.../v1
 
-Add repository graph awareness.
+Storage is derived state.
 
-imports
-dependencies
-entrypoints
-tests
-Phase 5 — Task Memory
+Database remains canonical.
 
-Persistent tasks across sessions.
+16.8 Database Architecture
+Workspace Domain
+workspaces
+ ├─ workspace_members
+ ├─ workspace_credit_balances
+ ├─ workspace_credit_charges
+ └─ workspace_credit_events
 
-task
-progress
-state
-completion
-12. Current Development Status
+Handles:
 
-Vestaryn is currently at:
+team membership
 
-Phase 1: Engineering foundation
+credit accounting
 
-Major systems completed:
+billing state
 
-Vault
-Chamber
-Runner
-Proposal system
-Verify system
-UI integration
-Credits system
+Repo Domain
+repos
+ ├─ repo_files
+ │   ├─ repo_file_versions
+ │   ├─ repo_file_locks
+ │   └─ repo_file_status
+ │
+ ├─ repo_changes
+ ├─ repo_runs
+ ├─ repo_messages
+ ├─ repo_memory_docs
+ ├─ repo_chat_state
+ └─ repo_chat_summaries
 
-System is functionally operational.
+Handles:
 
-13. Immediate Next Work Session
+code files
 
-Next development focus recommended:
+change proposals
 
-1️⃣ improve multi-file proposal reliability
-2️⃣ strengthen split-file system
-3️⃣ implement first iteration loop
-4️⃣ fix maintenance summarization system
+execution logs
 
-14. Long-Term Vision
+chat history
 
-Vestaryn aims to evolve from:
+chamber memory
 
-AI code assistant
+Global Domain
+early_access_users
+user_credits
+credit_ledger
 
-to:
+Handles:
 
-AI engineering system
+access control
 
-Where AI can:
+user credit tier
 
-plan tasks
-execute code changes
-run verification
-iterate until success
-Final Note
+ledger entries
 
-Vestaryn already has a solid architectural base.
+16.9 System Responsibility Map
+Frontend UI
+  └─ ChamberWithVault
+        │
+        ├─ ChatFrame
+        ├─ RepoVault
+        └─ VaultEditorPane
+                │
+                ↓
+API Routes
+                │
+                ↓
+Vault + Repo Changes
+                │
+                ↓
+Database Metadata
+                │
+                ↓
+Storage Files
+                │
+                ↓
+Snapshot Builder
+                │
+                ↓
+Runner Execution
+                │
+                ↓
+Verify Result
+                │
+                ↓
+Repo File Status
+Final Architecture Summary
 
-Key foundations are in place:
+Vestaryn now has a clear layered architecture:
 
-deterministic repo state
-safe editing pipeline
-execution environment
-verification loop
+User Interface
+    ↓
+Chamber AI Layer
+    ↓
+Proposal / Apply System
+    ↓
+Vault File System
+    ↓
+Repo Snapshot Builder
+    ↓
+Runner Execution
+    ↓
+Verification
+    ↓
+Repo Status Updates
 
-Future work will focus on intelligence layers, not infrastructure.
+Vestaryn Execution Model
+
+Vestaryn operates using a dual-control architecture.
+
+LLM = reasoning engine
+Server = execution authority
+
+The LLM can:
+
+read repository
+suggest changes
+generate file content
+
+The server controls:
+
+repo mutation
+proposal validation
+apply execution
+verification
+status updates
+
+----------
+

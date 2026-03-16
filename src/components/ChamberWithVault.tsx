@@ -87,16 +87,6 @@ const onFileStatus = useCallback(
   },
   []
 );
-  // ─────────────────────────────────────────────
-  // Auto-verify after apply (Option A)
-  // ─────────────────────────────────────────────
-  const VERIFY_DEBOUNCE_MS = 1200;
-
-  const verifyTimerRef = useRef<number | null>(null);
-  const verifyAbortRef = useRef<AbortController | null>(null);
-
-  const verifyInFlightRef = useRef(false);
-  const verifyQueuedRef = useRef(false);
 
   // files touched since last verify started
   const pendingTouchedRef = useRef<Set<string>>(new Set());
@@ -178,140 +168,6 @@ const effectiveMaintenance =
     }
   }
 
-  async function runVerifyNow() {
-    if (verifyInFlightRef.current) {
-      verifyQueuedRef.current = true;
-      return;
-    }
-
-    verifyInFlightRef.current = true;
-    verifyQueuedRef.current = false;
-
-    // cancel previous stream
-    verifyAbortRef.current?.abort();
-    const ac = new AbortController();
-    verifyAbortRef.current = ac;
-
-    setVerifyState("running");
-
-    // snapshot touched files for this run
-    const touched = Array.from(pendingTouchedRef.current);
-    pendingTouchedRef.current.clear();
-
-    // if somehow we got called with nothing touched, don’t waste runner cycles
-    if (touched.length === 0) {
-      setVerifyState("idle");
-      verifyInFlightRef.current = false;
-      return;
-    }
-
-    const runId = makeRunId();
-
-    try {
-      const res = await fetch(`/api/repo/${repoId}/verify`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        signal: ac.signal,
-        body: JSON.stringify({
-          runId,
-          commandId: "node_verify",
-          touchedFileIds: touched,
-        }),
-      });
-
-      if (!res.ok || !res.body) {
-        touched.forEach((fid) =>
-          onFileStatus(fid, "error", `Verify request failed (${res.status})`)
-        );
-        setVerifyState("error");
-        return;
-      }
-
-      let marker: any | null = null;
-
-await consumeVerifyStream(res.body, (verify) => {
-  const ok = Boolean(verify?.ok);
-
-  const reason = !ok
-    ? (
-        String(
-          verify?.stderr ||
-          verify?.stdout ||
-          verify?.error ||
-          "Verify failed"
-        )
-          .split("\n")
-          .map((line: string) => line.trim())
-          .find((line: string) =>
-            line.length > 0 &&
-            !line.startsWith("[") &&
-            !line.startsWith(">") &&
-            !line.startsWith("at ")
-          ) || "Verify failed"
-      )
-    : undefined;
-
-  const fileIds: string[] = Array.isArray(verify?.touchedFileIds)
-    ? verify.touchedFileIds
-    : [];
-
-  setFileStatusById((prev) => {
-    const next = { ...prev };
-    for (const fileId of fileIds) {
-      next[fileId] = {
-        ts: Date.now(),
-        status: ok ? "ok" : "error",
-        reason,
-      };
-    }
-    return next;
-  });
-});
-
-      setLastVerify(marker);
-      const ok = !!marker?.ok;
-
-      touched.forEach((fid) =>
-        onFileStatus(
-          
-          fid,
-          ok ? "ok" : "error",
-          ok
-            ? "Verified"
-            : marker?.failedStep
-              ? `Verify failed (${marker.failedStep})`
-              : marker?.failureKind
-                ? `Verify failed (${marker.failureKind})`
-                : (marker?.error ? `Verify failed: ${marker.error}` : "Verify failed")
-        )
-      );
-
-      setVerifyState(ok ? "ok" : "error");
-      
-    } catch (e) {
-      if (!ac.signal.aborted) {
-        touched.forEach((fid) => onFileStatus(fid, "error", "Verify crashed"));
-        setVerifyState("error");
-      }
-    } finally {
-      verifyInFlightRef.current = false;
-
-      // if updates came in while verifying, run once more immediately
-      if (verifyQueuedRef.current) {
-        verifyQueuedRef.current = false;
-        await runVerifyNow();
-      }
-    }
-  }
-
-  function scheduleVerify() {
-    if (verifyTimerRef.current) window.clearTimeout(verifyTimerRef.current);
-    setVerifyState((s) => (s === "running" ? "running" : "scheduled"));
-    verifyTimerRef.current = window.setTimeout(() => {
-      void runVerifyNow();
-    }, VERIFY_DEBOUNCE_MS);
-  }
-
 
   
 const markFileUpdated = useCallback(
@@ -333,14 +189,6 @@ const markFileUpdated = useCallback(
   useEffect(() => {
     localStorage.setItem(storageKeyFor(repoId), String(leftPct));
   }, [repoId, leftPct]);
-
-  // ✅ cleanup verify timers/streams when repoId changes or component unmounts
-  useEffect(() => {
-    return () => {
-      if (verifyTimerRef.current) window.clearTimeout(verifyTimerRef.current);
-      verifyAbortRef.current?.abort();
-    };
-  }, [repoId]);
 
   function openFile(f: RepoFile) {
     const next: OpenTab = { fileId: f.id, path: f.path, mime: f.mime };

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
+import { VAULT_BUCKET } from "@/lib/vault/buckets";
 
 export const runtime = "nodejs";
 
@@ -75,7 +76,7 @@ export async function POST(req: Request, ctx: Ctx) {
   const bytes = new TextEncoder().encode(content);
 
   // 3) Upload new content
-  const up = await supabase.storage.from("vestaryn-files").upload(storageKey, bytes, {
+  const up = await supabase.storage.from(VAULT_BUCKET).upload(storageKey, bytes, {
     contentType: file.mime,
     upsert: false,
   });
@@ -92,10 +93,23 @@ export async function POST(req: Request, ctx: Ctx) {
     size_bytes: bytes.byteLength,
   });
 
-  if (verErr) {
-    await supabase.storage.from("vestaryn-files").remove([storageKey]);
-    return NextResponse.json({ error: verErr.message }, { status: 400 });
-  }
+if (verErr) {
+  await supabase.storage.from(VAULT_BUCKET).remove([storageKey]);
+  return NextResponse.json({ error: verErr.message }, { status: 400 });
+}
 
-  return NextResponse.json({ ok: true, version: newVersion });
+// 5) Promote this version to current file state
+const { error: fileUpdateErr } = await supabase
+  .from("repo_files")
+  .update({
+    storage_key: storageKey,
+  })
+  .eq("id", fileId)
+  .eq("repo_id", repoId);
+
+if (fileUpdateErr) {
+  return NextResponse.json({ error: fileUpdateErr.message }, { status: 400 });
+}
+
+return NextResponse.json({ ok: true, version: newVersion });
 }

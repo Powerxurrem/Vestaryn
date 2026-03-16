@@ -1,6 +1,5 @@
 import { createHash } from "crypto";
-
-const VAULT_BUCKET = "vestaryn-files";
+import { VAULT_BUCKET } from "@/lib/vault/buckets";
 
 function sha256(text: string) {
   return createHash("sha256").update(text, "utf8").digest("hex");
