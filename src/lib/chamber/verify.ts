@@ -3,10 +3,16 @@ import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { runnerRun } from "@/lib/runner/client";
 import { stripCodeFences } from "@/lib/vault/utils";
-
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
+
+export type VerifyCommand =
+  | "node_verify"
+  | "node_lint"
+  | "node_typecheck"
+  | "node_test"
+  | "python_verify";
 
 export function isBaselinePreverifyFailure(
   baseline: {
@@ -52,6 +58,12 @@ export function isBaselinePreverifyFailure(
     "module '@/components/",
     "parsing error",
     "eslint",
+    "modulenotfounderror",
+    "importerror",
+    "syntaxerror",
+    "indentationerror",
+    "nameerror",
+    "attributeerror",
   ];
 
   return overlapNeedles.some(
@@ -63,6 +75,7 @@ export function isBaselinePreverifyFailure(
 
 export async function runPreVerifyForProposalSet(opts: {
   repoId: string;
+  verifyCmd?: VerifyCommand;
   proposals: Array<{
     fileId: string;
     path?: string | null;
@@ -71,12 +84,10 @@ export async function runPreVerifyForProposalSet(opts: {
     meta?: any;
   }>;
 }) {
-  const { repoId, proposals } = opts;
-  const verifyCmd = "node_verify" as const;
+  const { repoId, proposals, verifyCmd = "node_verify" } = opts;
   const jobId = `preverify-${repoId}-${Date.now()}`;
   const supabaseAdmin = createSupabaseAdmin();
 
-  // Build overlay map: repo snapshot + staged proposal contents
   const overlayByPath = new Map<string, { content: string; mime?: string | null }>();
 
   for (const p of proposals) {
@@ -134,7 +145,8 @@ export function shouldPreVerifyProposalSet(
       path.endsWith(".js") ||
       path.endsWith(".jsx") ||
       path.endsWith(".mjs") ||
-      path.endsWith(".cjs")
+      path.endsWith(".cjs") ||
+      path.endsWith(".py")
     );
   });
 }
@@ -208,11 +220,92 @@ FILE
 
 export async function runAutoVerifyForRepo(opts: {
   repoId: string;
-  verifyCmd?: "node_verify" | "node_lint" | "node_typecheck" | "node_test";
+  verifyCmd?: VerifyCommand;
 }) {
   const { repoId, verifyCmd = "node_verify" } = opts;
   const jobId = `verify-${repoId}-${Date.now()}`;
   const supabaseAdmin = createSupabaseAdmin();
+
+  const { data: files, error: filesErr } = await supabaseAdmin
+    .from("repo_files")
+    .select("id, path, mime")
+    .eq("repo_id", repoId)
+    .is("deleted_at", null);
+
+  if (filesErr) {
+    throw new Error(`Auto verify file lookup failed: ${filesErr.message}`);
+  }
+
+  if (!files || files.length === 0) {
+    console.log("[verify] skipped: empty_repo", { repoId });
+
+    return {
+      skipped: true,
+      skipReason: "empty_repo",
+      verifyPayload: {
+        command: verifyCmd,
+        ok: true,
+        skipped: true,
+        skipReason: "empty_repo",
+        exitCode: 0,
+        durationMs: 0,
+        stdout: "",
+        stderr: "",
+        error: null,
+        jobId,
+        fingerprint: null,
+        failedStep: null,
+        failureKind: null,
+        timedOut: false,
+      },
+      result: null,
+    };
+  }
+
+  const verifyableFiles = (files ?? []).filter((f) => {
+    const path = String(f.path ?? "").toLowerCase();
+
+    if (!path) return false;
+    if (path.startsWith("memory/")) return false;
+    if (path.endsWith(".md")) return false;
+
+    return true;
+  });
+
+  console.log("[verify] verifyable files", {
+    repoId,
+    allPaths: (files ?? []).map((f) => f.path),
+    verifyablePaths: verifyableFiles.map((f) => f.path),
+  });
+
+  if (verifyableFiles.length === 0) {
+    console.log("[verify] skipped: no_verifyable_files", {
+      repoId,
+      fileCount: files?.length ?? 0,
+    });
+
+    return {
+      skipped: true,
+      skipReason: "no_verifyable_files",
+      verifyPayload: {
+        command: verifyCmd,
+        ok: true,
+        skipped: true,
+        skipReason: "no_verifyable_files",
+        exitCode: 0,
+        durationMs: 0,
+        stdout: "",
+        stderr: "",
+        error: null,
+        jobId,
+        fingerprint: null,
+        failedStep: null,
+        failureKind: null,
+        timedOut: false,
+      },
+      result: null,
+    };
+  }
 
   const snap = await buildRepoSnapshotSignedUrl(supabaseAdmin, repoId, jobId, {
     signedUrlTtlSec: 600,
@@ -242,9 +335,13 @@ export async function runAutoVerifyForRepo(opts: {
   });
 
   return {
+    skipped: false,
+    skipReason: null,
     verifyPayload: {
       command: verifyCmd,
       ok: Boolean(result.ok),
+      skipped: false,
+      skipReason: null,
       exitCode: Number(result.exitCode ?? -1),
       durationMs: Number(result.durationMs ?? 0),
       stdout: String(result.stdout ?? ""),
@@ -262,7 +359,7 @@ export async function runAutoVerifyForRepo(opts: {
 
 export function buildPendingVerifyPayload(opts: {
   fileIds: string[];
-  command?: "node_verify" | "node_lint" | "node_typecheck" | "node_test";
+  command?: VerifyCommand;
 }) {
   return {
     pending: true,
@@ -367,35 +464,36 @@ ${opts.preverify.error ?? ""}
 
   let parsed: any;
 
-try {
-  parsed = JSON.parse(raw);
-} catch {
-  console.log("[repair] invalid JSON");
-  return opts.proposals;
-}
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.log("[repair] invalid JSON");
+    return opts.proposals;
+  }
+
   const repairs = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
 
-const repairMap = new Map<
-  string,
-  {
-    fileId: string;
-    path: string;
-    content: string;
-    mime?: string;
-  }
->(
-  repairs
-    .filter((p: any) => typeof p?.fileId === "string" && typeof p?.content === "string")
-    .map((p: any) => [
-      String(p.fileId),
-      {
-        fileId: String(p.fileId),
-        path: String(p.path ?? "").trim(),
-        content: String(p.content),
-        mime: p?.mime ? String(p.mime) : undefined,
-      },
-    ])
-);
+  const repairMap = new Map<
+    string,
+    {
+      fileId: string;
+      path: string;
+      content: string;
+      mime?: string;
+    }
+  >(
+    repairs
+      .filter((p: any) => typeof p?.fileId === "string" && typeof p?.content === "string")
+      .map((p: any) => [
+        String(p.fileId),
+        {
+          fileId: String(p.fileId),
+          path: String(p.path ?? "").trim(),
+          content: String(p.content),
+          mime: p?.mime ? String(p.mime) : undefined,
+        },
+      ])
+  );
 
   return opts.proposals.map((p) => {
     const repair = repairMap.get(String(p.fileId));

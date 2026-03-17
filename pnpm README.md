@@ -1,361 +1,704 @@
-Vestaryn — Master Handover (March 2026)
-Project Overview
+➕ ADD THIS TO YOUR HANDOVER
+Execution Mode System (CRITICAL — Missing Piece)
 
-Vestaryn is an AI-powered autonomous coding chamber combining:
+Vestaryn currently handles multiple types of user intent, but does not yet explicitly enforce execution modes.
 
-conversational reasoning
+This causes failures in:
 
-deterministic tool execution
+surgical edits not completing
 
-repository state awareness
+unnecessary repo rewrites
 
-controlled code mutation
+verify misfires
 
-automatic verification
+tool chains stopping early
 
-The system acts like a hybrid of ChatGPT + VS Code + CI runner.
+Required Execution Modes
 
-Core concept:
+Vestaryn must classify each request into one of these modes:
 
-User request
-→ AI reasoning
-→ deterministic tool orchestration
-→ staged file proposals
-→ verify pipeline
-→ user approval
-→ apply change
-Current Architecture
-Core Components
-1️⃣ Chamber (LLM orchestration)
+1. Advisory Mode (no repo interaction)
 
-Location:
+Examples:
 
-app/api/repo/[repoId]/chat/route.ts
+“What stack should I use?”
 
-Responsibilities:
+“How does this work?”
 
-stream OpenAI responses
+Rules:
 
-execute tool calls
+NO vault tools
 
-orchestrate deterministic behaviors
+NO verify
 
-stage proposals
+FAST response
 
-run preverify
+Must still follow Observation/Assessment/Action contract
 
-enforce output contract
+2. Explain Mode (read-only repo analysis)
 
-Key structure:
+Examples:
 
-ReadableStream
- ├─ pass1 (LLM reasoning)
- ├─ tool execution loop
- ├─ orchestration layers
- ├─ proposal staging
- ├─ preverify
- └─ pass2 (optional LLM completion)
-2️⃣ Vault (repository abstraction)
+“Explain this repo”
 
-Stores files in Supabase.
+“How is this site structured?”
 
-Tables:
+Rules:
 
-repo_files
-repo_file_versions
-repo_changes
-repo_messages
+vault_list_files REQUIRED
 
-Files stored as:
+optionally read 1–2 key files
 
-repos/<repoId>/<fileId>/vN
+NO proposals
 
-Capabilities:
+NO verify
 
-vault_list_files
-vault_read_text
-vault_propose_write
-vault_propose_create
-vault_propose_append
+MUST reference real files
 
-Vault guarantees:
+3. Surgical Mode (CRITICAL)
 
-deterministic file references
+Examples:
 
-versioned history
+“Change ONLY this text”
 
-staged proposals
+“Fix this typo”
 
-3️⃣ Runner (verification engine)
+“Update button label”
 
-External service running commands:
+Rules:
 
-lint
-typecheck
-test
+MUST resolve target file
 
-Input:
+MUST call vault_read_text
 
-snapshot zip
-overlay proposal files
+MUST generate minimal diff
 
-Output:
+MUST emit single PROPOSAL
 
-verifyPayload
+MUST NOT rewrite entire file
 
-Example result:
+MUST NOT call vault_list_files unless path unknown
 
-{
-  ok: false,
-  failedStep: "typecheck"
-}
+👉 This is currently your biggest failure point.
 
-Runner integration:
+4. Incremental Mode
 
-runnerRun()
-buildRepoSnapshotSignedUrl()
-4️⃣ Preverify System
+Examples:
 
-Before staging proposals:
+“Add a contact section”
 
-proposal
-→ overlay snapshot
-→ run verify
-→ optional auto repair
-→ return final proposals
+“Add a footer”
 
-Implemented in:
+Rules:
 
-finalizeProposalSet()
-Deterministic Orchestration Layers
+read existing file(s)
 
-Vestaryn includes several specialized execution paths:
+preserve layout and styling
 
-Generic Rewrite
+only extend relevant areas
+
+emit PROPOSAL or PROPOSAL_SET
+
+avoid aesthetic regression
+
+5. Rewrite Mode
+
+Examples:
+
+“Redesign this page”
+
+“Refactor this component”
+
+Rules:
+
+full-file rewrite allowed
+
+still must be valid + complete
+
+no placeholders
+
+verify required
+
+6. Bootstrap Mode
+
+Examples:
+
+empty repo
+
+“create a landing page”
+
+Rules:
+
+generate full file set
+
+use PROPOSAL_SET
+
+verify optional depending on repo type
+
+Master Handover — Vestaryn Stabilization State
+1. Current overall state
+
+Vestaryn is now in a real working prototype phase, not just architecture phase.
+
+Core loop is alive:
+
+prompt → staged proposal
+
+proposal/apply_set → deterministic apply
+
+apply → auto-verify
+
+verify result → file status / markers / response
+
+This is a major milestone.
+
+The system is no longer blocked by structural issues.
+The remaining problems are mostly behavioral precision, repo-type awareness, and tool orchestration reliability.
+
+2. Biggest wins from this chat
+A. Verify subsystem expanded beyond node-only assumptions
+
+You introduced / stabilized verify command handling around:
+
+node_verify
+
+node_lint
+
+node_typecheck
+
+node_test
+
+groundwork for python_verify
+
+You also added:
+
+resolveVerifyCommand(projectType)
+
+typed VerifyCommand
+
+runAutoVerifyForRepo
+
+runPreVerifyForProposalSet
+
+pending/final verify payload builders
+
+preverify repair loop wiring
+
+runner client typing cleanup
+
+B. Green-file / type cleanup happened
+
+You fixed several TypeScript mismatches around:
+
+verifyCmd
+
+runner client command types
+
+route → verify integration
+
+repoInference misuse / missing scope issues
+
+introduction of typed verify command handling
+
+C. Explanation-only branch added
+
+This was an important improvement.
+
+You created a path for:
+
+advisory questions
+
+stack recommendations
+
+architecture discussion
+
+“explain this repo” style queries
+
+without forcing repo mutations.
+
+That restored normal conversational behavior for non-execution prompts.
+
+D. Bootstrap execution for regular site creation worked
+
+For plain website-style requests, Vestaryn can now:
+
+infer empty / minimal repo state
+
+generate staged files directly
+
+return proposal sets
+
+apply those changes deterministically
+
+This worked for:
+
+portfolio site
+
+landing page / coffee shop style site
+
+Even though quality varied, the loop itself worked.
+
+E. Deterministic apply_set path is solid
+
+The apply logs show stable behavior:
+
+proposals received
+
+create vs overwrite resolved correctly
+
+repo_files rows created/updated
+
+storage upload succeeded
+
+file versions advanced
+
+rows re-read successfully after apply
+
+This part looks strong.
+
+3. What failed or remains weak
+A. Repo classification is still too naive
+
+Current inference often returns:
+
+projectType: unknown
+
+needsBootstrap: true
+
+default verify falls back to node_verify
+
+This creates false verify failures for plain static repos.
+
+Current symptom
+
+A plain HTML/CSS site gets auto-verified with node_verify and fails with:
+
+failedStep: 'profile'
+
+failureKind: 'missing_package_json'
+
+That does not mean the site is broken.
+It means the verify system still assumes Node when repo type is unknown.
+
+Conclusion
+
+Need a repo-type layer such as:
+
+static_html
+
+node
+
+nextjs
+
+python
+
+maybe mixed
+
+and route verify behavior accordingly.
+
+B. Quality preservation is weak
+
+Vestaryn can create decent first-pass files, but follow-up modifications often degrade quality.
+
+Example from this chat:
+
+first coffee landing page was better
+
+later “add contact section” pass made the result worse
+
+This means the model currently behaves more like:
+
+“rewrite the page”
+than
+
+“apply the requested delta carefully”
+
+Conclusion
+
+Need a stronger minimal-change / preserve-existing-quality rule set.
+
+C. Surgical edit discipline is not reliable
+
+Final test:
+
+“Change ONLY the hero title text…”
+
+Expected:
+
+identify index.html
+
 read file
-→ generate rewritten file
-→ propose write
 
-Used for:
+modify one string
 
-"edit"
-"modify"
-"replace"
-Create + Modify
+emit __PROPOSAL__
 
-Example request:
-
-Create components/Footer.tsx
-and use it in app/page.tsx
-
-Flow:
+Actual:
 
 vault_list_files
-→ detect missing file
-→ generate new file
-→ propose create
-→ rewrite referencing file
-Split File
 
-Example:
+no further tool chain
 
-Split app/test.js into vault.js and demo.js
+no assistant output
 
-Flow:
+deterministic fallback
 
-read source
-→ generate multiple files
-→ validate split
-→ propose create/write
-→ preverify
-Extract Module
+Meaning
 
-Example:
+The problem is not just prompt quality.
+The model can start tool use, but sometimes stops after discovery and never completes the mutation path.
 
-Extract styles into styles.ts
+Conclusion
 
-Flow:
+Need better orchestration after vault_list_files, especially for:
 
-read source
-→ generate module
-→ rewrite source
-→ validate import
-Import Refactor
+single-file surgical edits
 
-Example:
+obvious existing-file modifications
 
-Replace inline footer with Footer component
+“only change X” requests
 
-Flow:
+D. Pass2 tool-output continuation can silently collapse
 
-read source
-→ rewrite file
-→ propose write
-Proposal System
+The final test exposed a pass2 issue:
 
-Changes are never applied immediately.
+pass1 had tool calls
 
-Instead Vestaryn emits:
+tool executed correctly
 
-__PROPOSAL__
+pass2 started
 
-or
+no output text returned
 
-__PROPOSAL_SET__
+fallback fired
 
-Example:
+This is a crucial stabilizing target.
 
-__PROPOSAL__:{ fileId, path, content }
+Conclusion
 
-UI then displays staged change.
+Need stronger handling for:
 
-User must confirm before apply.
+tool round continuation
 
-Preverify Marker
+no-text-after-tool situations
 
-Before commit the chamber emits:
+deterministic conversion from tool results into next action
 
-__PREVERIFY__
+E. Explain-only branch works, but output quality is still too generic
 
-Example:
+The “Explain how this site is structured right now” branch worked in routing terms, but response content was too generic:
 
-{
-  ok: true,
-  command: "node_verify",
-  exitCode: 0
-}
-Additional Stream Markers
+It said:
 
-Vestaryn uses structured stream markers:
+user asked for explanation only
 
-__PROPOSAL__
-__PROPOSAL_SET__
-__PREVERIFY__
-__VERIFY__
-__ENGRAVING__
-__CREDITS__
+concise overview requested
 
-These are parsed by the frontend.
+ask for focused follow-up
 
-Credit System
+Instead of actually explaining the repo structure.
 
-Workspace scoped.
+Conclusion
 
-Tables:
+Explain-only branch needs:
 
-workspace_credit_balances
-workspace_credit_events
-workspace_credit_charges
+stronger file-aware context usage
 
-Charging occurs on:
+better instruction to actually analyze current repo content
 
-response.completed
+perhaps deterministic file sampling before explanation
 
-Billing uses token usage if available.
+F. Normal advisory questions still cost too much latency
 
-Fallback:
+Examples:
 
-characters / 4
-Tier System
+dashboard recommendation took ~22s
 
-Defined in:
+simple explanation branch took ~12s
 
-lib/membership/tiers.ts
+some trivial questions previously took far too long
 
-Controls:
+This is acceptable for deep execution turns, but not for advice/explain turns.
 
-models
-tool rounds
-max output tokens
-capabilities
+Conclusion
 
-Example capability flags:
+Need a lightweight fast path for:
 
-allowCreateFiles
-allowExport
-allowMultiExport
-Current UI
+explanation-only
 
-Layout:
+high-level advisory
 
-┌──────────────┬──────────────┐
-│ Chat         │ Editor       │
-│              │              │
-│ Goal cards   │ Tabs         │
-│              │ Vault files  │
-└──────────────┴──────────────┘
+no-tool / no-mutation questions
 
-Explorer contains:
+4. Key concrete evidence from this chat
+Successful behaviors observed
 
-Vault file tree
-Engraving pane
-Current Known Issues
-1️⃣ Noop rewrite still triggers pass2
+proposal generation for multi-file plain websites
 
-Needs deterministic skip.
+deterministic apply_set
 
-2️⃣ Baseline verify detection
+storage writes + version rows
 
-Sometimes incorrectly thinks repo broken.
+verify payload emission
 
-3️⃣ Long route.ts
+explanation-only routing triggered correctly
 
-~4500 lines
-should eventually be modularized.
+no-contract failure for normal advisory answer after explain-only logic added
 
-Next Immediate Improvements
+Repeated failure patterns
 
-(Not required for early access)
+projectType: unknown
 
-Extract orchestration modules
-handleSplit()
-handleRewrite()
-handleCreateModify()
-handleExtract()
-handleImportRefactor()
-Improve baseline verify detection
+default node_verify
 
-Fix typecheck detection script.
+missing_package_json on static sites
 
-Add auto-verify after APPLY
-proposal → apply → verify
-Long Term Vision
+pass2 sometimes returns no text after tools
 
-Vestaryn becomes:
+surgical edit intent not carried through after repo listing
 
-Autonomous AI development environment
+modification turns sometimes overwrite aesthetics instead of preserving them
 
-Capabilities planned:
+5. Highest-priority next tasks
+Priority 1 — Fix repo-type-aware verify behavior
 
-multi-file refactors
-dependency installs
-test generation
-project scaffolding
-architecture planning
-autonomous repair loops
-Current System Status
+Goal: stop false failures on static repos.
 
-✔ Streaming stable
-✔ Vault deterministic
-✔ Proposal system stable
-✔ Preverify functional
-✔ Runner integrated
-✔ Credit accounting active
-✔ Tier system active
+Needed
 
-Vestaryn is now proto-autonomous.
+Extend repo inference to identify static HTML/CSS repos
 
-Dev Philosophy
+resolveVerifyCommand(projectType) should support something like:
 
-Vestaryn prioritizes:
+static_html -> null or static_verify
 
-determinism
-traceability
-tool-first execution
-explicit proposals
-verification before apply
+node -> node_verify
 
-LLM reasoning is assistive, not authoritative.
+python -> python_verify
+
+Skip auto-verify when verify does not make sense yet
+
+Why first
+
+Because current false failures pollute the whole feedback loop.
+
+Priority 2 — Fix surgical edit orchestration
+
+Goal: “change one thing only” should work every time.
+
+Needed
+
+When user intent is:
+
+modify existing page
+
+change text only
+
+update existing content
+
+then route should strongly favor:
+
+resolve likely target file
+
+read file
+
+generate rewritten file content
+
+emit proposal directly
+
+Potentially add a deterministic short-circuit for obvious existing-site edits.
+
+Why second
+
+Because trust depends on this. If simple edits fail, users won’t trust bigger changes.
+
+Priority 3 — Stabilize pass2 after tool execution
+
+Goal: no more “tool executed but produced no assistant text” for recoverable cases.
+
+Needed
+
+Add fallback logic such that if:
+
+tool output exists
+
+no pass2 text appears
+
+then system can deterministically convert known tool outcomes into:
+
+proposal response
+
+proposal set response
+
+repo explanation response
+
+explicit failure response tied to tool result
+
+Why third
+
+Because this is causing silent dead ends.
+
+Priority 4 — Add minimal-change behavior mode
+
+Goal: preserve good pages during follow-up edits.
+
+Needed
+
+Different execution modes:
+
+surgical
+
+incremental
+
+rewrite
+
+And stronger prompt rules like:
+
+preserve layout unless explicitly requested
+
+do not restyle unrelated areas
+
+only touch requested elements
+
+Why fourth
+
+Because quality regression is now a bigger risk than raw non-functionality.
+
+Priority 5 — Improve explain-only branch
+
+Goal: explanation queries should analyze current repo, not answer generically.
+
+Needed
+
+For explain-only:
+
+likely call vault_list_files
+
+maybe read top 1–2 relevant files
+
+summarize actual repo structure
+
+Why fifth
+
+Because current routing is correct, but usefulness is not yet there.
+
+6. Suggested implementation order for next chat
+
+Use this order tomorrow:
+
+Step 1
+
+Fix repo inference + verify resolution for static sites.
+
+Step 2
+
+Fix surgical edit flow for existing HTML pages.
+
+Step 3
+
+Add deterministic fallback for “tool executed but no assistant text”.
+
+Step 4
+
+Improve explanation-only branch to actually inspect repo files.
+
+Step 5
+
+Start tightening minimal-change behavior.
+
+That order gives the fastest stability gain.
+
+7. Suggested tests for next session
+
+After fixes, rerun these exact tests:
+
+Advisory
+
+“What stack would you recommend for a small internal analytics dashboard and why?”
+
+Expected:
+
+no tools
+
+fast answer
+
+proper full triplet
+
+Explain-only
+
+“Explain how this site is structured right now”
+
+Expected:
+
+actual file-aware explanation
+
+no proposal markers
+
+no generic fallback
+
+Surgical edit
+
+“Change ONLY the hero title text to ‘Artisan Coffee & Calm Mornings’. Do not modify anything else.”
+
+Expected:
+
+read index.html
+
+one proposal
+
+minimal diff
+
+Static-site verify sanity
+
+apply a static HTML/CSS site change
+
+Expected:
+
+no false missing_package_json failure
+
+either skipped verify or static-appropriate verify
+
+Incremental site edit
+
+“Add a contact section to the landing page”
+
+Expected:
+
+update only relevant files
+
+preserve previous aesthetic quality
+
+8. Bottom-line state at end of this chat
+
+Vestaryn is now:
+
+Stable enough for
+
+deterministic apply flows
+
+multi-file proposal generation
+
+early bootstrap site generation
+
+controlled explanation/advisory branching
+
+meaningful stabilization work next session
+
+Not yet stable enough for
+
+reliable surgical edits
+
+repo-aware verify correctness
+
+taste-preserving incremental refinement
+
+low-latency lightweight questions
+
+robust pass2 completion after tools
+
+9. One-line summary for next chat
+
+Vestaryn core execution loop works, but next stabilization phase is about repo-type-aware verify, surgical edit reliability, pass2 tool-followthrough, and preserving existing page quality during incremental changes.
 
 ------------------------------------------------------------
 
@@ -704,6 +1047,3 @@ proposal validation
 apply execution
 verification
 status updates
-
-----------
-

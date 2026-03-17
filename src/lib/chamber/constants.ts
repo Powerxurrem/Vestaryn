@@ -43,24 +43,32 @@ export const SACRED_TEMPLATE = `# Chamber State (Sacred)
 export const USER_PROFILE_TEMPLATE = `# User Profile (Non-personal)
 
 ## Explicit (user set)
-- skill_self_reported: 
+- skill_self_reported:
 - verbosity: Normal   # Minimal | Normal | Deep
-- code_delivery: Diff-first  # Diff-first | Full-file | Both
-- os: Windows         # Windows | macOS | Linux
-- stacks:             # Comma-separated, e.g. React, Next.js, Supabase
-- change_tolerance: Surgical # Surgical | Bounded-refactor
+- code_delivery: Diff-first   # Diff-first | Full-file | Both
+- os: Windows   # Windows | macOS | Linux
+- stacks:   # Comma-separated, e.g. React, Next.js, Supabase
+- change_tolerance: Surgical   # Surgical | Bounded-refactor
+
+## Calibration Profile
+- goal:
+- skill_level:   # beginner | intermediate | advanced
+- operation_style:   # guide | balanced | direct
+- project_readiness:   # ready | partial | not_setup
+- change_style:   # minimal | balanced | scaffold
+- calibrated_at:
 
 ## Observed (Vestaryn hypothesis)
-- skill_observed: 
+- skill_observed:
 - confidence: 0.50
 - evidence:
-  - 
+  -
 - strengths:
-  - 
+  -
 - frictions:
-  - 
-- last_reviewed: 
+  -
+- last_reviewed:
 
 ## Milestones
-- 
+-
 `;

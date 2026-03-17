@@ -1,3 +1,20 @@
+export type RunnerCommandId =
+  | "ping"
+  | "node_test"
+  | "node_lint"
+  | "node_typecheck"
+  | "node_verify"
+  | "python_verify";
+
+export type RunnerFailedStep =
+  | "profile"
+  | "install"
+  | "lint"
+  | "typecheck"
+  | "test"
+  | "exec"
+  | null;
+
 export type RunnerResult = {
   ok: boolean;
   exitCode: number;
@@ -7,7 +24,7 @@ export type RunnerResult = {
   error?: string;
 
   fingerprint?: string;
-  failedStep?: "profile" | "install" | "lint" | "typecheck" | "test" | "exec" | null;
+  failedStep?: RunnerFailedStep;
   failureKind?: string | null;
   timedOut?: boolean;
 
@@ -33,7 +50,7 @@ export type RunnerResult = {
 
 export async function runnerRun(args: {
   jobId: string;
-  commandId: "ping" | "node_test" | "node_lint" | "node_typecheck" | "node_verify";
+  commandId: RunnerCommandId;
   snapshotUrl?: string;
   timeoutMs?: number;
 }): Promise<RunnerResult> {
@@ -46,7 +63,7 @@ export async function runnerRun(args: {
 
   const timeoutMs = Number(args.timeoutMs ?? 60_000);
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), Math.max(1_000, timeoutMs + 5_000)); // small cushion
+  const t = setTimeout(() => ctl.abort(), Math.max(1_000, timeoutMs + 5_000));
 
   console.log("[runner_client]", {
     base,
@@ -58,7 +75,7 @@ export async function runnerRun(args: {
     secretTail: secret.slice(-6),
   });
 
-   try {
+  try {
     const res = await fetch(`${base}/run`, {
       method: "POST",
       headers: {
@@ -74,7 +91,6 @@ export async function runnerRun(args: {
       signal: ctl.signal,
     });
 
-    // If runner returns non-2xx, read text for debugging
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
       return {
@@ -103,22 +119,21 @@ export async function runnerRun(args: {
       };
     }
 
-    // Normalize fields
     const ok = Boolean(data.ok);
     const exitCode =
       typeof data.exitCode === "number" ? data.exitCode : ok ? 0 : -1;
     const durationMs =
       typeof data.durationMs === "number" ? data.durationMs : 0;
 
-const failedStep =
-  data.failedStep === "profile" ||
-  data.failedStep === "install" ||
-  data.failedStep === "lint" ||
-  data.failedStep === "typecheck" ||
-  data.failedStep === "test" ||
-  data.failedStep === "exec"
-    ? data.failedStep
-    : null;
+    const failedStep: RunnerFailedStep =
+      data.failedStep === "profile" ||
+      data.failedStep === "install" ||
+      data.failedStep === "lint" ||
+      data.failedStep === "typecheck" ||
+      data.failedStep === "test" ||
+      data.failedStep === "exec"
+        ? data.failedStep
+        : null;
 
     return {
       ok,
@@ -131,7 +146,8 @@ const failedStep =
       fingerprint:
         typeof data.fingerprint === "string" ? data.fingerprint : "runner:v?",
       failedStep,
-      failureKind: typeof data.failureKind === "string" ? data.failureKind : null,
+      failureKind:
+        typeof data.failureKind === "string" ? data.failureKind : null,
       timedOut: Boolean(data.timedOut),
 
       profile:

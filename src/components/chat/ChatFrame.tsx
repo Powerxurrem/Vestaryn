@@ -5,9 +5,9 @@ import ChatInput from "./ChatInput";
 import { flushSync } from "react-dom";
 import TierSwitcher from "@/components/dev/TierSwitcher";
 import GoalPlanCard from "@/types/GoalPlanCard";
-import { GoalPlan } from "@/types/goalPlan";
+import type { GoalPlan, GoalStatus, GoalStep } from "@/types/goalPlan";
 import {
-  extractGoalPlan,extractGoalStatus,extractGoalDone,extractGoalExecute} from "@/types/goalMarkers";
+  extractGoalPlan,extractGoalStatus,extractGoalDone,extractGoalExecute,containsGoalMarker} from "@/types/goalMarkers";
 
 type Message = {
   id: string;
@@ -162,7 +162,7 @@ const [lastProposalSet, setLastProposalSet] = useState<
   const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([]);
   const streamingAssistantIdRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-
+  const sawGoalInTurnRef = useRef(false);
   // hard lock to prevent double-submit / overlapping requests
   const sendingRef = useRef(false);
 
@@ -194,6 +194,7 @@ const [lastProposalSet, setLastProposalSet] = useState<
     sections.action = sections.action.split("[Observation]")[0].trim();
   }
 
+  
 const stagedPhrase = "A staged change is ready. Confirm to apply.";
 if (sections.action.includes(stagedPhrase)) {
   sections.action = stagedPhrase;
@@ -232,6 +233,72 @@ function emptyActiveTurn(turnId: string): ActiveAssistantTurn {
     preverify: null,
     engraving: null,
     suggestedPrompts: [],
+  };
+}
+
+function reconcileGoalPlanState(
+  prev: GoalPlan,
+  patch: Partial<GoalPlan> & {
+    goalId?: string;
+    status?: GoalStatus;
+    currentStepId?: string | null;
+    completedStepIds?: string[];
+  }
+): GoalPlan {
+  if (!prev) return prev;
+
+  if (patch.goalId && prev.goalId !== patch.goalId) {
+    return prev;
+  }
+
+  const completedSet: Set<string> = new Set<string>(
+  Array.isArray(patch.completedStepIds)
+    ? patch.completedStepIds.map((x) => String(x))
+    : Array.isArray(prev.completedStepIds)
+    ? prev.completedStepIds.map((x) => String(x))
+    : []
+);
+
+  const nextStatus: GoalStatus =
+  patch.status ?? prev.status;
+
+  const nextCurrentStepId =
+    patch.currentStepId === null
+      ? null
+      : typeof patch.currentStepId === "string"
+      ? patch.currentStepId
+      : prev.currentStepId ?? null;
+
+  const nextSteps: GoalStep[] = prev.steps.map((step) => {
+    const id = String(step.id);
+
+    if (completedSet.has(id)) {
+      return { ...step, status: "verified" as const };
+    }
+
+    if (nextStatus === "completed") {
+      return { ...step, status: "verified" as const };
+    }
+
+    if (nextStatus === "cancelled") {
+      if (step.status === "verified") return step;
+      return { ...step, status: "skipped" as const };
+    }
+
+    if (nextStatus === "running" && nextCurrentStepId === id) {
+      return { ...step, status: "running" as const };
+    }
+
+    return { ...step, status: "pending" as const };
+  });
+
+  return {
+    ...prev,
+    ...patch,
+    status: nextStatus,
+    currentStepId: nextCurrentStepId,
+    completedStepIds: Array.from(completedSet),
+    steps: nextSteps,
   };
 }
 
@@ -326,20 +393,25 @@ function stripMarkersForRender(s: string) {
     }
 
     // Existing marker drops
-    if (
-      t.startsWith("__CREDITS__:") ||
-      t.startsWith("__PROPOSAL__:") ||
-      t.startsWith("__PROPOSAL_SET__:") ||
-      t.startsWith("__PREVERIFY__:") ||
-      t.startsWith("__VERIFY__:") ||
-      t.startsWith("__ENGRAVING__:") ||
-      t.startsWith("__APPLY__:") ||
-      t.startsWith("__APPLIED__:") ||
-      t.startsWith("__RESET__") ||
-      t.startsWith("__GOAL_EXECUTE__:") 
-    ) {
-      continue;
-    }
+if (
+  t.startsWith("__CREDITS__:") ||
+  t.startsWith("__PROPOSAL__:") ||
+  t.startsWith("__PROPOSAL_SET__:") ||
+  t.startsWith("__PREVERIFY__:") ||
+  t.startsWith("__VERIFY__:") ||
+  t.startsWith("__ENGRAVING__:") ||
+  t.startsWith("__APPLY__:") ||
+  t.startsWith("__APPLIED__:") ||
+  t.startsWith("__RESET__") ||
+  t.startsWith("__GOAL_PLAN__:") ||
+  t.startsWith("__GOAL_STATUS__:") ||
+  t.startsWith("__GOAL_DONE__:") ||
+  t.startsWith("__GOAL_EXECUTE__:") ||
+  t.startsWith("__APPLY_SET__:") ||
+  t.startsWith("__APPLIED_SET__:") 
+) {
+  continue;
+}
 
     out.push(l);
   }
@@ -352,7 +424,37 @@ function extractConfirmPhrase(text: string) {
   return m ? m[0].trim() : null;
 }
 
+function collectBalancedJson(
+  lines: string[],
+  startIndex: number,
+  marker: string
+) {
+  const firstLine = lines[startIndex] ?? "";
+  const afterMarker = firstLine.slice(marker.length);
 
+  const collected: string[] = [];
+  if (afterMarker.trim()) collected.push(afterMarker);
+
+  let braceBalance =
+    (afterMarker.match(/{/g)?.length ?? 0) -
+    (afterMarker.match(/}/g)?.length ?? 0);
+
+  let endIndex = startIndex;
+
+  while (braceBalance > 0 && endIndex + 1 < lines.length) {
+    endIndex += 1;
+    const nextLine = lines[endIndex] ?? "";
+    collected.push(nextLine);
+
+    braceBalance += nextLine.match(/{/g)?.length ?? 0;
+    braceBalance -= nextLine.match(/}/g)?.length ?? 0;
+  }
+
+  return {
+    jsonText: collected.join("\n"),
+    endIndex,
+  };
+}
 
 function isContractComplete(t: string) {
   return (
@@ -396,11 +498,11 @@ useEffect(() => {
     }
   }
 
-  if (!latestPlan) {
-    console.log("[goalPlan derived from messages] no latest plan found");
-    setGoalPlan(null);
-    return;
-  }
+if (!latestPlan) {
+  console.log("[goalPlan derived from messages] no latest plan found");
+  setGoalPlan(null);
+  return;
+}
 
   let merged: GoalPlan = { ...latestPlan };
   const activeGoalId = merged.goalId;
@@ -422,45 +524,7 @@ useEffect(() => {
           ? (status as any).currentStepId
           : merged.currentStepId ?? null;
 
-      merged = {
-        ...merged,
-        ...status,
-        currentStepId: nextCurrentStepId,
-        steps: merged.steps.map((step) => {
-          if ((status as any).status === "cancelled") {
-            if (step.status === "running") {
-              return { ...step, status: "skipped" as const };
-            }
-            return step;
-          }
-
-          if ((status as any).status === "completed") {
-            if (step.status === "running") {
-              return { ...step, status: "verified" as const };
-            }
-            return step;
-          }
-
-          if (step.id === nextCurrentStepId && (status as any).status === "running") {
-            return {
-              ...step,
-              status: "running" as const,
-            };
-          }
-
-          if (
-            merged.currentStepId &&
-            step.id === merged.currentStepId &&
-            nextCurrentStepId &&
-            step.id !== nextCurrentStepId &&
-            step.status === "running"
-          ) {
-            return { ...step, status: "verified" as const };
-          }
-
-          return step;
-        }),
-      };
+            merged = reconcileGoalPlanState(merged, status);
 
       continue;
     }
@@ -471,17 +535,11 @@ useEffect(() => {
         continue;
       }
 
-      merged = {
-        ...merged,
+          merged = reconcileGoalPlanState(merged, {
         ...done,
-        status: "completed" as const,
+        status: "completed",
         currentStepId: null,
-        steps: merged.steps.map((step) =>
-          step.status === "running"
-            ? { ...step, status: "verified" as const }
-            : step
-        ),
-      };
+      });
     }
   }
 
@@ -639,6 +697,7 @@ console.log("[handleSend proceed]", {
   sendingRef.current = true;
   const assistantId = makeId();
   setPendingConfirm(null);
+  sawGoalInTurnRef.current = false;
 
 if (!isControlCommand) {
   setActiveTurn((prev) =>
@@ -675,6 +734,9 @@ if (!isControlCommand) {
   setThinking(true);
   setState("analyzing");
 
+  const shouldCreateAssistantBubble = !isControlCommand;
+
+if (shouldCreateAssistantBubble) {
   setMessages((prev) => [
     ...prev,
     {
@@ -684,6 +746,7 @@ if (!isControlCommand) {
       createdAt: Date.now(),
     },
   ]);
+}
 
   try {
 const tier =
@@ -712,6 +775,7 @@ const res = await fetch(`/api/repo/${repoId}/chat`, {
 
     let accumulated = "";
     let sawFirstChunk = false;
+    let rawAccumulated = "";
 
     while (true) {
       const { value, done } = await reader.read();
@@ -732,6 +796,7 @@ const res = await fetch(`/api/repo/${repoId}/chat`, {
         setState("deep");
       }
 
+      rawAccumulated += chunk;
       accumulated += chunk;
 // ✅ RESET: detect before any stripping/parsing
 const normalized = accumulated.replace(/\r/g, "");
@@ -802,6 +867,8 @@ if (maybeConfirm) {
 // ─────────────────────────────────────────────
 const lines = accumulated.split("\n");
 let changed = false;
+
+
 
 for (let i = 0; i < lines.length; i++) {
   const line = lines[i] ?? "";
@@ -1008,10 +1075,23 @@ for (let i = 0; i < lines.length; i++) {
   }
 
   // Apply marker (REQUEST or RESULT) — strip always; auto-verify only on RESULT.
-  if (line.startsWith("__APPLY__:") || line.startsWith("__APPLIED__:")) {
-    const jsonStr = line
-      .slice(line.startsWith("__APPLIED__:") ? "__APPLIED__:".length : "__APPLY__:".length)
-      .trim();
+      if (
+      line.startsWith("__APPLY__:") ||
+      line.startsWith("__APPLY_SET__:") ||
+      line.startsWith("__APPLIED__:") ||
+      line.startsWith("__APPLIED_SET__:")
+    ) {
+      const jsonStr = line
+        .slice(
+          line.startsWith("__APPLIED_SET__:")
+            ? "__APPLIED_SET__:".length
+            : line.startsWith("__APPLIED__:")
+            ? "__APPLIED__:".length
+            : line.startsWith("__APPLY_SET__:")
+            ? "__APPLY_SET__:".length
+            : "__APPLY__:".length
+        )
+        .trim();
 
     try {
       const payload = JSON.parse(jsonStr);
@@ -1238,6 +1318,104 @@ for (let i = 0; i < lines.length; i++) {
     continue;
   }
 
+if (line.startsWith("__GOAL_PLAN__:")) {
+  sawGoalInTurnRef.current = true;
+
+  const { endIndex } = collectBalancedJson(lines, i, "__GOAL_PLAN__:");
+
+  for (let k = i; k <= endIndex; k++) {
+    lines[k] = "";
+  }
+
+  i = endIndex;
+  changed = true;
+  continue;
+}
+
+  if (line.startsWith("__GOAL_STATUS__:")) {
+    const isLastLine = i === lines.length - 1;
+    const streamEndsWithNewline = accumulated.endsWith("\n");
+
+
+
+    if (isLastLine && !streamEndsWithNewline) {
+      continue;
+    }
+
+    const jsonStr = line.slice("__GOAL_STATUS__:".length).trim();
+
+    try {
+      const status = JSON.parse(jsonStr);
+      console.log("[goal_status parsed inline]", status);
+
+      setGoalPlan((prev) => {
+        if (!prev) return prev;
+        return reconcileGoalPlanState(prev, status);
+      });
+    } catch (e) {
+      console.log("[goal_status parse failed]", e);
+    }
+
+    lines[i] = "";
+    changed = true;
+    continue;
+  }
+
+  if (line.startsWith("__GOAL_DONE__:")) {
+    const isLastLine = i === lines.length - 1;
+    const streamEndsWithNewline = accumulated.endsWith("\n");
+
+
+    if (isLastLine && !streamEndsWithNewline) {
+      continue;
+    }
+
+    const jsonStr = line.slice("__GOAL_DONE__:".length).trim();
+
+    try {
+      const done = JSON.parse(jsonStr);
+      console.log("[goal_done parsed inline]", done);
+
+      setGoalPlan((prev) => {
+        if (!prev) return prev;
+        return reconcileGoalPlanState(prev, {
+          ...done,
+          status: "completed",
+          currentStepId: null,
+        });
+      });
+    } catch (e) {
+      console.log("[goal_done parse failed]", e);
+    }
+
+    lines[i] = "";
+    changed = true;
+    continue;
+  }
+
+  if (line.startsWith("__GOAL_EXECUTE__:")) {
+  const jsonStr = line.slice("__GOAL_EXECUTE__:".length).trim();
+
+  try {
+    const execute = JSON.parse(jsonStr);
+    console.log("[goal_execute parsed inline]", execute);
+
+    const instruction = String(execute.instruction ?? "").trim();
+    const executeKey = `${execute.goalId}:${execute.stepId}:${instruction}`;
+
+    if (instruction && !seenGoalExecuteRef.current.has(executeKey)) {
+      seenGoalExecuteRef.current.add(executeKey);
+      dispatchGoalInstructionWhenIdle(instruction);
+    }
+  } catch (e) {
+    console.log("[goal_execute parse failed]", jsonStr, e);
+  }
+
+  lines[i] = "";
+  changed = true;
+  continue;
+}
+
   // Engraving marker
   if (line.startsWith("__ENGRAVING__:")) {
     const jsonStr = line.slice("__ENGRAVING__:".length).trim();
@@ -1255,90 +1433,13 @@ for (let i = 0; i < lines.length; i++) {
   }
 }
 
-const nextText = changed ? lines.join("\n") : accumulated;
+let nextText = changed ? lines.join("\n") : accumulated;
 
-const plan = extractGoalPlan(nextText);
-if (plan) {
-  console.log("[goal_plan parsed]", plan);
-  setGoalPlan(plan);
-}
-
-const status = extractGoalStatus(nextText);
-if (status) {
-  console.log("[goal_status parsed]", status);
-  setGoalPlan((prev) => {
-    console.log("[goal_status merge]", { prev, status });
-    if (!prev) return prev;
-    if (status.goalId && prev.goalId !== status.goalId) return prev;
-
-    const nextCurrentStepId =
-      typeof (status as any).currentStepId === "string"
-        ? (status as any).currentStepId
-        : prev.currentStepId ?? null;
-
-    const merged = {
-      ...prev,
-      ...status,
-      currentStepId: nextCurrentStepId,
-      steps: prev.steps.map((step) => {
-        if (step.id === nextCurrentStepId) {
-          return {
-            ...step,
-            status: "running" as const,
-          };
-        }
-        return step;
-      }),
-    };
-
-    console.log("[goal_status merged_result]", merged);
-    return merged;
-  });
-}
-
-const doneMarker = extractGoalDone(nextText);
-if (doneMarker) {
-  console.log("[goal_done parsed]", doneMarker);
-
-  setGoalPlan((prev) => {
-    console.log("[goal_done merge]", { prev, doneMarker });
-    if (!prev) return prev;
-
-    const doneGoalId =
-      typeof (doneMarker as any).goalId === "string"
-        ? (doneMarker as any).goalId
-        : null;
-
-    if (doneGoalId && prev.goalId !== doneGoalId) return prev;
-
-    const merged = {
-      ...prev,
-      ...doneMarker,
-      status: "completed" as const,
-      currentStepId: null,
-      steps: prev.steps.map((step) =>
-        step.status === "running"
-          ? { ...step, status: "verified" as const }
-          : step
-      ),
-    };
-
-    console.log("[goal_done merged_result]", merged);
-    return merged;
-  });
-}
-
-const execute = extractGoalExecute(nextText);
-if (execute) {
-  console.log("[goal_execute parsed]", execute);
-
-  const instruction = String(execute.instruction ?? "").trim();
-  const executeKey = `${execute.goalId}:${execute.stepId}:${instruction}`;
-
-  if (instruction && !seenGoalExecuteRef.current.has(executeKey)) {
-    seenGoalExecuteRef.current.add(executeKey);
-    dispatchGoalInstructionWhenIdle(instruction);
-  }
+if (!nextText.trim() && sawGoalInTurnRef.current) {
+  nextText =
+    "[Observation]\nGoal planning started.\n\n" +
+    "[Assessment]\nA structured goal plan was prepared for this request.\n\n" +
+    "[Action]\nReview the goal plan below and approve to continue.";
 }
 
 flushSync(() => {
@@ -1349,8 +1450,20 @@ flushSync(() => {
 
 accumulated = nextText; // keep accumulated in sync
 
-    } // closes while
+if (sawGoalInTurnRef.current) {
+  console.log("[goal_plan rawAccumulated length]", rawAccumulated.length);
+  console.log("[goal_plan rawAccumulated tail]", rawAccumulated.slice(-1200));
 
+  const plan = extractGoalPlan(rawAccumulated);
+  if (plan) {
+    console.log("[goal_plan parsed after stream]", plan);
+    setGoalPlan(plan);
+  } else {
+    console.log("[goal_plan post-stream parse failed]");
+  }
+}
+
+    } // closes while
     setThinking(false);
     setState("stable");
     setActiveTurn((prev) =>
@@ -1394,6 +1507,7 @@ const seenGoalExecuteRef = useRef<Set<string>>(new Set());
 
 
 const goalContinueBlocked =
+  thinking ||
   !!activeTurn?.pendingConfirm ||
   !!pendingConfirm ||
   !!lastProposal ||
@@ -1482,17 +1596,7 @@ return (
             <p className="text-white/40 text-sm">The chamber is ready.</p>
           )}
 
-
-
 {messages.map((msg) => {
-
-  console.log("[render bubble]", {
-    msgId: msg.id,
-    role: msg.role,
-    lastPreverifyMsgId,
-    hasLastPreverify: !!lastPreverify,
-    thinking,
-  });
 
   const isThinkingBubble =
     thinking &&
@@ -1503,14 +1607,6 @@ return (
         const turnProposal = turnState?.proposalList?.[0] ?? null;
         const turnProposalSet =
           turnState?.proposalList?.length ? { proposals: turnState.proposalList } : null;
-
-          console.log("[render bubble]", {
-            msgId: msg.id,
-            turnId: turnState?.turnId ?? null,
-            hasTurnVerify: !!turnState?.verify,
-            hasTurnPreverify: !!turnState?.preverify,
-            isThinkingBubble,
-          });
 
 const safeContent = stripMarkersForRender(msg.content).trim();
 const parsed = msg.role === "assistant" ? parseSections(safeContent) : null;
@@ -1549,6 +1645,12 @@ const hasVisibleBody =
           )
       );
 
+const isGoalOnlyMessage =
+  msg.role === "assistant" &&
+  !hasVisibleBody &&
+  !!goalPlan &&
+  messages[messages.length - 1]?.id === msg.id;
+
 const shouldHideEmptyAssistantBubble =
   msg.role === "assistant" &&
   !isThinkingBubble &&
@@ -1556,7 +1658,8 @@ const shouldHideEmptyAssistantBubble =
   !hasVisibleProposal &&
   !hasVisibleVerify &&
   !hasVisiblePreverify &&
-  !hasVisibleSuggestions;
+  !hasVisibleSuggestions &&
+  !isGoalOnlyMessage;
 
 if (shouldHideEmptyAssistantBubble) {
   return null;
@@ -1912,7 +2015,27 @@ if (shouldHideEmptyAssistantBubble) {
                 <GoalPlanCard
                   goal={goalPlan}
                   continueDisabled={goalContinueBlocked}
-                  onApprove={() => handleSend("__GOAL_APPROVE__")}
+                  onApprove={() => {
+                    setGoalPlan((prev) =>
+                      prev
+                        ? reconcileGoalPlanState(prev, {
+                            status: "running",
+                            currentStepId: prev.steps?.[0]?.id ?? null,
+                            completedStepIds: [],
+                          })
+                        : prev
+                    );
+console.log("[ChatFrame render goalPlan]", goalPlan
+  ? {
+      goalId: goalPlan.goalId,
+      status: goalPlan.status,
+      currentStepId: goalPlan.currentStepId ?? null,
+      stepCount: goalPlan.steps.length,
+    }
+  : null
+);
+                    handleSend("__GOAL_APPROVE__");
+                  }}
                   onContinue={() => {
                     if (goalContinueBlocked) {
                       setMessages((prev) => [

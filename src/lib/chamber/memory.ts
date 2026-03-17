@@ -6,6 +6,7 @@ import { sha256 } from "@/lib/vault/utils";
 import { vault_read_text, vault_propose_write } from "@/lib/vault/tools";
 import { SACRED_PATH, SACRED_NAME, SACRED_MIME, USER_PROFILE_PATH, USER_PROFILE_NAME, USER_PROFILE_MIME, SUMMARY_TRIGGER_MSGS, SUMMARY_KEEP_LAST, SUMMARY_TARGET_MSGS, SACRED_TEMPLATE, USER_PROFILE_TEMPLATE
 } from "@/lib/chamber/constants";
+import type { ChamberProfile } from "@/lib/chamber/profile";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -67,6 +68,16 @@ export async function ensureSacredMemoryFile(supabase: any, repoId: string, user
   if (ver.error) console.log("[ensureSacredMemoryFile] versions insert failed:", ver.error.message);
 
   return { id: fileId, path: SACRED_PATH, storage_key: storageKey, version: 1 };
+}
+
+export async function updateUserCalibrationProfile(
+  supabase: any,
+  repoId: string,
+  profile: ChamberProfile
+) {
+  // read current user-profile.md
+  // replace only the "## Calibration Profile" block
+  // upsert updated content
 }
 
 export async function ensureUserProfileFile(supabase: any, repoId: string, userId: string) {
@@ -309,9 +320,9 @@ ${toSummarize}
 `.trim();
 
   const resp = await openai.responses.create({
-    model: "gpt-4o-mini",
+    model: "gpt-5-mini",
     input: summaryPrompt,
-    max_output_tokens: 400,
+    max_output_tokens: 1900,
   });
 
   const summaryText = (resp.output_text || "").trim() || "# Handover Summary\n\n(Empty summary produced)";

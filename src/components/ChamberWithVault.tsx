@@ -244,13 +244,7 @@ const markFileUpdated = useCallback(
   <VestarynFrame
     repoId={repoId}
     repoName={repoName}
-    right={
-      <div className="absolute left-[300px] top-[13px] z-40">
-        <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/60 backdrop-blur">
-          msgs {msgStats.total}
-        </div>
-      </div>
-    }
+    messageCount={msgStats.total}
   >
     <div className="w-full h-[70vh] flex min-w-0">
       {/* Left: Chat */}

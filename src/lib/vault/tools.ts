@@ -489,8 +489,43 @@ export async function vault_apply_create(
   if (!isTextMime(mime)) throw new Error("vault_apply_create: mime must be text-like");
 
   // Re-check: path must still not exist
-  const exists = await fileExistsByPath(supabase, repoId, path);
-  if (exists) throw new Error(`Create failed: file already exists at path: ${path}`);
+  // 🔒 idempotency guard: check if file already exists
+const { data: existing, error: existingErr } = await supabase
+  .from("repo_files")
+  .select("id, path")
+  .eq("repo_id", repoId)
+  .eq("path", path)
+  .is("deleted_at", null)
+  .maybeSingle();
+
+if (existingErr) {
+  throw new Error(`lookup_failed:${existingErr.message}`);
+}
+
+if (existing) {
+const existingText = await vault_read_text(supabase, repoId, path);
+
+  const existingHash = sha256(String(existingText?.content ?? ""));
+
+  if (existingHash === nextHash) {
+    console.log("[vault_apply_create already_applied]", {
+      path,
+      fileId: existing.id,
+    });
+
+    return {
+      ok: true,
+      fileId: existing.id,
+      path,
+      version: null,
+      alreadyApplied: true,
+    };
+  }
+
+  throw new Error(
+    `create_conflict:${path}: file exists with different content`
+  );
+}
 
   // Validate hash matches content
   const computedNextHash = sha256(content);

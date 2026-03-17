@@ -23,10 +23,41 @@ export function isNamedFileExecutionRequest(text: string) {
   );
 }
 
+export function isExplainOnlyQuestion(text: string) {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isInternalGoalExecutionPrompt(t)) return false;
+
+  const explainSignal =
+    /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|help me understand|what kind|which kind|which kinds|what are|how does|difference between|pros and cons)\b/.test(t);
+
+  const noDirectExecutionSignal =
+    !/\b(apply|change the repo|edit the file|update the file|create this file|make the file|implement now|build now|fix this file)\b/.test(t);
+
+  return explainSignal && noDirectExecutionSignal;
+}
+
 export function isRepositoryExecutionIntent(text: string) {
-  return /create|add|render|use|insert|implement|refine|improve|rewrite|clean up|cleanup|harden|extend|modify|edit|tighten|fix|update|replace|check|correct|review|inspect|debug|repair|resolve|turn|transform|convert|evolve/i.test(
-    text || ""
-  );
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+
+  const hasStrongActionVerb =
+    /\b(create|build|make|implement|fix|update|edit|modify|rewrite|refactor|replace|delete|remove|add|repair|resolve)\b/.test(t);
+
+  const hasExecutionTarget =
+    /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(t) ||
+    extractMentionedPaths(t).length > 0;
+
+  const explainOnlyLanguage =
+    /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|what kind|which kind|which kinds|what are|how does|help me understand)\b/.test(t);
+
+  if (explainOnlyLanguage) return false;
+
+  return hasStrongActionVerb && hasExecutionTarget;
 }
 
 export function isCreateAndModifyIntent(text: string) {
@@ -215,4 +246,140 @@ export function contentStartsWithControlMarker(text: string) {
     t === "__ENGRAVE__"
   );
 }
+
+export function isHighLevelBuildRequest(content: string) {
+  const t = normText(content).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+
+  const buildVerb =
+    /\b(build|create|make)\b/.test(t);
+
+  const buildTarget =
+    /\b(website|site|app|dashboard|tool|project|web app|landing page)\b/.test(t);
+
+  const explainOnlyLanguage =
+    /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not yet|for now just|just tell me)\b/.test(t);
+
+  return buildVerb && buildTarget && !explainOnlyLanguage;
+}
+
+export function isBootstrapProjectIntent(content: string) {
+  const t = String(content || "").toLowerCase();
+
+  return (
+    /\b(help me|can you help|build|create|make)\b/.test(t) &&
+    /\b(website|site|app|dashboard|tool|project)\b/.test(t)
+  );
+}
+
+export function normText(input: unknown) {
+  return String(input ?? "").trim();
+}
+
+export function startsWithAny(text: string, prefixes: string[]) {
+  return prefixes.some((p) => text.startsWith(p));
+}
+
+export function isInternalGoalExecutionPrompt(content: string) {
+  const text = normText(content);
+  return (
+    text.includes("Goal: ") &&
+    text.includes("Current step: ") &&
+    text.includes("Step description: ") &&
+    text.includes("Execute this step now by making the required repository changes")
+  );
+}
+
+export function isInternalControlPrompt(content: string) {
+  const text = normText(content);
+
+  return (
+    startsWithAny(text, [
+      "__GOAL_PLAN__",
+      "__GOAL_APPROVE__",
+      "__GOAL_CONTINUE__",
+      "__GOAL_STATUS__",
+      "__GOAL_DONE__",
+      "__GOAL_EXECUTE__",
+      "__APPLY__:",
+      "__APPLY_SET__:",
+      "__VERIFY__",
+      "__PROPOSAL__",
+      "__ENGRAVING__",
+    ]) || isInternalGoalExecutionPrompt(text)
+  );
+}
+export function buildGoalExecutionInstruction(step: any, plan: any) {
+  const stepFiles = Array.isArray(step?.files)
+    ? step.files.map((x: any) => String(x)).filter(Boolean)
+    : [];
+
+  return [
+    `Goal: ${String(plan?.title ?? "").trim()}`,
+    `Current step: ${String(step?.title ?? "").trim()}`,
+    `Step description: ${String(step?.description ?? "").trim()}`,
+    `Relevant files: ${stepFiles.join(", ") || "none specified"}`,
+    `Execute this step now by making the required repository changes in the repo. If the repo is empty, bootstrap the minimal project structure needed for this step. Use tools when needed. Respond with the normal Vestaryn contract.`,
+  ].join("\n");
+}
+
+export function isGoalPlanningUserIntent(content: string) {
+  const text = normText(content).toLowerCase();
+
+  const planningPhrases = [
+    "make a plan",
+    "create a plan",
+    "goal plan",
+    "step by step plan",
+    "roadmap",
+    "break this down into steps",
+    "plan this project",
+    "help me plan",
+    "build plan",
+  ];
+
+  const executionHeavyPhrases = [
+    "create",
+    "build",
+    "make",
+    "fix",
+    "update",
+    "edit",
+    "change",
+    "implement",
+    "execute",
+    "apply",
+  ];
+
+  const asksForPlanning = planningPhrases.some((p) => text.includes(p));
+  const looksLikeInternal = isInternalControlPrompt(content);
+
+  // Optional: if user explicitly says both plan + build, still allow planning
+  // only if they asked for plan-like wording.
+  if (looksLikeInternal) return false;
+
+  return asksForPlanning;
+}
+
+export function extractGoalExecute(text: string) {
+  const marker = "__GOAL_EXECUTE__:";
+  const s = String(text ?? "");
+  const idx = s.indexOf(marker);
+  if (idx === -1) return null;
+
+  const start = idx + marker.length;
+  const after = s.slice(start);
+  const endIdx = after.indexOf("\n");
+  const json = (endIdx === -1 ? after : after.slice(0, endIdx)).trim();
+
+  try {
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+
 

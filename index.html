@@ -1,247 +1,288 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Become the First Professional Footballer on the Moon</title>
-    <style>
-        /* General styles */
-        body {
-            margin: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #003366;
-            color: #f0f0f0;
-            background-size: cover;
-            background-position: center;
-            transition: background-image 0.5s ease-in-out;
-        }
-        /* Lunar moon background class */
-        .lunar-moon-bg {
-            background-image: url('https://upload.wikimedia.org/wikipedia/commons/e/e1/FullMoon2010.jpg');
-            background-repeat: no-repeat;
-        }
-        /* Optionally add your own background */
-        /* Add a class with background-image:url('your-image.png or jpg'); */
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Roast & Co — Coffee Shop</title>
+  <meta name="description" content="Roast & Co — Cozy neighborhood coffee shop. Fresh brews, pastries, and a welcoming space to relax or work." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%23a6633a'/%3E%3Ctext x='50' y='58' font-size='46' text-anchor='middle' fill='%23fff' font-family='Arial, Helvetica, sans-serif'%3ERO%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root{
+      --bg:#14110f;
+      --panel:#1f1917;
+      --muted:#d7c9c0;
+      --accent:#c47a3a;
+      --accent-2:#e9b68a;
+      --glass: rgba(255,255,255,0.03);
+      --radius:14px;
+      --max-width:980px;
+      color-scheme: dark;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background:
+        radial-gradient(800px 400px at 10% 20%, rgba(196,122,58,0.06), transparent 12%),
+        radial-gradient(600px 300px at 90% 90%, rgba(233,182,138,0.04), transparent 10%),
+        var(--bg);
+      color: #fff6f0;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      display:flex;
+      justify-content:center;
+      align-items:flex-start;
+      padding:28px;
+      min-height:100vh;
+    }
  
-        /* Navigation styles */
-        nav {
-            background: rgba(0, 0, 30, 0.85);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 1rem 2rem;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.7);
-            position: sticky;
-            top: 0;
-            z-index: 1000;
-        }
-        nav .logo {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #ffdf00;
-            letter-spacing: 2px;
-            font-family: 'Trebuchet MS', sans-serif;
-        }
-        nav ul {
-            list-style: none;
-            display: flex;
-            gap: 1.5rem;
-            margin: 0;
-            padding: 0;
-        }
-        nav ul li {
-            font-weight: 600;
-        }
-        nav ul li a {
-            color: #f0f0f0;
-            text-decoration: none;
-            padding: 0.4rem 0.6rem;
-            border-radius: 4px;
-            transition: background-color 0.3s ease;
-        }
-        nav ul li a:hover,
-        nav ul li a:focus {
-            background-color: #ffdf00;
-            color: #003366;
-            outline: none;
-        }
+    .container{
+      width:100%;
+      max-width:var(--max-width);
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border-radius:16px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
+      overflow:hidden;
+    }
  
-        /* Header styles */
-        header {
-            max-width: 900px;
-            padding: 3rem 2rem 2rem 2rem;
-            margin: 0 auto;
-            text-align: center;
-            color: #ffe066;
-            text-shadow: 1px 1px 3px #000a;
-        }
-        header h1 {
-            font-size: 2.5rem;
-            margin-bottom: 0.3rem;
-            font-weight: 900;
-            letter-spacing: 1.2px;
-        }
-        header p {
-            font-size: 1.25rem;
-            font-style: italic;
-            color: #ffef82;
-            margin-top: 0;
-        }
+    header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      padding:18px 22px;
+      border-bottom:1px solid rgba(255,255,255,0.03);
+      background: linear-gradient(180deg, rgba(255,255,255,0.01), transparent);
+    }
  
-        /* Main content styles */
-        main {
-            max-width: 800px;
-            margin: 2rem auto 3rem auto;
-            padding: 0 1.5rem;
-            background: rgba(0, 51, 102, 0.7);
-            border-radius: 12px;
-            box-shadow: 0 0 15px rgba(255, 223, 0, 0.5);
-        }
-        section {
-            margin-bottom: 2.5rem;
-        }
-        section h2 {
-            font-size: 1.8rem;
-            font-weight: 700;
-            margin-bottom: 0.6rem;
-            border-bottom: 2px solid #ffdf00;
-            padding-bottom: 0.3rem;
-        }
-        section p {
-            font-size: 1.15rem;
-            line-height: 1.6;
-            color: #fffcdc;
-        }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:14px;
+    }
+    .logo{
+      width:52px;
+      height:52px;
+      border-radius:12px;
+      background:linear-gradient(135deg,var(--accent),var(--accent-2));
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-weight:800;
+      color:#2b1b12;
+      box-shadow: 0 8px 26px rgba(196,122,58,0.14);
+      flex:0 0 52px;
+      font-size:18px;
+    }
+    .site-title{
+      display:flex;
+      flex-direction:column;
+      line-height:1;
+    }
+    .site-title .name{
+      font-weight:800;
+      letter-spacing:0.2px;
+      font-size:16px;
+    }
+    .site-title .tag{
+      font-size:13px;
+      color:var(--muted);
+    }
  
-        /* Footer styles */
-        footer {
-            background: linear-gradient(270deg, #ffdf00, #ffff66, #ffdf00);
-            background-size: 600% 600%;
-            animation: shinyGradient 8s ease infinite;
-            text-align: center;
-            padding: 1.2rem 2rem;
-            color: #003366;
-            font-size: 1rem;
-            font-weight: 700;
-            letter-spacing: 1.5px;
-            box-shadow: 0 0 12px rgba(255, 255, 0, 0.7), inset 0 0 15px rgba(255, 255, 200, 0.8);
-            border-top: 2px solid #ffdf00;
-            user-select: none;
-        }
-        @keyframes shinyGradient {
-            0%{background-position:0% 50%;}
-            50%{background-position:100% 50%;}
-            100%{background-position:0% 50%;}
-        }
+    nav{
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    nav a{
+      text-decoration:none;
+      color:var(--muted);
+      padding:8px 12px;
+      border-radius:10px;
+      font-weight:700;
+      transition:all .14s ease;
+      display:inline-flex;
+      gap:8px;
+      align-items:center;
+      font-size:14px;
+    }
+    nav a.primary{
+      background: linear-gradient(90deg, rgba(196,122,58,0.14), rgba(233,182,138,0.06));
+      color:#fff6ef;
+      box-shadow: 0 6px 18px rgba(196,122,58,0.06);
+    }
+    nav a:hover{ transform:translateY(-2px); color:#fff6ef; }
  
-        /* Responsive */
-        @media (max-width: 600px) {
-            nav ul {
-                flex-direction: column;
-                gap: 0.9rem;
-                background: rgba(0, 0, 30, 0.95);
-                position: absolute;
-                top: 3.9rem;
-                right: 2rem;
-                border-radius: 8px;
-                padding: 0.8rem 1.2rem;
-                display: none;
-            }
-            nav ul.show {
-                display: flex;
-            }
-            nav .menu-toggle {
-                display: block;
-                cursor: pointer;
-                font-size: 1.6rem;
-                color: #ffdf00;
-                user-select: none;
-            }
-        }
-        @media (min-width: 601px) {
-            nav .menu-toggle {
-                display: none;
-            }
-        }
-    </style>
+    main{
+      padding:26px;
+    }
+ 
+    .layout{
+      display:grid;
+      grid-template-columns: 1fr 320px;
+      gap:24px;
+      align-items:start;
+    }
+ 
+    @media (max-width:900px){
+      body{padding:18px}
+      .layout{grid-template-columns:1fr}
+    }
+ 
+    .panel{
+      background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005));
+      border-radius:var(--radius);
+      padding:18px;
+      border:1px solid rgba(255,255,255,0.03);
+    }
+ 
+    /* Hero */
+    .hero{
+      display:flex;
+      gap:18px;
+      align-items:center;
+    }
+    .hero-art{
+      width:140px;
+      height:140px;
+      border-radius:18px;
+      background:linear-gradient(135deg,#40302a, #8e5a3a);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:60px;
+      box-shadow: 0 14px 40px rgba(0,0,0,0.6);
+      flex:0 0 140px;
+    }
+    .hero h1{
+      margin:0 0 8px 0;
+      font-size:28px;
+      line-height:1.05;
+    }
+    .hero p{
+      margin:0;
+      color:var(--muted);
+      font-size:15px;
+    }
+    .cta-row{
+      margin-top:14px;
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .btn{
+      display:inline-flex;
+      gap:10px;
+      align-items:center;
+      border:0;
+      color:#2b1b12;
+      background:var(--accent-2);
+      padding:10px 14px;
+      border-radius:10px;
+      cursor:pointer;
+      font-weight:800;
+      text-decoration:none;
+      transition:transform .12s ease, box-shadow .12s ease;
+      box-shadow: 0 10px 28px rgba(233,182,138,0.14);
+      font-size:14px;
+    }
+    .btn.ghost{
+      background:transparent;
+      border:1px solid rgba(255,255,255,0.04);
+      color:var(--muted);
+      box-shadow:none;
+      font-weight:700;
+    }
+    .btn:hover{ transform:translateY(-3px) }
+ 
+    /* Menu list */
+    .menu{
+      margin-top:18px;
+      display:grid;
+      gap:12px;
+      grid-template-columns:repeat(2,1fr);
+    }
+    @media (max-width:700px){ .menu{ grid-template-columns:1fr } }
+ 
+    .menu-item{
+      background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005));
+      padding:12px;
+      display:flex;
+      gap:12px;
+      align-items:center;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,0.02);
+    }
+    .menu-item .name{ font-weight:800; }
+    .menu-item .desc{ font-size:13px; color:var(--muted); }
+    .price{
+      margin-left:auto;
+      font-weight:800;
+      color:var(--accent-2);
+    }
+ 
+    /* Sidebar */
+    .sidebar{
+      display:flex;
+      flex-direction:column;
+      gap:14px;
+    }
+    .hours{
+      color:var(--muted);
+      font-size:14px;
+      line-height:1.45;
+    }
+    .contact{
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    .input, textarea{
+      background:transparent;
+      border:1px solid rgba(255,255,255,0.04);
+      padding:10px 12px;
+      border-radius:10px;
+      color:inherit;
+      outline:none;
+      font-size:14px;
+    }
+    textarea{ min-height:80px; resize:vertical; }
+ 
+    footer{
+      padding:16px 22px;
+      font-size:13px;
+      color:var(--muted);
+      border-top:1px solid rgba(255,255,255,0.03);
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+    }
+ 
+    .badge{
+      background: linear-gradient(90deg, rgba(196,122,58,0.2), rgba(233,182,138,0.08));
+      color:#fff6ef;
+      padding:6px 10px;
+      border-radius:999px;
+      font-weight:800;
+      font-size:13px;
+    }
+ 
+    .sr-only{ position:absolute !important; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+  </style>
 </head>
-<body class="lunar-moon-bg">
-    <nav>
-        <div class="logo">Lunar Football</div>
-        <div class="menu-toggle" aria-label="Toggle menu" role="button" tabindex="0">&#9776;</div>
-        <ul>
-            <li><a href="#introduction">Introduction</a></li>
-            <li><a href="#step1">Step 1</a></li>
-            <li><a href="#step2">Step 2</a></li>
-            <li><a href="#step3">Step 3</a></li>
-            <li><a href="#step4">Step 4</a></li>
-            <li><a href="#contact">Contact</a></li>
-        </ul>
-    </nav>
- 
+<body>
+  <div class="container" role="application" aria-labelledby="shop-name">
     <header>
-        <h1>Become the First Professional Footballer on the Moon</h1>
-        <p>Your ultimate guide to lunar football stardom!</p>
-    </header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true">R&C</div>
+        <div class="site-title">
+          <div id="shop-name" class="name">Roast & Co</div>
+          <div class="tag">Neighborhood Coffee • Pastries • Good Vibes</div>
+        </div>
+      </div>
  
-    <main>
-        <section id="introduction">
-            <h2>Introduction</h2>
-            <p>Welcome to the future of sports: football on the moon! Here you'll find the key steps and tips to make history as the first professional footballer playing in lunar conditions.</p>
-        </section>
- 
-        <section id="step1">
-            <h2>Step 1: Prepare Physically and Mentally</h2>
-            <p>The moon's gravity is different from Earth's. Training for lunar football requires specialized physical and mental preparation, including adapting to low gravity.</p>
-        </section>
- 
-        <section id="step2">
-            <h2>Step 2: Get the Right Gear</h2>
-            <p>Space suits adapted for sports, lunar football boots, and oxygen supplies are essential equipment for the moon footballer.</p>
-        </section>
- 
-        <section id="step3">
-            <h2>Step 3: Join a Space Sports Program</h2>
-            <p>Enroll in space agency programs or private space sports ventures that offer training and opportunities in extraterrestrial sports.</p>
-        </section>
- 
-        <section id="step4">
-            <h2>Step 4: Stay Updated on Lunar Missions</h2>
-            <p>Keep track of current and upcoming moon missions that might include sports initiatives and opportunities to participate.</p>
-        </section>
- 
-        <section id="contact">
-            <h2>Contact</h2>
-            <p>If you're serious about becoming a lunar footballer, reach out to us for more information and guidance.</p>
-        </section>
-    </main>
-    
-    <footer>
-        <p>&copy; 2024 Lunar Football Academy</p>
-    </footer>
- 
-    <script>
-        // Mobile menu toggle
-        const menuToggle = document.querySelector('.menu-toggle');
-        const navUl = document.querySelector('nav ul');
- 
-        menuToggle.addEventListener('click', () => {
-            navUl.classList.toggle('show');
-        });
- 
-        menuToggle.addEventListener('keydown', e => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                navUl.classList.toggle('show');
-            }
-        });
- 
-        // Optional: function to dynamically set background image to user-selected image (png or jpg)
-        // Usage example (not automatic): setBackgroundImage('path-to-image.jpg');
-        function setBackgroundImage(imageUrl) {
-            document.body.style.backgroundImage = `url('${imageUrl}')`;
-            document.body.classList.remove('lunar-moon-bg');
-        }
-    </script>
-</body>
-</html>
+      <nav aria-label="Main navigation">
+        <a href="#home" class="primary">Home</a>
+        <a href="#menu">Menu

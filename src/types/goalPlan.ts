@@ -40,6 +40,7 @@ export type GoalPlan = {
   estimatedTouchedFiles?: string[];
 
   currentStepId?: string | null;
+  completedStepIds?: string[];
 
   steps: GoalStep[];
 
