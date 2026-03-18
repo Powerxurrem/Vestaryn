@@ -160,7 +160,7 @@ export async function tryHandleBootstrap(args: {
             }
           );
         }
-
+const inferredVerifyCmd = baselineVerify.verifyCmd;
         const visible =
           "[Observation]\nRequired repository changes were staged.\n\n" +
           "[Assessment]\nThe current goal step was converted into staged repository proposals.\n\n" +
@@ -173,6 +173,7 @@ export async function tryHandleBootstrap(args: {
             repoId,
             userRequest: content,
             baselineVerifyPayload: baselineVerify.verifyPayload,
+            verifyCmd: inferredVerifyCmd,
             proposals,
           });
 
@@ -264,7 +265,7 @@ export async function tryHandleBootstrap(args: {
             if (proposal) proposals.push(proposal);
           }
         }
-
+const inferredVerifyCmd = baselineVerify.verifyCmd;
         if (proposals.length === 0) {
           return new Response(
             "[Observation]\nI inspected the requested bootstrap.\n\n[Assessment]\nNo repository changes were needed.\n\n[Action]\nRetry with a more specific website request.",
@@ -280,12 +281,13 @@ export async function tryHandleBootstrap(args: {
           "[Action]\nA staged change is ready. Confirm to apply.";
 
         if (shouldPreVerifyProposalSet(proposals)) {
-          const result = await finalizeProposalSet({
+     const result = await finalizeProposalSet({
             openai,
             model: runtimePolicy.model,
             repoId,
             userRequest: content,
             baselineVerifyPayload: baselineVerify.verifyPayload,
+            verifyCmd: inferredVerifyCmd,
             proposals,
           });
 
