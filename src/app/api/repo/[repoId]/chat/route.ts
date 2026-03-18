@@ -2,33 +2,38 @@ import OpenAI from "openai";
 import { supabaseServerComponent } from "@/lib/supabase/server";
 import { resolveTierPolicy } from "@/lib/membership/tiers";
 import { runnerRun } from "@/lib/runner/client";
-import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
-import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { SYSTEM_PROTECTOR_DEFAULT,SYSTEM_PROTECTOR_ARCH,} from "@/lib/chamber/prompts";
-import { setRepoFileStatus } from "@/lib/vault/fileStatus";
-import { normalizeForNoopCheck, sha256,confirmPhrase,confirmCreatePhrase,normalizePath,nameFromPath,inferTextMimeFromPath,stripCodeFences,stripDuplicateTriplet,scrubVisibleToolPayload,ensureTriplet,
+import { normalizeForNoopCheck, sha256,confirmPhrase,confirmCreatePhrase,inferTextMimeFromPath,stripDuplicateTriplet,scrubVisibleToolPayload,ensureTriplet,
 } from "@/lib/vault/utils";
-import {extractMentionedPaths,extractSingleMentionedPath, isNamedFileExecutionRequest,isRepositoryExecutionIntent,
-isCreateAndModifyIntent,resolveCreateAndModifyPaths,
-isExtractToModuleIntent,looksLikeStandaloneModule,isMetaRepositoryQuestion, resolveExtractToModulePaths,contentStartsWithControlMarker, isGoalPlanningRequest, isHighLevelBuildRequest, isBootstrapProjectIntent,isInternalGoalExecutionPrompt,buildGoalExecutionInstruction,normText,startsWithAny,isInternalControlPrompt, isGoalPlanningUserIntent,  extractGoalExecute,isExplainOnlyQuestion,
+import {extractMentionedPaths,extractSingleMentionedPath,isRepositoryExecutionIntent,
+isCreateAndModifyIntent,isExtractToModuleIntent,looksLikeStandaloneModule,isHighLevelBuildRequest, isInternalGoalExecutionPrompt,normText,isInternalControlPrompt, isGoalPlanningUserIntent,isNewGoalPlanIntent
 } from "@/lib/chamber/intent";
 import {isSourceTargetTransferIntent,resolveSourceAndTargetPaths,
-isImportRefactorIntent,isExtractHelpersIntent,isSplitFileIntent,extractSplitTargets,deriveDefaultSplitTargets,extractRequestedSplitCount,  isSplitReadAllowed} from "@/lib/chamber/refactorIntent";
-import { resolveFileIdByPathOrName,vault_list_files,vault_read_text, vault_propose_create,vault_apply_write,vault_apply_create, vault_propose_append,vault_propose_write} from "@/lib/vault/tools";
+isImportRefactorIntent,isSplitFileIntent,extractSplitTargets,deriveDefaultSplitTargets,extractRequestedSplitCount,  isSplitReadAllowed} from "@/lib/chamber/refactorIntent";
+import { resolveFileIdByPathOrName,vault_read_text} from "@/lib/vault/tools";
 import { generateSplitFileContents,generateExtractHelpersResult,generateNewFileContent,generateRewrittenFileContent} from "@/lib/chamber/generation";
-import { isBaselinePreverifyFailure,runPreVerifyForProposalSet,shouldPreVerifyProposalSet,attemptFastPathRepair,runAutoVerifyForRepo,buildPendingVerifyPayload,buildFinalVerifyPayload,attemptRepairProposalSet} from "@/lib/chamber/verify";
-import { ensureSacredMemoryFile,ensureUserProfileFile,
-updateChamberStateDoc,maybeSummarizeAndEngraveProposal,} from "@/lib/chamber/memory";
+import { shouldPreVerifyProposalSet,runAutoVerifyForRepo,} from "@/lib/chamber/verify";
+import { maybeSummarizeAndEngraveProposal,} from "@/lib/chamber/memory";
 import { TOOLS, runTool}from "@/lib/vault/toolRuntime";
-import { choosePrimarySuggestionTarget,buildSuggestedPromptsFromAppliedFiles}from "@/lib/chamber/suggestions";
 import { hasValidAssistantContract}from "@/lib/chamber/output";
-import { SACRED_PATH,USER_PROFILE_PATH, 
-} from "@/lib/chamber/constants";
 import { finalizeProposalSet } from "@/lib/chamber/proposalFlow";
-import { inferRepoProfile } from "@/lib/chamber/repoInference";
 import { containsGoalMarker, extractRawGoalMarkerBlock } from "@/types/goalMarkers";
-import type { VerifyCommand } from "@/lib/chamber/verify";
-
+import {
+  resolveDirectVerifyCommand,
+  handleDirectVerifyCommand,
+  resolveVerifyCommand,
+} from "@/lib/chamber/verifyRuntime";
+import { buildChatContext } from "@/lib/chamber/chatContext";
+import {  handleApplySetCommand,handleApplyCommand,} from "@/lib/chamber/applyRuntime";
+import { handlePlanningRequest } from "@/lib/chamber/planningRuntime";
+import { tryHandleBootstrap } from "@/lib/chamber/bootstrapRuntime";
+import { tryHandlePreStreamRepoOps } from "@/lib/chamber/preStreamRuntime";
+import { dedupePendingProposals,isProbablyBrokenSplitFile,validateGeneratedSplitFiles,assertCanonicalProposal} from "@/lib/chamber/proposalRuntimeUtils";
+import { emitMaintenanceIfNeeded,autoResummarizeIfNeeded} from "@/lib/chamber/maintenanceRuntime";
+import { tryHandleRunnerPing } from "@/lib/chamber/runnerRuntime";
+import { resolveRuntimePolicyFromCredits } from "@/lib/chamber/creditsRuntime";
+import { tryHandleDeterministicCommands } from "@/lib/chamber/deterministicCommands";
+import { streamResponse } from "@/lib/chamber/streamRuntime";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -46,316 +51,6 @@ const openai = new OpenAI({
 });
 
 const MAINTENANCE_TRIGGER_MSGS = 160;
-
-function extractGoalPlan(text: string) {
-  const marker = "__GOAL_PLAN__:";
-  const s = String(text ?? "");
-
-  const idx = s.indexOf(marker);
-  if (idx === -1) return null;
-
-  const start = idx + marker.length;
-  const after = s.slice(start);
-
-  const endIdx = after.indexOf("\n__");
-  const json = (endIdx === -1 ? after : after.slice(0, endIdx)).trim();
-
-  try {
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-function extractGoalStatus(text: string) {
-  const marker = "__GOAL_STATUS__:";
-  const s = String(text ?? "");
-
-  const idx = s.indexOf(marker);
-  if (idx === -1) return null;
-
-  const start = idx + marker.length;
-  const after = s.slice(start);
-
-  const endIdx = after.indexOf("\n");
-  const json = (endIdx === -1 ? after : after.slice(0, endIdx)).trim();
-
-  try {
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-async function findLatestGoalStatus(
-  supabase: any,
-  repoId: string,
-  goalId: string
-) {
-  const { data: rows, error } = await supabase
-    .from("repo_messages")
-    .select("content, created_at")
-    .eq("repo_id", repoId)
-    .eq("role", "assistant")
-    .order("created_at", { ascending: false })
-    .limit(200);
-
-  if (error) {
-    throw new Error(`Failed to load goal status history: ${error.message}`);
-  }
-
-  for (const row of rows ?? []) {
-    const txt = String(row.content ?? "");
-    const parsed = extractGoalStatus(txt);
-    if (parsed && String(parsed.goalId ?? "") === goalId) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-async function findLatestGoalExecute(
-  supabase: any,
-  repoId: string,
-  goalId?: string | null
-) {
-  const { data: rows, error } = await supabase
-    .from("repo_messages")
-    .select("content, created_at")
-    .eq("repo_id", repoId)
-    .eq("role", "assistant")
-    .order("created_at", { ascending: false })
-    .limit(200);
-
-  if (error) {
-    throw new Error(`Failed to load goal execute history: ${error.message}`);
-  }
-
-  for (const row of rows ?? []) {
-    const txt = String(row.content ?? "");
-    const parsed = extractGoalExecute(txt);
-    if (!parsed) continue;
-
-    if (!goalId || String(parsed.goalId ?? "") === String(goalId)) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-async function persistGoalStatusMessage(args: {
-  supabase: any;
-  repoId: string;
-  userId: string;
-  payload: any;
-}) {
-  const { supabase, repoId, userId, payload } = args;
-  const content = `__GOAL_STATUS__:${JSON.stringify(payload)}`;
-
-  await supabase.from("repo_messages").insert({
-    repo_id: repoId,
-    user_id: userId,
-    role: "assistant",
-    content,
-  });
-
-  return content;
-}
-
-async function persistGoalDoneMessage(args: {
-  supabase: any;
-  repoId: string;
-  userId: string;
-  payload: any;
-}) {
-  const { supabase, repoId, userId, payload } = args;
-  const content = `__GOAL_DONE__:${JSON.stringify(payload)}`;
-
-  await supabase.from("repo_messages").insert({
-    repo_id: repoId,
-    user_id: userId,
-    role: "assistant",
-    content,
-  });
-
-  return content;
-}
-
-async function advanceGoalAfterStepSuccess(args: {
-  supabase: any;
-  repoId: string;
-  userId: string;
-  goalId: string;
-  stepId: string;
-}) {
-  const { supabase, repoId, userId, goalId, stepId } = args;
-
-  const plan = await findLatestGoalPlan(supabase, repoId);
-  if (!plan || String(plan.goalId ?? "") !== String(goalId)) {
-    return null;
-  }
-
-  const latestStatus = await findLatestGoalStatus(supabase, repoId, goalId);
-  const steps = Array.isArray(plan.steps) ? plan.steps : [];
-  const idx = steps.findIndex((s: any) => String(s.id) === String(stepId));
-
-  if (idx < 0) return null;
-
-  const alreadyCompleted = Array.isArray(latestStatus?.completedStepIds)
-    ? latestStatus.completedStepIds.map((x: any) => String(x))
-    : [];
-
-  const completedStepIds = Array.from(
-    new Set([...alreadyCompleted, String(stepId)])
-  );
-
-  const nextStep = steps[idx + 1] ?? null;
-  const done = !nextStep;
-
-  if (done) {
-    const donePayload = {
-      goalId,
-      status: "completed",
-      currentStepId: null,
-      completedStepIds,
-    };
-
-    const content = await persistGoalDoneMessage({
-      supabase,
-      repoId,
-      userId,
-      payload: donePayload,
-    });
-
-    return {
-      done: true,
-      nextStepId: null,
-      completedStepIds,
-      content,
-      payload: donePayload,
-    };
-  }
-
-  const statusPayload = {
-    goalId,
-    status: "running",
-    currentStepId: String(nextStep.id),
-    completedStepIds,
-  };
-
-  const content = await persistGoalStatusMessage({
-    supabase,
-    repoId,
-    userId,
-    payload: statusPayload,
-  });
-
-  return {
-    done: false,
-    nextStepId: String(nextStep.id),
-    completedStepIds,
-    content,
-    payload: statusPayload,
-  };
-}
-
-function resolveVerifyCommand(projectType?: string | null) {
-  switch (projectType) {
-    case "python":
-      return "python_verify";
-    default:
-      return "node_verify";
-  }
-}
-
-function resolveBootstrapPathsFromUserRequest(text: string) {
-  const s = String(text ?? "").toLowerCase();
-
-  // Website / HTML-first bootstrap only for now
-  if (s.includes("portfolio") && s.includes("about")) {
-    return ["index.html", "about.html", "styles.css"];
-  }
-
-  if (s.includes("portfolio")) {
-    return ["index.html", "about.html", "styles.css"];
-  }
-
-  if (s.includes("landing page")) {
-    return ["index.html", "styles.css"];
-  }
-
-  if (s.includes("home page") && s.includes("about page")) {
-    return ["index.html", "about.html", "styles.css"];
-  }
-
-  if (s.includes("website") || s.includes("site")) {
-    return ["index.html", "styles.css"];
-  }
-
-  return [];
-}
-
-function shouldUseDeterministicWebsiteBootstrap(args: {
-  content: string;
-  inference: { needsBootstrap?: boolean; projectType?: string | null };
-}) {
-  const text = String(args.content ?? "");
-
-  if (!args.inference?.needsBootstrap) return false;
-  if (isInternalControlPrompt(text)) return false;
-  if (isInternalGoalExecutionPrompt(text)) return false;
-  if (isGoalPlanningUserIntent(text)) return false;
-  if (!isRepositoryExecutionIntent(text)) return false;
-
-  const targetPaths = resolveBootstrapPathsFromUserRequest(text);
-  return targetPaths.length > 0;
-}
-
-function extractRelevantFilesFromGoalExecutionPrompt(text: string) {
-  const raw = String(text ?? "");
-  const match = raw.match(/Relevant files:\s*(.+)/i);
-  if (!match) return [];
-
-  return match[1]
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .filter((s) => s.toLowerCase() !== "none specified");
-}
-
-async function findLatestGoalPlan(
-  supabase: any,
-  repoId: string
-) {
-  const { data: rows, error } = await supabase
-    .from("repo_messages")
-    .select("content, created_at")
-    .eq("repo_id", repoId)
-    .eq("role", "assistant")
-    .order("created_at", { ascending: false })
-    .limit(200);
-
-  if (error) {
-    throw new Error(`Failed to load goal history: ${error.message}`);
-  }
-
-  for (const row of rows ?? []) {
-    const txt = String(row.content ?? "");
-    const parsed = extractGoalPlan(txt);
-
-    if (parsed) {
-      console.log("[findLatestGoalPlan] found", {
-        goalId: parsed.goalId,
-        title: parsed.title,
-      });
-      return parsed;
-    }
-  }
-
-  return null;
-}
 
 // ─────────────────────────────────────────────────────────────
 // Route: POST /api/repo/[repoId]/chat
@@ -389,13 +84,15 @@ if (!content?.trim()) return new Response("Missing content", { status: 400 });
 
 const text = normText(content);
 
-const planningRequest =
+const explicitGoalPlanRequest =
   !isInternalControlPrompt(text) &&
-  !isRepositoryExecutionIntent(text) &&
   isGoalPlanningUserIntent(text);
+
+const planningRequest = explicitGoalPlanRequest;
 
 const autoGoalPlanRequest =
   !isInternalControlPrompt(text) &&
+  !explicitGoalPlanRequest &&
   !isRepositoryExecutionIntent(text) &&
   isHighLevelBuildRequest(text);
 
@@ -411,353 +108,7 @@ console.log("[goal_plan branch check]", {
 
 console.log("[goal_debug_content]", JSON.stringify(content));
 
-
-
-// ─────────────────────────────────────────
-// GOAL STOP (deterministic)
-// ─────────────────────────────────────────
-if (content.trim() === "__GOAL_STOP__") {
-  const plan = await findLatestGoalPlan(supabase, repoId);
-
-  if (!plan) {
-    return new Response("No active goal found", { status: 400 });
-  }
-
-  const statusPayload = {
-    goalId: String(plan.goalId ?? ""),
-    status: "cancelled",
-    currentStepId: null,
-    note: "Goal stopped by user.",
-  };
-
-  const final = `__GOAL_STATUS__:${JSON.stringify(statusPayload)}`;
-
-  console.log("[goal_stop]", {
-    repoId,
-    goalId: statusPayload.goalId,
-  });
-
-  await supabase.from("repo_messages").insert([
-    {
-      repo_id: repoId,
-      user_id: user.id,
-      role: "user",
-      content,
-    },
-    {
-      repo_id: repoId,
-      user_id: user.id,
-      role: "assistant",
-      content: final,
-    },
-  ]);
-
-  return new Response(final, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
-}
-
-if (content.trim() === "__GOAL_APPROVE__") {
-  const { data: rows, error } = await supabase
-    .from("repo_messages")
-    .select("content, created_at")
-    .eq("repo_id", repoId)
-    .eq("role", "assistant")
-    .order("created_at", { ascending: false })
-    .limit(200);
-
-const latestGoalStatusMsg = (rows ?? []).find((r: any) => {
-  const txt = String(r.content ?? "").trim();
-  return txt.startsWith("__GOAL_STATUS__:");
-});
-
-if (latestGoalStatusMsg) {
-  const latestStatus = extractGoalStatus(String(latestGoalStatusMsg.content ?? ""));
-
-  if (latestStatus?.status === "running") {
-    console.log("[goal_approve] already running, returning existing status");
-
-    return new Response(
-      `__GOAL_STATUS__:${JSON.stringify(latestStatus)}`,
-      {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  }
-}
-    
-const latestGoalPlanMsg = (rows ?? []).find((r: any) => {
-  const txt = String(r.content ?? "").trim();
-  return txt.startsWith("__GOAL_PLAN__:");
-});
-    
-  if (error) {
-    return new Response(
-      "[Observation]\nGoal approval failed.\n\n[Assessment]\nCould not load recent assistant messages.\n\n[Action]\nRetry approval.",
-      {
-        status: 500,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  }
-
-console.log("[goal_approve recent assistant heads]", (rows ?? []).slice(0, 5).map((r: any) => ({
-  head: String(r.content ?? "").slice(0, 120),
-})));
-
-  if (!latestGoalPlanMsg) {
-    return new Response(
-      "[Observation]\nGoal approval failed.\n\n[Assessment]\nNo pending goal plan was found.\n\n[Action]\nCreate a plan first.",
-      {
-        status: 400,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  }
-
-const raw = String(latestGoalPlanMsg.content ?? "").trim();
-
-let plan: any;
-try {
-  if (raw.startsWith("__GOAL_PLAN__:")) {
-    plan = JSON.parse(raw.slice("__GOAL_PLAN__:".length));
-  } else {
-    const extracted = extractRawGoalMarkerBlock(`__GOAL_PLAN__:${raw}`, "__GOAL_PLAN__:");
-    plan = JSON.parse(
-      extracted?.slice("__GOAL_PLAN__:".length) ?? raw
-    );
-  }
-} catch (e: any) {
-  return new Response(
-    "[Observation]\nGoal approval failed.\n\n[Assessment]\nStored goal plan JSON was invalid.\n\n[Action]\nRegenerate the plan.",
-    {
-      status: 500,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    }
-  );
-}
-
-  const statusPayload = {
-    goalId: String(plan.goalId ?? ""),
-    status: "running",
-    currentStepId:
-      Array.isArray(plan.steps) && plan.steps.length > 0
-        ? String(plan.steps[0].id ?? "")
-        : null,
-  };
-
-console.log("[goal_approve]", {
-  repoId,
-  goalId: statusPayload.goalId,
-  currentStepId: statusPayload.currentStepId,
-  stepCount: Array.isArray(plan.steps) ? plan.steps.length : 0,
-});
-
-  const final = `__GOAL_STATUS__:${JSON.stringify(statusPayload)}`;
-
-  await supabase.from("repo_messages").insert([
-    {
-      repo_id: repoId,
-      user_id: user.id,
-      role: "user",
-      content,
-    },
-    {
-      repo_id: repoId,
-      user_id: user.id,
-      role: "assistant",
-      content: final,
-    },
-  ]);
-
-  return new Response(final, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
-}
-  
-const { data: repoFiles, error: repoFilesErr } = await supabase
-  .from("repo_files")
-  .select("path")
-  .eq("repo_id", repoId)
-  .is("deleted_at", null);
-
-if (repoFilesErr) {
-  console.log("[repo_inference] repo file load failed:", repoFilesErr.message);
-}
-
-const filePaths = (repoFiles ?? [])
-  .map((f: any) => String(f.path ?? "").trim())
-  .filter(Boolean);
-
-const inference = inferRepoProfile(filePaths);
-
-console.log("[repo_inference]", {
-  repoId,
-  fileCount: filePaths.length,
-  inference,
-});
-
-  let preReadFile: {
-  id: string;
-  path: string;
-  name: string;
-  mime: string;
-  content: string;
-} | null = null;
-
   console.log("[chat] content_head:", content.slice(0, 40));
-
-// ─────────────────────────────────────────
-// GOAL APPROVE (deterministic)
-// ─────────────────────────────────────────
-
-// ─────────────────────────────────────────
-// GOAL CONTINUE (deterministic)
-// - execute current running step
-// - do not advance here
-// - advancement happens only after successful apply/apply_set
-// ─────────────────────────────────────────
-// ─────────────────────────────────────────
-// GOAL CONTINUE (deterministic)
-// - execute current running step
-// - do not advance here
-// - advancement happens after successful apply/apply_set
-// ─────────────────────────────────────────
-if (content.trim() === "__GOAL_CONTINUE__") {
-  const plan = await findLatestGoalPlan(supabase, repoId);
-
-  if (!plan) {
-    return new Response(
-      "[Observation]\nNo active goal was found.\n\n[Assessment]\nThe latest goal plan could not be located.\n\n[Action]\nCreate a new plan or reload the chamber.",
-      {
-        status: 400,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  }
-
-  const goalId = String(plan.goalId ?? "");
-  const latestStatus = await findLatestGoalStatus(supabase, repoId, goalId);
-  const steps = Array.isArray(plan.steps) ? plan.steps : [];
-
-  const effectiveCurrentStepId =
-    typeof latestStatus?.currentStepId === "string"
-      ? latestStatus.currentStepId
-      : steps.length > 0
-      ? String(steps[0].id ?? "")
-      : null;
-
-  const stepToExecute =
-    effectiveCurrentStepId
-      ? steps.find((s: any) => String(s.id ?? "") === String(effectiveCurrentStepId)) ?? null
-      : null;
-
-  if (!stepToExecute) {
-    const donePayload = {
-      goalId,
-      status: "completed",
-      currentStepId: null,
-      completedStepIds: Array.isArray(latestStatus?.completedStepIds)
-        ? latestStatus.completedStepIds
-        : [],
-    };
-
-    const final = `__GOAL_DONE__:${JSON.stringify(donePayload)}`;
-
-    await supabase.from("repo_messages").insert([
-      {
-        repo_id: repoId,
-        user_id: user.id,
-        role: "user",
-        content,
-      },
-      {
-        repo_id: repoId,
-        user_id: user.id,
-        role: "assistant",
-        content: final,
-      },
-    ]);
-
-    return new Response(final, {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  }
-
-  const statusPayload = {
-    goalId,
-    status: "running",
-    currentStepId: String(stepToExecute.id ?? ""),
-    completedStepIds: Array.isArray(latestStatus?.completedStepIds)
-      ? latestStatus.completedStepIds
-      : [],
-  };
-
-  const executePayload = {
-    goalId,
-    stepId: String(stepToExecute.id ?? ""),
-    instruction: buildGoalExecutionInstruction(stepToExecute, plan),
-  };
-
-  const final = [
-    `__GOAL_STATUS__:${JSON.stringify(statusPayload)}`,
-    `__GOAL_EXECUTE__:${JSON.stringify(executePayload)}`,
-  ].join("\n");
-
-  console.log("[goal_continue]", {
-    repoId,
-    goalId,
-    currentStepId: statusPayload.currentStepId,
-    executeStepId: executePayload.stepId,
-  });
-
-  await supabase.from("repo_messages").insert([
-    {
-      repo_id: repoId,
-      user_id: user.id,
-      role: "user",
-      content,
-    },
-    {
-      repo_id: repoId,
-      user_id: user.id,
-      role: "assistant",
-      content: final,
-    },
-  ]);
-
-  return new Response(final, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
-}
-
-// ─────────────────────────────────────────
-// VERIFY COMMANDS (deterministic)
-// ─────────────────────────────────────────
-
-// ─────────────────────────────────────────
-// RUNNER PING (deterministic)
-// ─────────────────────────────────────────
-
-// ─────────────────────────────────────────
-// YEAR SHORT-CIRCUIT (deterministic)
-// ─────────────────────────────────────────
-
-// ─────────────────────────────────────────
-// APPLY SET (deterministic multi-file apply)
-// ─────────────────────────────────────────
-
-// ─────────────────────────────────────────
-// APPLY (deterministic single-file apply)
-// ─────────────────────────────────────────
-
-// ─────────────────────────────────────────
-// ENGRAVING PROBE (deterministic)
-// ─────────────────────────────────────────
-
-// ─────────────────────────────────────────
-// GOAL PLAN GENERATION (dedicated planning branch)
-// ─────────────────────────────────────────
 
   // ─────────────────────────────────────────────────────────────
   // Membership tier policy (server clamp)
@@ -799,192 +150,26 @@ console.log("[policy]", {
 });
 
 if (planningRequest || autoGoalPlanRequest) {
-  const { error: goalUserInsertErr } = await supabase
-    .from("repo_messages")
-    .insert({
-      repo_id: repoId,
-      user_id: user.id,
-      role: "user",
-      content,
-      
-    });
-
-  if (goalUserInsertErr) {
-    console.log("[goal_plan user insert failed]", {
-      repoId,
-      message: goalUserInsertErr.message,
-      details: goalUserInsertErr,
-    });
-
-    return new Response(
-      "[Observation]\nGoal plan start failed.\n\n[Assessment]\nThe user goal request could not be saved.\n\n[Action]\nCheck server logs for [goal_plan user insert failed].",
-      {
-        status: 500,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  }
-
-    const goalPlanInstructions = `
-  You are generating a GoalPlan object for Vestaryn.
-
-  Return only valid JSON.
-  Do not return markdown.
-  Do not use code fences.
-  Do not add prose before or after the JSON.
-
-  Schema:
-  {
-    "goalId": string,
-    "title": string,
-    "summary": string,
-    "status": "awaiting_approval",
-    "scope": "small" | "medium" | "large",
-    "estimatedTouchedFiles": string[],
-    "steps": [
-      {
-        "id": string,
-        "title": string,
-        "description": string,
-        "status": "pending",
-        "files": string[]
-      }
-    ]
-  }
-
-  Rules:
-  - Return exactly 3 steps.
-  - Keep summary under 80 characters.
-  - Keep each step title under 4 words.
-  - Keep each step description under 70 characters.
-  - Keep estimatedTouchedFiles to at most 4 entries.
-  - Keep each step files array to at most 2 entries.
-  - Use short file paths only.
-  - No optional files.
-  - No extra explanation.
-  - Keep the JSON extremely compact.
-  - Prefer terse wording over completeness.
-  - Omit nonessential file names.
-  - Use compact descriptions, not sentences with clauses.
-  - Do not think step-by-step.
-  - Emit JSON immediately.
-  `;
-
-  try {
-    const resp = await openai.responses.create({
-  model: tierPolicy.model,
-  instructions: goalPlanInstructions,
-  input: [{ role: "user", content }],
-  tool_choice: "none",
-  max_output_tokens: 500,
-  reasoning: { effort: "minimal" },
-  text: { verbosity: "low" },
-});
-
-console.log("[goal_plan resp debug]", {
-  id: resp.id,
-  outputTextLen: String(resp.output_text ?? "").length,
-  outputLen: Array.isArray((resp as any).output) ? (resp as any).output.length : null,
-  finishReason: (resp as any).status ?? null,
-  firstOutput: Array.isArray((resp as any).output) ? (resp as any).output[0] : null,
-});
-
-    const raw =
-  String(resp.output_text ?? "").trim() ||
-  String(
-    (resp as any)?.output?.[0]?.content?.[0]?.text ??
-    (resp as any)?.output?.[0]?.content?.[0]?.output_text ??
-    ""
-  ).trim();
-
-if (!raw) {
-  console.log("[goal_plan empty_response]", {
-    id: resp.id,
-    resp,
+  return await handlePlanningRequest({
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    model: tierPolicy.model,
   });
-
-  return new Response(
-    "[Observation]\nGoal plan generation failed.\n\n[Assessment]\nThe model returned an empty planning response.\n\n[Action]\nRetry the request.",
-    {
-      status: 500,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    }
-  );
 }
 
-    console.log("[goal_plan] raw", raw);
+const deterministicResponse = await tryHandleDeterministicCommands({
+  supabase,
+  repoId,
+  userId: user.id,
+  content,
+});
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e: any) {
-      console.log("[goal_plan] invalid_json", {
-        message: e?.message,
-        raw,
-      });
-
-      return new Response(
-        "[Observation]\nGoal plan generation failed.\n\n[Assessment]\nThe model did not return valid GoalPlan JSON.\n\n[Action]\nRetry with the dedicated planning contract.",
-        {
-          status: 500,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-
-    const final = `__GOAL_PLAN__:${JSON.stringify(parsed)}`;
-
-    console.log("[goal_plan persist about to insert]", {
-      repoId,
-      length: final.length,
-      startsWithGoalPlan: final.startsWith("__GOAL_PLAN__:"),
-      head: final.slice(0, 160),
-    });
-
-    const { error: goalAssistantInsertErr } = await supabase
-      .from("repo_messages")
-      .insert({
-        repo_id: repoId,
-        user_id: user.id,
-        role: "assistant",
-        content: final,
-      });
-
-    if (goalAssistantInsertErr) {
-      console.log("[goal_plan persist failed]", {
-        repoId,
-        message: goalAssistantInsertErr.message,
-        details: goalAssistantInsertErr,
-      });
-
-      return new Response(
-        "[Observation]\nGoal plan persistence failed.\n\n[Assessment]\nThe goal plan was generated but could not be saved to repo_messages.\n\n[Action]\nCheck server logs for [goal_plan persist failed].",
-        {
-          status: 500,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-
-    console.log("[goal_plan persist ok]", { repoId });
-
-    return new Response(final, {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  } catch (e: any) {
-    console.log("[goal_plan] failed", e?.message);
-
-    return new Response(
-      "[Observation]\nGoal plan generation failed.\n\n[Assessment]\nThe dedicated planning branch failed before a valid marker could be created.\n\n[Action]\nCheck server logs for [goal_plan].",
-      {
-        status: 500,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  }
+if (deterministicResponse) {
+  return deterministicResponse;
 }
-
-
 
 console.log("[verify_probe] content:", JSON.stringify(content));
 
@@ -999,2087 +184,141 @@ if (!baselineVerify.verifyPayload.ok) {
   console.log("[baseline_verify] repo currently broken, repair needed");
 }
 
-const verifyCmd =
-  content.trim() === "__VERIFY_ALL__" ? "node_verify" :
-  content.trim() === "__VERIFY_TEST__" ? "node_test" :
-  content.trim() === "__VERIFY_LINT__" ? "node_lint" :
-  content.trim() === "__VERIFY_TYPECHECK__" ? "node_typecheck" :
-  null;
 
-console.log("[verify_probe] verifyCmd:", verifyCmd);
+const directVerifyCmd = resolveDirectVerifyCommand(content);
 
-if (verifyCmd) {
-  const jobId = `verify-${repoId}-${Date.now()}`;
-  try {
-    console.log("[verify] building snapshot", { repoId, jobId, verifyCmd });
-
-
-    const supabaseAdmin = createSupabaseAdmin();
-    const snap = await buildRepoSnapshotSignedUrl(supabaseAdmin, repoId, jobId, {
-      signedUrlTtlSec: 600,
-    });
-
-    console.log("[verify] snapshot ready", {
-      fileCount: snap.fileCount,
-      zipBytes: snap.zipBytes,
-      snapshotObjectPath: snap.snapshotObjectPath,
-    });
-
-    const result = await runnerRun({
-      jobId,
-      commandId: verifyCmd,
-      snapshotUrl: snap.snapshotSignedUrl,
-      timeoutMs: 120_000,
-    });
-
-console.log("[verify] runner raw output", {
-  stdoutLen: String(result.stdout ?? "").length,
-  stderrLen: String(result.stderr ?? "").length,
-  stdoutHead: String(result.stdout ?? "").slice(0, 500),
-  stderrHead: String(result.stderr ?? "").slice(0, 500),
-});
-
-await supabaseAdmin.from("repo_runs").insert({
-  repo_id: repoId,
-  change_id: null,
-  command: verifyCmd,
-  ok: Boolean(result.ok),
-  exit_code: Number(result.exitCode ?? -1),
-  duration_ms: Number(result.durationMs ?? 0),
-  stdout: (result.stdout ?? "").slice(0, 8000),
-  stderr: (result.stderr ?? "").slice(0, 8000),
-
-  job_id: jobId,
-  runner_fingerprint: result.fingerprint ?? null,
-  failed_step: result.failedStep ?? null,
-  failure_kind: result.failureKind ?? null,
-  timed_out: Boolean(result.timedOut),
-});
-
-console.log("[verify] runner returned", {
-  ok: result.ok,
-  exitCode: result.exitCode,
-  durationMs: result.durationMs,
-  error: result.error ?? null,
-  stdoutLen: (result.stdout ?? "").length,
-  stderrLen: (result.stderr ?? "").length,
-});
-
-const verifyPayload = {
-  command: verifyCmd,
-  ok: Boolean(result.ok),
-  exitCode: Number(result.exitCode ?? -1),
-  durationMs: Number(result.durationMs ?? 0),
-  stdout: String(result.stdout ?? ""),
-  stderr: String(result.stderr ?? ""),
-  error: result.error ?? null,
-
-  jobId,
-  fingerprint: result.fingerprint ?? null,
-  failedStep: result.failedStep ?? null,
-  failureKind: result.failureKind ?? null,
-  timedOut: Boolean(result.timedOut),
-};
-
-try {
-  await updateChamberStateDoc(supabase, repoId, {
-    activeEngineeringArea: "Verification and repository integrity checks.",
-    recentChanges: [
-      `Ran ${verifyCmd} with result ${result.ok ? "PASS" : "FAIL"}.`,
-    ],
-    immediateNextSteps: result.ok
-      ? ["Continue implementation or stage the next change."]
-      : ["Review verify output and fix failing files before continuing."],
+if (directVerifyCmd) {
+  return await handleDirectVerifyCommand({
+    supabase,
+    repoId,
+    userId: user.id,
+    verifyCmd: directVerifyCmd,
   });
-} catch (e: any) {
-  console.log("[chamber-state] verify update skipped:", e?.message);
-}
-
-// Stream structured marker for UI (same pattern as __PROPOSAL__)
-const marker = `\n__VERIFY__:${JSON.stringify(verifyPayload)}\n`;
-
-const txt =
-  `[Observation]\nVerification executed.\n\n` +
-  `[Assessment]\ncommand=${verifyCmd}\nok=${result.ok} exitCode=${result.exitCode} durationMs=${result.durationMs}\n\n` +
-  `[Action]\nstdout:\n${(result.stdout ?? "").slice(0, 3000)}\n\n` +
-  `stderr:\n${(result.stderr ?? "").slice(0, 3000)}\n` +
-  marker;
-
-// Persist the deterministic apply result so it survives refresh
-await supabase.from("repo_messages").insert({
-  repo_id: repoId,
-  user_id: user.id,
-  role: "assistant",
-  content:
-    "[Observation]\nVerification executed.\n\n" +
-    `[Assessment]\ncommand=${verifyCmd} ok=${Boolean(result.ok)} exitCode=${Number(result.exitCode ?? -1)} durationMs=${Number(result.durationMs ?? 0)}\n\n` +
-    "[Action]\nVerification result recorded.",
-});
-
-    return new Response(txt, {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  } catch (e: any) {
-    console.log("[verify] error", { message: e?.message, name: e?.name });
-
-    const txt =
-      `[Observation]\nVerification failed.\n\n` +
-      `[Assessment]\n${e?.message ?? "Unknown error"}\n\n` +
-      `[Action]\nCheck server logs for [verify] and runner logs.\n`;
-
-    return new Response(txt, {
-      status: 500,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  }
 }
 
 
 // 🔒 Runner connectivity test (deterministic, bypass LLM)
-if (content.trim() === "__RUNNER_PING__") {
-  try {
-    console.log("[runner_ping] calling runnerRun", {
-      base: (process.env.RUNNER_URL ?? "").trim(),
-      secretLen: ((process.env.RUNNER_SECRET ?? "").trim()).length,
-      repoId,
-    });
+const runnerPingResponse = await tryHandleRunnerPing({
+  content,
+  repoId,
+});
 
-    const result = await runnerRun({
-      jobId: `ping-${repoId}-${Date.now()}`,
-      commandId: "ping",
-      timeoutMs: 30_000,
-    });
-
-    console.log("[runner_ping] runnerRun returned", {
-      ok: result.ok,
-      exitCode: result.exitCode,
-      durationMs: result.durationMs,
-      error: result.error ?? null
-    });
-
-    const txt =
-      `[Observation]\nVerification executed.\n\n` +
-      `[Assessment]\n` +
-      `command=${verifyCmd}\n` +
-      `ok=${result.ok} exitCode=${result.exitCode} durationMs=${result.durationMs}\n` +
-      `error=${result.error ?? "null"}\n\n` +
-      `[Action]\nstdout:\n${(result.stdout ?? "").slice(0, 3000)}\n\n` +
-      `stderr:\n${(result.stderr ?? "").slice(0, 3000)}\n`;
-
-    return new Response(txt, {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  } catch (e: any) {
-    console.log("[runner_ping] error", {
-      name: e?.name,
-      message: e?.message,
-      code: e?.code,
-    });
-    console.log("[runner_ping] message:", e?.message);
-    console.log("[runner_ping] cause:", e?.cause);
-
-    const txt =
-      `[Observation]\nRunner ping failed.\n\n` +
-      `[Assessment]\n${e?.message ?? "Unknown error"}\n\n` +
-      `[Action]\nCheck RUNNER_URL/RUNNER_SECRET and Fly app status.\n`;
-
-    return new Response(txt, {
-      status: 500,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  }
-}
-// 🔒 Deterministic short-circuit: current year
-const normalizedContent = String(content ?? "").trim();
-
-const isInternalPrompt =
-  isInternalControlPrompt(normalizedContent) ||
-  isInternalGoalExecutionPrompt(normalizedContent);
-
-const isSimpleCurrentYearQuestion =
-  /^(what year is it\??|current year\??)$/i.test(normalizedContent);
-
-if (!isInternalPrompt && isSimpleCurrentYearQuestion) {
-  const year = new Date().getFullYear();
-
-  const txt = `[Observation]
-User requested current year.
-
-[Assessment]
-This is deterministic from server clock and should not use the LLM.
-
-[Action]
-Not a systems question. It is currently ${year}.`;
-
-  await supabase.from("repo_messages").insert({
-    repo_id: repoId,
-    user_id: user.id,
-    role: "user",
-    content: normalizedContent,
-  });
-
-  await supabase.from("repo_messages").insert({
-    repo_id: repoId,
-    user_id: user.id,
-    role: "assistant",
-    content: txt,
-  });
-
-  return new Response(txt, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
+if (runnerPingResponse) {
+  return runnerPingResponse;
 }
 
 // 🔒 APPLY_SET SHORT-CIRCUIT (deterministic multi-apply, bypass LLM)
 if (content.startsWith("__APPLY_SET__:")) {
-  const raw = content.slice("__APPLY_SET__:".length);
-
-  try {
-    const payload = JSON.parse(raw);
-    const proposals = Array.isArray(payload?.proposals) ? payload.proposals : [];
-
-    if (proposals.length === 0) {
-      throw new Error("No proposals provided");
-    }
-
-    console.log("[apply_set recv]", {
-      count: proposals.length,
-      paths: proposals.map((p: any) => p?.path),
-      fileIds: proposals.map((p: any) => p?.fileId),
-    });
-
-    const touchedFileIds: string[] = [];
-    const appliedFiles: any[] = [];
-
-    for (const proposal of proposals) {
-      console.log("[apply_set item]", {
-        path: proposal?.path,
-        fileId: proposal?.fileId,
-        op: proposal?.meta?.op === "create" ? "create" : "overwrite",
-      });
-
-      const op = proposal?.meta?.op === "create" ? "create" : "overwrite";
-      let applied: any;
-
-      if (op === "create") {
-        const expected = confirmCreatePhrase(proposal.fileId, proposal.nextHash);
-        applied = await vault_apply_create(
-          supabase,
-          repoId,
-          user.id,
-          expected,
-          { ...proposal, confirm: expected }
-        );
-      } else {
-        const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
-        applied = await vault_apply_write(
-          supabase,
-          repoId,
-          user.id,
-          expected,
-          { ...proposal, confirm: expected }
-        );
-      }
-
-      touchedFileIds.push(String(proposal.fileId));
-      appliedFiles.push({
-        fileId: applied?.fileId ?? String(proposal.fileId),
-        path: applied?.path ?? proposal?.path ?? null,
-        version: applied?.version ?? null,
-        mime: proposal?.mime ?? null,
-      });
-    }
-
-    const { data: rowsAfter, error: rowsAfterErr } = await supabase
-      .from("repo_files")
-      .select("id, path, name, deleted_at")
-      .eq("repo_id", repoId)
-      .is("deleted_at", null)
-      .in("id", touchedFileIds);
-      
-
-    console.log("[apply_set after_rows]", {
-      repoId,
-      touchedFileIds,
-      rowsAfterErr: rowsAfterErr?.message ?? null,
-      rowsAfter,
-    });
-
-    console.log("[apply_set done]", {
-      touchedFileIds,
-      appliedFiles,
-    });
-
-    await supabase.from("repo_messages").insert({
-      repo_id: repoId,
-      user_id: user.id,
-      role: "assistant",
-      content:
-        "[Observation]\nWrites applied.\n\n" +
-        "[Assessment]\nThe staged multi-file change set was confirmed and file versions advanced.\n\n" +
-        "[Action]\nNo pending confirmation remains for this applied change set.",
-    });
-
-    const applyPayload = {
-      ok: true,
-      repoId,
-      requestId,
-      changeId: null,
-      touchedFileIds,
-      appliedFiles,
-    };
-
-    const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles(appliedFiles);
-
-const verifyCmd = resolveVerifyCommand(inference?.projectType);
-
-
-console.log("[verify_cmd_resolved]", {
-  repoId,
-  projectType: inference?.projectType ?? null,
-  verifyCmd,
-});
-
-    const pendingVerifyPayload = buildPendingVerifyPayload({
-  fileIds: touchedFileIds,
-  command: verifyCmd,
-});
-
-    let finalVerifyPayload: any;
-    let verifySummaryText = "";
-    let goalAdvanceText = "";
-
-    try {
-      const { verifyPayload } = await runAutoVerifyForRepo({
-  repoId,
-  verifyCmd,
-});
-
-    for (const fid of touchedFileIds) {
-      await setRepoFileStatus(
-        repoId,
-        fid,
-        verifyPayload.ok ? "ok" : "error",
-        verifyPayload.ok ? null : (verifyPayload.failureKind ?? "verify_failed"),
-        "verify"
-      );
-    }
-      
-      finalVerifyPayload = buildFinalVerifyPayload({
-        base: verifyPayload,
-        fileIds: touchedFileIds,
-      });
-
-      console.log("[apply_set verify result]", {
-        ok: finalVerifyPayload?.ok,
-        failedStep: finalVerifyPayload?.failedStep ?? null,
-        failureKind: finalVerifyPayload?.failureKind ?? null,
-      });
-
-    // Advance active goal step after successful multi-file apply + verify
-    let goalAdvanceResult: any = null;
-
-    if (finalVerifyPayload?.ok) {
-      try {
-        const latestPlan = await findLatestGoalPlan(supabase, repoId);
-        const latestStatus = latestPlan
-          ? await findLatestGoalStatus(supabase, repoId, latestPlan.goalId)
-          : null;
-
-        const currentStepId =
-          latestStatus?.currentStepId ??
-          latestPlan?.currentStepId ??
-          null;
-
-        console.log("[apply_set advance attempt]", {
-          repoId,
-          latestPlanGoalId: latestPlan?.goalId ?? null,
-          latestPlanCurrentStepId: latestPlan?.currentStepId ?? null,
-          latestStatusCurrentStepId: latestStatus?.currentStepId ?? null,
-          chosenCurrentStepId: currentStepId,
-          verifyOk: finalVerifyPayload?.ok ?? null,
-        });
-
-        if (latestPlan?.goalId && currentStepId) {
-          goalAdvanceResult = await advanceGoalAfterStepSuccess({
-            supabase,
-            repoId,
-            userId: user.id,
-            goalId: String(latestPlan.goalId),
-            stepId: String(currentStepId),
-          });
-
-          if (goalAdvanceResult?.content) {
-            goalAdvanceText = `\n${goalAdvanceResult.content}\n`;
-          }
-
-          console.log("[goal_advance_after_apply_set]", {
-            repoId,
-            goalId: latestPlan.goalId,
-            stepId: currentStepId,
-            done: goalAdvanceResult?.done ?? null,
-            nextStepId: goalAdvanceResult?.nextStepId ?? null,
-          });
-        }
-      } catch (e: any) {
-        console.log("[goal_advance_after_apply_set failed]", e?.message);
-      }
-    }
-
-    
-
-      try {
-        await updateChamberStateDoc(supabase, repoId, {
-          activeEngineeringArea: "Verification and repository integrity checks.",
-          recentChanges: [
-            `Applied multi-file staged change set.`,
-            `Auto-verify result: ${verifyPayload.ok ? "PASS" : "FAIL"}.`,
-          ],
-          immediateNextSteps: verifyPayload.ok
-            ? ["Continue implementation or stage the next change."]
-            : ["Review verify output and fix failing files before continuing."],
-        });
-      } catch (e: any) {
-        console.log("[chamber-state] apply_set auto-verify update skipped:", e?.message);
-        for (const fid of touchedFileIds) {
-          await setRepoFileStatus(
-            repoId,
-            fid,
-            "error",
-            "verify_internal_error",
-            "verify"
-          );
-        }
-      }
-
-      verifySummaryText =
-        `\n[Observation]\nAuto verification executed.\n\n` +
-        `[Assessment]\ncommand=${finalVerifyPayload.command} ok=${finalVerifyPayload.ok} exitCode=${finalVerifyPayload.exitCode} durationMs=${finalVerifyPayload.durationMs}\n\n` +
-        `[Action]\nVerification result recorded.\n`;
-    } catch (e: any) {
-      finalVerifyPayload = buildFinalVerifyPayload({
-        base: {
-          command: verifyCmd,
-          ok: false,
-          exitCode: -1,
-          durationMs: 0,
-          stdout: "",
-          stderr: "",
-          error: e?.message ?? "Auto verify failed",
-          jobId: null,
-          fingerprint: null,
-          failedStep: "verify_boot",
-          failureKind: "internal_error",
-          timedOut: false,
-        },
-        fileIds: touchedFileIds,
-      });
-
-      verifySummaryText =
-        `\n[Observation]\nAuto verification failed.\n\n` +
-        `[Assessment]\n${e?.message ?? "Unknown auto-verify error"}\n\n` +
-        `[Action]\nReview verify pipeline logs.\n`;
-    }
-
-    const txt =
-  `[Observation]\nWrites applied.\n\n` +
-  `[Assessment]\nMultiple file versions advanced.\n\n` +
-  `[Action]\nFiles updated deterministically.\n` +
-  `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
-  `\n__VERIFY__:${JSON.stringify(pendingVerifyPayload)}\n` +
-  `\n__VERIFY__:${JSON.stringify(finalVerifyPayload)}\n` +
-  `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n` +
-  goalAdvanceText +
-  verifySummaryText;
-
-    return new Response(txt, {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-
-  } catch (e: any) {
-    return new Response(
-      `[Observation]\nApply failed.\n\n[Assessment]\n${e?.message ?? "Unknown error"}\n\n[Action]\nRecreate proposal set.`,
-      { headers: { "Content-Type": "text/plain; charset=utf-8" } }
-    );
-  }
+  return await handleApplySetCommand({
+    supabase,
+    repoId,
+    userId: user.id,
+    requestId,
+    content,
+  });
 }
 
 // 🔒 APPLY SHORT-CIRCUIT (deterministic single apply, bypass LLM)
 if (content.startsWith("__APPLY__:")) {
-  const raw = content.slice("__APPLY__:".length);
-
-  try {
-    const proposal = JSON.parse(raw);
-    console.log("[apply] keys=", Object.keys(proposal || {}));
-    console.log("[apply] meta=", proposal?.meta ?? null);
-
-    const op = proposal?.meta?.op === "create" ? "create" : "overwrite";
-    let applied: any;
-
-    if (op === "create") {
-      const expected = confirmCreatePhrase(proposal.fileId, proposal.nextHash);
-      applied = await vault_apply_create(
-        supabase,
-        repoId,
-        user.id,
-        expected,
-        { ...proposal, confirm: expected }
-      );
-    } else {
-      const expected = confirmPhrase(proposal.fileId, proposal.nextHash);
-      applied = await vault_apply_write(
-        supabase,
-        repoId,
-        user.id,
-        expected,
-        { ...proposal, confirm: expected }
-      );
-    }
-
-const appliedAssistantText =
-  "[Observation]\nWrites applied.\n\n" +
-  "[Assessment]\nThe staged multi-file change set was confirmed and file versions advanced.\n\n" +
-  "[Action]\nNo pending confirmation remains for this applied change set.";
-
-    if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepIds)) {
-      const keepIds = proposal.meta.keepIds.map((x: any) => String(x)).filter(Boolean);
-
-      if (keepIds.length > 0) {
-        const supabaseAdmin = createSupabaseAdmin();
-
-const { data: files, error: filesErr } = await supabaseAdmin
-  .from("repo_files")
-  .select("id, path, mime")
-  .eq("repo_id", repoId)
-  .is("deleted_at", null);
-
-if (filesErr) {
-  throw new Error(`Auto verify file lookup failed: ${filesErr.message}`);
+  return await handleApplyCommand({
+    supabase,
+    repoId,
+    userId: user.id,
+    requestId,
+    content,
+  });
 }
 
-        const { count: beforeCount, error: beforeErr } = await supabaseAdmin
-          .from("repo_messages")
-          .select("id", { count: "exact", head: true })
-          .eq("repo_id", repoId);
-
-        if (beforeErr) console.log("[engraving] count(before) failed:", beforeErr.message);
-
-        const { data: delRows, error: listErr } = await supabaseAdmin
-          .from("repo_messages")
-          .select("id")
-          .eq("repo_id", repoId)
-          .not("id", "in", `(${keepIds.map((id: string) => `"${id}"`).join(",")})`);
-
-        if (listErr) {
-          console.log("[engraving] prune list failed:", listErr.message);
-        } else {
-          const deleteIds = (delRows ?? []).map((r: any) => String(r.id)).filter(Boolean);
-
-          let actualDeleted = 0;
-
-          if (deleteIds.length > 0) {
-            const { data: deletedRows, error: delErr } = await supabaseAdmin
-              .from("repo_messages")
-              .delete()
-              .eq("repo_id", repoId)
-              .in("id", deleteIds)
-              .select("id");
-
-            if (delErr) {
-              console.log("[engraving] prune delete failed:", delErr.message);
-            } else {
-              actualDeleted = deletedRows?.length ?? 0;
-              console.log("[engraving] prune deleted rows:", actualDeleted);
-            }
-          }
-
-          const { count: afterCount, error: afterErr } = await supabaseAdmin
-            .from("repo_messages")
-            .select("id", { count: "exact", head: true })
-            .eq("repo_id", repoId);
-
-          if (afterErr) console.log("[engraving] count(after) failed:", afterErr.message);
-
-          console.log("[engraving] prune result", {
-            repoId,
-            keep: keepIds.length,
-            candidates: deleteIds.length,
-            deleted: actualDeleted,
-            before: beforeCount ?? null,
-            after: afterCount ?? null,
-          });
-        }
-      }
-    }
-
-    const didEngraving = proposal?.meta?.kind === "engraving";
-
-    const touchedFileIds = [String(proposal.fileId)].filter(Boolean);
-
-    const applyPayload = {
-      ok: true,
-      repoId,
-      requestId,
-      changeId: typeof proposal?.meta?.changeId === "string" ? proposal.meta.changeId : null,
-      touchedFileIds,
-      appliedFile: {
-        fileId: applied?.fileId ?? String(proposal.fileId),
-        path: applied?.path ?? proposal?.path ?? null,
-        version: applied?.version ?? null,
-        mime: proposal?.mime ?? null,
-      },
-    };
-
-    try {
-      await updateChamberStateDoc(supabase, repoId, {
-        activeEngineeringArea: "Applying staged repository changes.",
-        importantFiles: [String(applied?.path ?? proposal?.path ?? "repository file")].filter(Boolean),
-        recentChanges: [
-          `Applied staged change to ${String(applied?.path ?? proposal?.path ?? "a repository file")}.`,
-        ],
-        immediateNextSteps: [
-          "Auto verification is running.",
-          "Continue with the next engineering task.",
-        ],
-      });
-    } catch (e: any) {
-      console.log("[chamber-state] apply update skipped:", e?.message);
-    }
-
-    const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles([
-      {
-        path: applied?.path ?? proposal?.path ?? null,
-        mime: proposal?.mime ?? null,
-      },
-    ]);
-
-    const verifyCmd = resolveVerifyCommand(inference?.projectType);
-
-    console.log("[verify_cmd_resolved]", {
-      repoId,
-      projectType: inference?.projectType ?? null,
-      verifyCmd,
-    });
-
-    const pendingVerifyPayload = buildPendingVerifyPayload({
-  fileIds: touchedFileIds,
-  command: verifyCmd,
-});
-
-    let finalVerifyPayload: any;
-    let verifySummaryText = "";
-    
-
-    try {
-      const { verifyPayload } = await runAutoVerifyForRepo({
-  repoId,
-  verifyCmd,
-});
-
-      await setRepoFileStatus(
-        repoId,
-        applied?.fileId ?? proposal.fileId,
-        verifyPayload.ok ? "ok" : "error",
-        verifyPayload.ok ? null : (verifyPayload.failureKind ?? "verify_failed"),
-        "verify"
-      );
-
-      finalVerifyPayload = buildFinalVerifyPayload({
-        base: verifyPayload,
-        fileIds: touchedFileIds,
-      });
-
-      try {
-        await updateChamberStateDoc(supabase, repoId, {
-          activeEngineeringArea: "Verification and repository integrity checks.",
-          importantFiles: [String(applied?.path ?? proposal?.path ?? "repository file")].filter(Boolean),
-          recentChanges: [
-            `Applied staged change to ${String(applied?.path ?? proposal?.path ?? "a repository file")}.`,
-            `Auto-verify result: ${verifyPayload.ok ? "PASS" : "FAIL"}.`,
-          ],
-          immediateNextSteps: verifyPayload.ok
-            ? ["Continue implementation or stage the next change."]
-            : ["Review verify output and fix failing files before continuing."],
-        });
-      } catch (e: any) {
-        console.log("[chamber-state] single apply auto-verify update skipped:", e?.message);
-        await setRepoFileStatus(
-          repoId,
-          applied?.fileId ?? proposal.fileId,
-          "error",
-          "verify_internal_error",
-          "verify"
-        );
-      }
-
-      verifySummaryText =
-        `\n[Observation]\nAuto verification executed.\n\n` +
-        `[Assessment]\ncommand=${finalVerifyPayload.command} ok=${finalVerifyPayload.ok} exitCode=${finalVerifyPayload.exitCode} durationMs=${finalVerifyPayload.durationMs}\n\n` +
-        `[Action]\nVerification result recorded.\n`;
-    } catch (e: any) {
-      finalVerifyPayload = buildFinalVerifyPayload({
-        base: {
-          command: verifyCmd,
-          ok: false,
-          exitCode: -1,
-          durationMs: 0,
-          stdout: "",
-          stderr: "",
-          error: e?.message ?? "Auto verify failed",
-          jobId: null,
-          fingerprint: null,
-          failedStep: "verify_boot",
-          failureKind: "internal_error",
-          timedOut: false,
-        },
-        fileIds: touchedFileIds,
-      });
-
-      verifySummaryText =
-        `\n[Observation]\nAuto verification failed.\n\n` +
-        `[Assessment]\n${e?.message ?? "Unknown auto-verify error"}\n\n` +
-        `[Action]\nReview verify pipeline logs.\n`;
-    }
-
-    let goalAdvanceText = "";
-
-    try {
-      const latestPlan = await findLatestGoalPlan(supabase, repoId);
-      const latestExecute = latestPlan
-        ? await findLatestGoalExecute(
-            supabase,
-            repoId,
-            String(latestPlan.goalId ?? "")
-          )
-        : null;
-
-      if (latestExecute?.goalId && latestExecute?.stepId) {
-        const advancement = await advanceGoalAfterStepSuccess({
-          supabase,
-          repoId,
-          userId: user.id,
-          goalId: String(latestExecute.goalId),
-          stepId: String(latestExecute.stepId),
-        });
-
-        if (advancement?.content) {
-          goalAdvanceText = `\n${advancement.content}\n`;
-
-          console.log("[goal_advance_after_apply]", {
-            repoId,
-            goalId: latestExecute.goalId,
-            stepId: latestExecute.stepId,
-            done: advancement.done,
-            nextStepId: advancement.nextStepId ?? null,
-          });
-        }
-      }
-    } catch (e: any) {
-      console.log("[goal_advance_after_apply] failed:", e?.message);
-    }
-
-    await supabase.from("repo_messages").insert({
-      repo_id: repoId,
-      user_id: user.id,
-      role: "assistant",
-      content: `${appliedAssistantText}${goalAdvanceText}`,
-    });
-    
-       const txt =
-      `[Observation]\nWrite applied.\n\n` +
-      `[Assessment]\nVersion advanced.\n\n` +
-      `[Action]\nFile updated deterministically.\n` +
-      `\n__APPLY__:${JSON.stringify(applyPayload)}\n` +
-      `\n__VERIFY__:${JSON.stringify(pendingVerifyPayload)}\n` +
-      `\n__VERIFY__:${JSON.stringify(finalVerifyPayload)}\n` +
-      `\n__SUGGESTED_PROMPTS__:${JSON.stringify(suggestedPrompts)}\n` +
-      goalAdvanceText +
-      verifySummaryText +
-      (didEngraving ? `\n__RESET__\n` : "");
-
-    console.log("[apply] didEngraving=", didEngraving);
-
-    return new Response(txt, {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  } catch (e: any) {
-    return new Response(
-      `[Observation]\nApply failed.\n\n[Assessment]\n${e?.message ?? "Unknown error"}\n\n[Action]\nRecreate proposal.`,
-      { headers: { "Content-Type": "text/plain; charset=utf-8" } }
-    );
-  }
-}
-
-// 🔒 Engraving probe (deterministic, bypass LLM)
-if (content.trim() === "__ENGRAVE__") {
-  try {
-    console.log("[engrave_probe] hit", { repoId, userId: user.id });
-
-    const engraving = await maybeSummarizeAndEngraveProposal(
-      supabase,
-      repoId,
-      user.id,
-      { force: true }
-    );
-
-    const markerLine = engraving?.marker
-      ? `\n__ENGRAVING__:${JSON.stringify(engraving.marker)}\n`
-      : "";
-
-    const txt =
-      `[Observation]\nEngraving probe executed.\n\n` +
-      `[Assessment]\nmarker=${Boolean(engraving?.marker)}\n\n` +
-      `[Action]\nIf marker=true, UI should render the Engraving panel.\n` +
-      markerLine;
-
-    return new Response(txt, {
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
-  } catch (e: any) {
-    console.log("[engrave_probe] error", e?.message);
-    return new Response(
-      `[Observation]\nEngraving probe failed.\n\n[Assessment]\n${e?.message ?? "Unknown error"}\n\n[Action]\nCheck server logs.\n`,
-      { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8" } }
-    );
-  }
-}
 // ─────────────────────────────────────────────
 // Credits preflight (workspace pool, server-canonical)
 // ─────────────────────────────────────────────
 
-// 1) Get workspace_id for this repo
-const { data: repoRow, error: repoErr } = await supabase
-  .from("repos")
-  .select("workspace_id")
-  .eq("id", repoId)
-  .single();
 
-if (repoErr || !repoRow?.workspace_id) {
-  return new Response("Missing workspace", { status: 500 });
-}
 
-const workspaceId = repoRow.workspace_id;
-
-// 2) Compute UTC month start as YYYY-MM-01
-const now = new Date();
-const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  .toISOString()
-  .slice(0, 10); // "YYYY-MM-DD"
-
-// 3) Ensure balance row exists + get remaining
-const { data: statusRows, error: stErr } = await supabase.rpc("credits_get_status", {
-  _workspace_id: workspaceId,
-  _period_start: periodStart,
-  _grant: tierPolicy.budget.creditsPerPeriod,
-  _tier: tierPolicy.tier,
+const chatCtx = await buildChatContext({
+  supabase,
+  repoId,
+  userId: user.id,
+  content,
+  tierPolicy,
 });
 
-if (stErr) {
-  console.log("[credits] get_status failed:", stErr.message);
-  return new Response("Credits unavailable", { status: 500 });
-}
+const {
+  inference,
+  cleanedHistory,
+  sacredBlock,
+  profileBlock,
+  masterBlock,
+  chamberBlock,
+  treeBlock,
+  ledgerBlock,
+  membershipBlock,
+} = chatCtx;
 
-const creditStatus = Array.isArray(statusRows) ? statusRows[0] : statusRows;
-const remaining = Number(creditStatus?.remaining ?? 0);
+const inferredVerifyCmd =
+  inference?.projectType === "unknown" || inference?.projectType === "loose_files"
+    ? null
+    : resolveVerifyCommand(inference?.projectType ?? null);
 
-let runtimePolicy = tierPolicy;
-
-// 4) Hard block if exhausted
-if (remaining <= 0) {
-  return new Response(
-    "[Observation]\nCredits exhausted.\n\n[Assessment]\nWorkspace credit balance is depleted for this period.\n\n[Action]\nUpgrade plan or wait for reset.",
-    { status: 402, headers: { "Content-Type": "text/plain; charset=utf-8" } }
-  );
-}
-
-// 5) Soft reserve grace mode
-if (remaining <= tierPolicy.budget.softReserveCredits) {
-  if (tierPolicy.budget.graceMode === "block") {
-    return new Response(
-      "[Observation]\nCredits below reserve threshold.\n\n[Assessment]\nGrace mode is block.\n\n[Action]\nUpgrade plan or wait for reset.",
-      { status: 402, headers: { "Content-Type": "text/plain; charset=utf-8" } }
-    );
-  }
-
-  if (tierPolicy.budget.graceMode === "clamp") {
-    runtimePolicy = {
-      ...tierPolicy,
-      output: {
-        ...tierPolicy.output,
-        maxOutputTokens: Math.max(256, Math.floor(tierPolicy.output.maxOutputTokens * 0.5)),
-      },
-      tools: {
-        ...tierPolicy.tools,
-        maxToolRounds: Math.max(1, Math.floor(tierPolicy.tools.maxToolRounds / 2)),
-        maxToolCallsPerRound: Math.max(1, Math.floor(tierPolicy.tools.maxToolCallsPerRound / 2)),
-      },
-    };
-  }
-
-  // If you want downgrade later, we can add it using TIER_POLICIES.
-}
-
-console.log("[credits]", { workspaceId, periodStart, remaining, runtimeTier: runtimePolicy.tier });
-
-  // Sacred memory + profile
-  await ensureSacredMemoryFile(supabase, repoId, user.id);
-  await ensureUserProfileFile(supabase, repoId, user.id);
-
-  let sacredText = "";
-  try {
-    const sacred = await vault_read_text(supabase, repoId, SACRED_PATH);
-    sacredText = sacred.content || "";
-  } catch (e: any) {
-    sacredText = "";
-    console.log("[sacred] read failed:", e?.message);
-  }
-
-  let profileText = "";
-  try {
-    const profile = await vault_read_text(supabase, repoId, USER_PROFILE_PATH);
-    profileText = profile.content || "";
-  } catch (e: any) {
-    profileText = "";
-    console.log("[profile] read failed:", e?.message);
-  }
-
-let masterSummary = "";
-let chamberState = "";
-let pathTree = "";
-let ledger = "";
-
-try {
-  const { data: memDocs } = await supabase
-    .from("repo_memory_docs")
-    .select("key, content")
-    .eq("repo_id", repoId);
-
-  for (const d of memDocs ?? []) {
-    if (d.key === "master-summary") masterSummary = d.content ?? "";
-    if (d.key === "chamber-state") chamberState = d.content ?? "";
-    if (d.key === "path-tree") pathTree = d.content ?? "";
-    if (d.key === "ledger") ledger = d.content ?? "";
-  }
-} catch (e: any) {
-  console.log("[memory] load failed:", e?.message);
-}
-
-  const insertUserPromise = supabase.from("repo_messages").insert({
-    repo_id: repoId,
-    user_id: user.id,
-    role: "user",
-    content,
-  });
-
-  const historyPromise = supabase
-    .from("repo_messages")
-    .select("role, content, created_at")
-    .eq("repo_id", repoId)
-    .order("created_at", { ascending: false })
-    .limit(16);
-
-  const [{ data: history }, insertResult] = await Promise.all([historyPromise, insertUserPromise]);
-  if (insertResult.error) return new Response("Failed to save message", { status: 500 });
-
-  const orderedHistory = (history ?? []).slice().reverse();
-  const cleanedHistory = orderedHistory.filter((m: any) => {
-  if (m.role !== "assistant") return true;
-
-  const text = String(m.content || "").trim();
-
-  return text.startsWith("[Observation]");
+const creditsResolution = await resolveRuntimePolicyFromCredits({
+  supabase,
+  repoId,
+  tierPolicy,
 });
 
-  const sacredBlock = sacredText.trim()
-    ? `=== SACRED_MEMORY (authoritative, user-confirmed) ===\n${sacredText.trim()}\n=== END SACRED_MEMORY ===`
-    : `=== SACRED_MEMORY ===\n(empty)\n=== END SACRED_MEMORY ===`;   
-  const profileBlock = profileText.trim()
-    ? `=== USER_PROFILE (non-personal preferences + observed level) ===\n${profileText.trim()}\n=== END USER_PROFILE ===`
-    : `=== USER_PROFILE ===\n(empty)\n=== END USER_PROFILE ===`;
+if (creditsResolution.errorResponse) {
+  return creditsResolution.errorResponse;
+}
 
-const masterBlock = masterSummary.trim()
-  ? `=== MASTER_MEMORY ===\n${masterSummary.trim()}\n=== END MASTER_MEMORY ===`
-  : `=== MASTER_MEMORY ===\n(empty)\n=== END MASTER_MEMORY ===`;
+const {
+  workspaceId,
+  periodStart,
+  remaining,
+  runtimePolicy,
+} = creditsResolution;
 
-const chamberBlock = chamberState.trim()
-  ? `=== CHAMBER_STATE ===\n${chamberState.trim()}\n=== END CHAMBER_STATE ===`
-  : `=== CHAMBER_STATE ===\n(empty)\n=== END CHAMBER_STATE ===`;
-
-const treeBlock = pathTree.trim()
-  ? `=== PATH_TREE ===\n${pathTree.trim()}\n=== END PATH_TREE ===`
-  : `=== PATH_TREE ===\n(empty)\n=== END PATH_TREE ===`;
-
-const ledgerBlock = ledger.trim()
-  ? `=== ENGINEERING_LEDGER ===\n${ledger.trim()}\n=== END ENGINEERING_LEDGER ===`
-  : `=== ENGINEERING_LEDGER ===\n(empty)\n=== END ENGINEERING_LEDGER ===`;
-
-  const membershipBlock =
-    `=== MEMBERSHIP_TIER (hard caps, server-enforced) ===\n` +
-    `tier: ${tierPolicy.tier}\n` +
-    `model: ${tierPolicy.model}\n` +
-    `max_output_tokens: ${tierPolicy.output.maxOutputTokens}\n` +
-    `max_tool_rounds: ${tierPolicy.tools.maxToolRounds}\n` +
-    `capabilities:\n` +
-    `- export: ${tierPolicy.capabilities.allowExport}\n` +
-    `- multi_export: ${tierPolicy.capabilities.allowMultiExport}\n` +
-    `- create_files: ${tierPolicy.capabilities.allowCreateFiles}\n` +
-    `- create_trees: ${tierPolicy.capabilities.allowCreateTrees}\n` +
-    `RULE: These caps override USER_PROFILE preferences.\n` +
-    `=== END MEMBERSHIP_TIER ===`;
-    
-if (isExplainOnlyQuestion(content)) {
-  console.log("[explain_only_branch]", {
-    repoId,
-    contentHead: String(content).slice(0, 120),
-  });
-
-  const explanationInstructions =
-  "You are Vestaryn. This is an explanation-only turn. " +
-  "Do not create files. Do not propose repository changes. " +
-  "Do not emit __PROPOSAL__, __PROPOSAL_SET__, __APPLY__, __VERIFY__, or other repo markers. " +
-  "Respond only with the normal Vestaryn contract.\n" +
-  "Keep the full response concise.\n" +
-  "Use exactly this structure:\n" +
-  "[Observation]\n" +
-  "2-4 lines max.\n\n" +
-  "[Assessment]\n" +
-  "Use at most 4 bullets total.\n" +
-  "Group similar dashboard types together.\n" +
-  "Then list 2-3 common stack options.\n" +
-  "Keep each bullet short.\n\n" +
-  "[Action]\n" +
-  "2-3 short next-step suggestions max.";
-
-  const resp = await openai.responses.create({
-  model: runtimePolicy.model,
-  instructions: explanationInstructions,
-  input: [
-    { role: "system", content: membershipBlock },
-    { role: "system", content: sacredBlock },
-    { role: "system", content: profileBlock },
-    { role: "system", content: masterBlock },
-    { role: "system", content: chamberBlock },
-    { role: "system", content: treeBlock },
-    { role: "system", content: ledgerBlock },
-    ...cleanedHistory.map((m: any) => ({
-      role: m.role,
-      content: m.content,
-    })),
-    { role: "user", content },
-  ],
-  tool_choice: "none",
-  max_output_tokens: Math.min(runtimePolicy.output.maxOutputTokens, 500),
+console.log("[credits]", {
+  workspaceId,
+  periodStart,
+  remaining,
+  runtimeTier: runtimePolicy.tier,
 });
 
-let out = String(resp.output_text ?? "").trim();
-out = scrubVisibleToolPayload(out);
-out = ensureTriplet(stripDuplicateTriplet(out));
-
-if (!hasValidAssistantContract(out)) {
-  out =
-    "[Observation]\nUser asked for explanation only.\n\n" +
-    "[Assessment]\nA concise overview was requested without repository changes.\n\n" +
-    "[Action]\nAsk for a focused follow-up such as dashboard types, recommended stack, or architecture comparison.";
-}
-
-await supabase.from("repo_messages").insert({
-  repo_id: repoId,
-  user_id: user.id,
-  role: "assistant",
-  content: out,
+const preStreamResponse = await tryHandlePreStreamRepoOps({
+  openai,
+  supabase,
+  repoId,
+  userId: user.id,
+  content,
+  runtimePolicy,
+  baselineVerify,
 });
 
-return new Response(out, {
-  headers: { "Content-Type": "text/plain; charset=utf-8" },
-});
+if (preStreamResponse) {
+  return preStreamResponse;
 }
-try {
-  const targetPath = extractSingleMentionedPath(content);
 
-  if (
-  targetPath &&
-  isNamedFileExecutionRequest(content) &&
-  !isMetaRepositoryQuestion(content)
-) {
-    const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
-
-    if (resolvedId) {
-      preReadFile = await vault_read_text(supabase, repoId, resolvedId);
-
-      console.log("[pre-read] loaded target file", {
-        repoId,
-        path: preReadFile.path,
-        fileId: preReadFile.id,
-      });
-    }
-  }
-} catch (e: any) {
-  console.log("[pre-read] skipped:", e?.message);
-}
-  
-if (preReadFile && isNamedFileExecutionRequest(content)) {
-  try {
-    const rewritten = await generateRewrittenFileContent({
-      openai,
-      model: runtimePolicy.model,
-      userRequest: content,
-      path: preReadFile.path,
-      mime: preReadFile.mime,
-      currentContent: preReadFile.content,
-    });
-
-    if (!rewritten) {
-      throw new Error("Model returned empty rewritten content");
-    }
-
-    let proposal: any;
-    try {
-      proposal = await vault_propose_write(
-        supabase,
-        repoId,
-        preReadFile.id,
-        rewritten
-      );
-    } catch (e: any) {
-      if (e?.message === "__NOOP_PROPOSAL__") {
-        const visible =
-          `[Observation]\nI inspected ${preReadFile.path}.\n\n` +
-          `[Assessment]\nNo file change is needed.\n\n` +
-          `[Action]\nNo staged change was created.`;
-
-        await supabase.from("repo_messages").insert({
-          repo_id: repoId,
-          user_id: user.id,
-          role: "assistant",
-          content: visible,
-        });
-
-        return new Response(visible, {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
-      }
-      throw e;
-    }
-
-    const visible =
-      "[Observation]\nRequired repository change was staged.\n\n" +
-      "[Assessment]\nThe requested file fix was prepared from the current repository content.\n\n" +
-      "[Action]\nA staged change is ready. Confirm to apply.";
-
-    let preverifyMarker = "";
-
-    try {
-      const proposals = [
-        {
-          ...proposal,
-          path: proposal.path ?? preReadFile.path,
-          mime: proposal.mime ?? preReadFile.mime,
-          meta: proposal.meta ?? null,
-        },
-      ];
-
-      if (shouldPreVerifyProposalSet(proposals)) {
-        console.log("[fast-path preverify] starting", {
-          repoId,
-          path: proposal.path ?? preReadFile.path,
-          fileId: proposal.fileId,
-        });
-
-        const preverify = await runPreVerifyForProposalSet({
-          repoId,
-          proposals,
-        });
-
-        const baselineNoise = isBaselinePreverifyFailure(
-          
-  baselineVerify.verifyPayload,
-  preverify
-
-);console.log("[baseline_classifier]", {
-  baselineFailedStep: baselineVerify.verifyPayload.failedStep,
-  proposalFailedStep: preverify.failedStep,
-  baselineNoise,
-});
-        console.log("[baseline_classifier input]", {
-  failedStep: preverify.failedStep,
-  failureKind: preverify.failureKind,
-  stderrHead: String(preverify.stderr ?? "").slice(0, 2000),
-  stdoutHead: String(preverify.stdout ?? "").slice(0, 1000),
-  error: preverify.error ?? null,
-});
-console.log("[fast-path preverify] stderr head", String(preverify.stderr ?? "").slice(0, 1200));
-console.log("[fast-path preverify] stdout head", String(preverify.stdout ?? "").slice(0, 1200));
-console.log("[fast-path preverify] baseline?", baselineNoise);
-console.log("[fast-path preverify] result", {
-  ok: preverify.ok,
-  failedStep: preverify.failedStep,
-  failureKind: preverify.failureKind,
-  baseline: baselineNoise,
-  fileIds: preverify.fileIds,
+const bootstrapResponse = await tryHandleBootstrap({
+  openai,
+  supabase,
+  repoId,
+  userId: user.id,
+  content,
+  inference,
+  runtimePolicy,
+  membershipBlock,
+  sacredBlock,
+  profileBlock,
+  masterBlock,
+  chamberBlock,
+  treeBlock,
+  ledgerBlock,
+  cleanedHistory,
+  baselineVerify,
 });
 
-        if (!preverify.ok && !baselineNoise) {
-          await setRepoFileStatus(
-            repoId,
-            proposal.fileId,
-            "error",
-            preverify.failureKind ?? "preverify_failed",
-            "preverify"
-          );
-        }
-
-        if (!preverify.ok && !baselineNoise) {
-          console.log("[fast-path repair] attempting repair", {
-            failedStep: preverify.failedStep,
-            kind: preverify.failureKind,
-          });
-
-          const repaired = await attemptFastPathRepair({
-            repoId,
-            path: proposal.path ?? preReadFile.path,
-            fileId: proposal.fileId ?? preReadFile.id,
-            failedStep: preverify.failedStep,
-            userRequest: content,
-            currentContent: proposal.content,
-            stdout: String(preverify.stdout ?? ""),
-            stderr: String(preverify.stderr ?? ""),
-            error: preverify.error ?? null,
-          });
-
-          if (repaired?.ok) {
-            console.log("[fast-path repair] repair succeeded");
-
-            const repairedRaw =
-              typeof repaired.proposal === "string" ? repaired.proposal : "";
-
-            const repairedContent = stripCodeFences(repairedRaw);
-
-            if (!repairedContent) {
-              throw new Error("fast-path repair returned empty content");
-            }
-
-            const repairedProposal = await vault_propose_write(
-              supabase,
-              repoId,
-              preReadFile.id,
-              repairedContent
-            );
-
-            console.log("[fast-path repair] reverify starting", {
-              repoId,
-              path: repairedProposal.path ?? preReadFile.path,
-              fileId: repairedProposal.fileId,
-            });
-
-            const repairedPreverify = await runPreVerifyForProposalSet({
-              repoId,
-              proposals: [
-                {
-                  fileId: repairedProposal.fileId,
-                  path: repairedProposal.path ?? preReadFile.path,
-                  content: repairedProposal.content,
-                  mime: repairedProposal.mime ?? preReadFile.mime,
-                  meta: null,
-                },
-              ],
-            });
-
-            const repairedBaseline = isBaselinePreverifyFailure(
-              baselineVerify.verifyPayload,
-              repairedPreverify
-            );
-
-            console.log("[fast-path repair] reverify result", {
-              ok: repairedPreverify.ok,
-              failedStep: repairedPreverify.failedStep,
-              failureKind: repairedPreverify.failureKind,
-              baseline: repairedBaseline,
-              fileIds: repairedPreverify.fileIds,
-            });
-
-            preverifyMarker = `\n__PREVERIFY__:${JSON.stringify({
-              ...repairedPreverify,
-              baseline: repairedBaseline,
-            })}\n`;
-
-            if (!repairedPreverify.ok) {
-              console.log("[fast-path] proposal rejected after failed repair");
-
-              await setRepoFileStatus(
-                repoId,
-                repairedProposal.fileId ?? preReadFile.id,
-                "error",
-                repairedPreverify.failureKind ?? "repair_reverify_failed",
-                "verify"
-              );
-
-              return new Response(`${visible}\n\n${preverifyMarker}\n`, {
-                headers: { "Content-Type": "text/plain; charset=utf-8" },
-              });
-            }
-
-            proposal = repairedProposal;
-
-            await setRepoFileStatus(
-              repoId,
-              proposal.fileId ?? preReadFile.id,
-              "pending",
-              "verify_running",
-              "verify"
-            );
-          } else {
-            console.log("[fast-path repair] repair failed");
-          }
-        }
-
-        if (!preverifyMarker) {
-          preverifyMarker = `\n__PREVERIFY__:${JSON.stringify({
-            ...preverify,
-            baselineVerify,
-          })}\n`;
-        }
-      }
-    } catch (e: any) {
-      console.log("[fast-path preverify] failed:", e?.message);
-
-      preverifyMarker = `\n__PREVERIFY__:${JSON.stringify({
-        ok: false,
-        command: "node_verify",
-        exitCode: -1,
-        durationMs: 0,
-        stdout: "",
-        stderr: "",
-        error: e?.message ?? "Pre-verify failed",
-        failedStep: "preverify_boot",
-        failureKind: "internal_error",
-        timedOut: false,
-        fileIds: [String(proposal.fileId)].filter(Boolean),
-        paths: [String(proposal.path ?? preReadFile.path ?? "")].filter(Boolean),
-        baseline: false,
-      })}\n`;
-    }
-
-    return new Response(
-      `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}${preverifyMarker}\n`,
-      {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  } catch (e: any) {
-    console.log("[fast-path rewrite] failed:", e?.message);
-  }
-}
-
-const createModifyPaths =
-  isCreateAndModifyIntent(content)
-    ? resolveCreateAndModifyPaths(content)
-    : null;
-
-if (createModifyPaths) {
-  try {
-    const { createPath, modifyPath } = createModifyPaths;
-
-    const createExists = await resolveFileIdByPathOrName(supabase, repoId, createPath);
-    const modifyExists = await resolveFileIdByPathOrName(supabase, repoId, modifyPath);
-
-    console.log("[create_modify_short_circuit]", {
-      createPath,
-      modifyPath,
-      createExists: Boolean(createExists),
-      modifyExists: Boolean(modifyExists),
-    });
-
-    if (!createExists && !modifyExists) {
-      console.log("[create_modify_bootstrap]", {
-        createPath,
-        modifyPath,
-      });
-
-      const newFileContent = await generateNewFileContent({
-        openai,
-        model: runtimePolicy.model,
-        userRequest: content,
-        path: createPath,
-        mime: inferTextMimeFromPath(createPath),
-      });
-
-      const createProposal = await vault_propose_create(
-        supabase,
-        repoId,
-        {
-          path: createPath,
-          content: newFileContent,
-          mime: inferTextMimeFromPath(createPath),
-        }
-      );
-
-      const proposals: any[] = [];
-      if (createProposal) proposals.push(createProposal);
-
-      if (modifyPath) {
-        const modifyContent = await generateNewFileContent({
-          openai,
-          model: runtimePolicy.model,
-          userRequest: content,
-          path: modifyPath,
-          mime: inferTextMimeFromPath(modifyPath),
-        });
-
-        const modifyProposal = await vault_propose_create(
-          supabase,
-          repoId,
-          {
-            path: modifyPath,
-            content: modifyContent,
-            mime: inferTextMimeFromPath(modifyPath),
-          }
-        );
-
-        if (modifyProposal) proposals.push(modifyProposal);
-      }
-
-      if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          proposals,
-        });
-
-        const finalProposalSet = result.repaired
-          ? result.finalProposals
-          : proposals;
-
-        const visible =
-          "[Observation]\nRequired repository changes were staged.\n\n" +
-          "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-          "[Action]\nA staged change is ready. Confirm to apply.";
-
-        return new Response(
-          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      const visible =
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-        "[Action]\nA staged change is ready. Confirm to apply.";
-
-      return new Response(
-        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
-        {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-
-    if (createExists && !modifyExists) {
-      console.log("[create_modify_bootstrap_missing_modify]", {
-        createPath,
-        modifyPath,
-      });
-
-      const newModifyContent = await generateNewFileContent({
-        openai,
-        model: runtimePolicy.model,
-        userRequest: content,
-        path: modifyPath,
-        mime: inferTextMimeFromPath(modifyPath),
-      });
-
-      const modifyProposal = await vault_propose_create(
-        supabase,
-        repoId,
-        {
-          path: modifyPath,
-          content: newModifyContent,
-          mime: inferTextMimeFromPath(modifyPath),
-        }
-      );
-
-      const proposals = [modifyProposal].filter(Boolean);
-
-      if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          proposals,
-        });
-
-        const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-        const visible =
-          "[Observation]\nRequired repository changes were staged.\n\n" +
-          "[Assessment]\nThe missing bootstrap file was prepared and staged.\n\n" +
-          "[Action]\nA staged change is ready. Confirm to apply.";
-
-        return new Response(
-          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      const visible =
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nThe missing bootstrap file was prepared and staged.\n\n" +
-        "[Action]\nA staged change is ready. Confirm to apply.";
-
-      return new Response(
-        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
-        {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-
-    if (!createExists && modifyExists) {
-      const existingFile = await vault_read_text(supabase, repoId, modifyExists);
-
-      const newFileContent = await generateNewFileContent({
-        openai,
-        model: runtimePolicy.model,
-        userRequest: content,
-        path: createPath,
-        mime: inferTextMimeFromPath(createPath),
-      });
-
-      const createProposal = await vault_propose_create(
-        supabase,
-        repoId,
-        {
-          path: createPath,
-          content: newFileContent,
-          mime: inferTextMimeFromPath(createPath),
-        }
-      );
-
-      const rewritten = await generateRewrittenFileContent({
-        openai,
-        model: runtimePolicy.model,
-        userRequest: content,
-        path: existingFile.path,
-        mime: existingFile.mime,
-        currentContent: existingFile.content,
-      });
-
-      const writeProposal = await vault_propose_write(
-        supabase,
-        repoId,
-        existingFile.id,
-        rewritten
-      );
-
-      const proposals = [createProposal, writeProposal].filter(Boolean);
-
-      let preverifyMarker = "";
-
-      if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          proposals,
-        });
-
-        const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-        const visible =
-          "[Observation]\nRequired repository changes were staged.\n\n" +
-          "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-          "[Action]\nA staged change is ready. Confirm to apply.";
-
-        return new Response(
-          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      const visible =
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-        "[Action]\nA staged change is ready. Confirm to apply.";
-
-      return new Response(
-        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n${preverifyMarker}`,
-        {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-
-      if (createExists && modifyExists) {
-    console.log("[create_modify_existing_both]", {
-      createPath,
-      modifyPath,
-    });
-
-    const createFile = await vault_read_text(supabase, repoId, createExists);
-    const modifyFile = await vault_read_text(supabase, repoId, modifyExists);
-
-    const rewrittenCreate = await generateRewrittenFileContent({
-      openai,
-      model: runtimePolicy.model,
-      userRequest: content,
-      path: createFile.path,
-      mime: createFile.mime,
-      currentContent: createFile.content,
-    });
-
-    const rewrittenModify = await generateRewrittenFileContent({
-      openai,
-      model: runtimePolicy.model,
-      userRequest: content,
-      path: modifyFile.path,
-      mime: modifyFile.mime,
-      currentContent: modifyFile.content,
-    });
-
-    const proposals: any[] = [];
-
-    if (normalizeForNoopCheck(String(createFile.content ?? "")) !== normalizeForNoopCheck(String(rewrittenCreate ?? ""))) {
-      const createWriteProposal = await vault_propose_write(
-        supabase,
-        repoId,
-        createFile.id,
-        rewrittenCreate
-      );
-      if (createWriteProposal) proposals.push(createWriteProposal);
-    }
-
-    if (normalizeForNoopCheck(String(modifyFile.content ?? "")) !== normalizeForNoopCheck(String(rewrittenModify ?? ""))) {
-      const modifyWriteProposal = await vault_propose_write(
-        supabase,
-        repoId,
-        modifyFile.id,
-        rewrittenModify
-      );
-      if (modifyWriteProposal) proposals.push(modifyWriteProposal);
-    }
-
-    if (proposals.length === 0) {
-      const visible =
-        "[Observation]\nI inspected the target files.\n\n" +
-        "[Assessment]\nNo repository changes were needed for this step.\n\n" +
-        "[Action]\nContinue to the next goal step.";
-
-      return new Response(visible, {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
-    }
-
-    const visible =
-      "[Observation]\nRequired repository changes were staged.\n\n" +
-      "[Assessment]\nExisting target files were updated for the current goal step.\n\n" +
-      "[Action]\nA staged change is ready. Confirm to apply.";
-
-    if (shouldPreVerifyProposalSet(proposals)) {
-      const result = await finalizeProposalSet({
-        openai,
-        model: runtimePolicy.model,
-        repoId,
-        userRequest: content,
-        baselineVerifyPayload: baselineVerify.verifyPayload,
-        proposals,
-      });
-
-      const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-      return new Response(
-        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-        {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-
-    return new Response(
-      `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
-      {
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      }
-    );
-  }
-  } catch (e: any) {
-    console.log("[create_modify_short_circuit] failed:", e?.message);
-  }
-}
-
-const extractToModulePaths =
-  isExtractToModuleIntent(content) && !isImportRefactorIntent(content)
-    ? resolveExtractToModulePaths(content)
-    : null;
-
-if (extractToModulePaths) {
-  try {
-    const { sourcePath, targetPath } = extractToModulePaths;
-
-    const sourceId = await resolveFileIdByPathOrName(supabase, repoId, sourcePath);
-    const targetId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
-
-    console.log("[extract_to_module_short_circuit]", {
-      sourcePath,
-      targetPath,
-      sourceExists: Boolean(sourceId),
-      targetExists: Boolean(targetId),
-    });
-
-    if (sourceId) {
-      const sourceFile = await vault_read_text(supabase, repoId, sourceId);
-
-      const generated = await generateExtractHelpersResult({
-        openai,
-        model: runtimePolicy.model,
-        userRequest: content,
-        sourcePath,
-        sourceContent: String(sourceFile.content ?? ""),
-        targetPath,
-      });
-
-const normalizedOriginalSource = normalizeForNoopCheck(
-  String(sourceFile.content ?? "")
-);
-const normalizedGeneratedSource = normalizeForNoopCheck(String(generated.sourceContent ?? ""));
-
-if (normalizedOriginalSource === normalizedGeneratedSource) {
-  throw new Error("Generated source rewrite is identical to the current source file");
-}
-
-      if (!generated.targetContent.trim() || !generated.sourceContent.trim()) {
-        throw new Error("Model returned empty extraction result");
-      }
-
-      let sourceProposal;
-console.log("[intent] extractToModulePaths", {
-  hit: Boolean(extractToModulePaths),
-  resolved: extractToModulePaths,
-  text: content,
-});
-      try {
-        sourceProposal = await vault_propose_write(
-          supabase,
-          repoId,
-          sourceFile.id,
-          generated.sourceContent
-        );
-      } catch (e: any) {
-        if (e?.message === "__NOOP_PROPOSAL__") {
-          const visible =
-            `[Observation]\nI inspected ${sourcePath} and ${targetPath}.\n\n` +
-            `[Assessment]\nNo file change is needed.\n\n` +
-            `[Action]\nNo staged change was created.`;
-
-          await supabase.from("repo_messages").insert({
-            repo_id: repoId,
-            user_id: user.id,
-            role: "assistant",
-            content: visible,
-          });
-
-          return new Response(visible, {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          });
-        }
-
-        throw e;
-      }
-
-      const targetProposal = targetId
-        ? await vault_propose_write(
-            supabase,
-            repoId,
-            targetId,
-            generated.targetContent
-          )
-        : await vault_propose_create(
-            supabase,
-            repoId,
-            {
-              path: targetPath,
-              content: generated.targetContent,
-              mime: inferTextMimeFromPath(targetPath),
-            }
-          );
-
-      const proposals = [sourceProposal, targetProposal].filter(Boolean);
-
-      const visible =
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nThe requested extraction was prepared from the current repository content.\n\n" +
-        "[Action]\nA staged change is ready. Confirm to apply.";
-
-      if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          proposals,
-        });
-
-        const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-        return new Response(
-          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      return new Response(
-        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
-        {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-  } catch (e: any) {
-    console.log("[extract_to_module_short_circuit] failed:", e?.message);
-  }
-}
-
-// ─────────────────────────────────────────
-// INTERNAL GOAL EXECUTION BOOTSTRAP (deterministic)
-// - bypass fragile multi-tool streaming for goal step bootstrap
-// - stage proposal/proposal_set directly
-// ─────────────────────────────────────────
-if (isInternalGoalExecutionPrompt(content)) {
-  try {
-    const targetPaths = extractRelevantFilesFromGoalExecutionPrompt(content);
-
-    console.log("[goal_execution_bootstrap]", {
-      repoId,
-      targetPaths,
-    });
-
-    if (targetPaths.length > 0) {
-      const proposals: any[] = [];
-
-      for (const targetPath of targetPaths) {
-        const existingId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
-
-        if (existingId) {
-          const existingFile = await vault_read_text(supabase, repoId, existingId);
-
-          const rewritten = await generateRewrittenFileContent({
-            openai,
-            model: runtimePolicy.model,
-            userRequest: content,
-            path: existingFile.path,
-            mime: existingFile.mime,
-            currentContent: existingFile.content,
-          });
-
-          const proposal = await vault_propose_write(
-            supabase,
-            repoId,
-            existingFile.id,
-            rewritten
-          );
-
-          if (proposal) proposals.push(proposal);
-        } else {
-          const newContent = await generateNewFileContent({
-            openai,
-            model: runtimePolicy.model,
-            userRequest: content,
-            path: targetPath,
-            mime: inferTextMimeFromPath(targetPath),
-          });
-
-          const proposal = await vault_propose_create(supabase, repoId, {
-            path: targetPath,
-            content: newContent,
-            mime: inferTextMimeFromPath(targetPath),
-          });
-
-          if (proposal) proposals.push(proposal);
-        }
-      }
-
-      if (proposals.length === 0) {
-        return new Response(
-          "[Observation]\nI inspected the requested goal step.\n\n[Assessment]\nNo repository changes were needed.\n\n[Action]\nContinue to the next goal step.",
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      const visible =
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nThe current goal step was converted into staged repository proposals.\n\n" +
-        "[Action]\nA staged change is ready. Confirm to apply.";
-
-      if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          proposals,
-        });
-
-        const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-        return new Response(
-          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      if (proposals.length === 1) {
-        return new Response(
-          `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposals[0])}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      return new Response(
-        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
-        {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-  } catch (e: any) {
-    console.log("[goal_execution_bootstrap] failed:", e?.message);
-  }
-}
-
-// ─────────────────────────────────────────
-// EMPTY-REPO WEBSITE BOOTSTRAP (deterministic)
-// - catches simple website/site/page requests before fragile tool streaming
-// - stages proposal/proposal_set directly
-// ─────────────────────────────────────────
-if (shouldUseDeterministicWebsiteBootstrap({ content, inference })) {
-  try {
-    const targetPaths = resolveBootstrapPathsFromUserRequest(content);
-
-    console.log("[repo_execution_bootstrap]", {
-      repoId,
-      targetPaths,
-      inference,
-    });
-
-    if (targetPaths.length > 0) {
-      const proposals: any[] = [];
-
-      for (const targetPath of targetPaths) {
-        const existingId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
-
-        if (existingId) {
-          const existingFile = await vault_read_text(supabase, repoId, existingId);
-
-          const rewritten = await generateRewrittenFileContent({
-            openai,
-            model: runtimePolicy.model,
-            userRequest: content,
-            path: existingFile.path,
-            mime: existingFile.mime,
-            currentContent: existingFile.content,
-          });
-
-          const proposal = await vault_propose_write(
-            supabase,
-            repoId,
-            existingFile.id,
-            rewritten
-          );
-
-          if (proposal) proposals.push(proposal);
-        } else {
-          const newContent = await generateNewFileContent({
-            openai,
-            model: runtimePolicy.model,
-            userRequest: content,
-            path: targetPath,
-            mime: inferTextMimeFromPath(targetPath),
-          });
-
-          const proposal = await vault_propose_create(supabase, repoId, {
-            path: targetPath,
-            content: newContent,
-            mime: inferTextMimeFromPath(targetPath),
-          });
-
-          if (proposal) proposals.push(proposal);
-        }
-      }
-
-      if (proposals.length === 0) {
-        return new Response(
-          "[Observation]\nI inspected the requested bootstrap.\n\n[Assessment]\nNo repository changes were needed.\n\n[Action]\nRetry with a more specific website request.",
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      const visible =
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nThe requested bootstrap was converted into staged repository proposals.\n\n" +
-        "[Action]\nA staged change is ready. Confirm to apply.";
-
-      if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          proposals,
-        });
-
-        const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-        return new Response(
-          `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      if (proposals.length === 1) {
-        return new Response(
-          `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposals[0])}\n`,
-          {
-            headers: { "Content-Type": "text/plain; charset=utf-8" },
-          }
-        );
-      }
-
-      return new Response(
-        `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
-        {
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        }
-      );
-    }
-  } catch (e: any) {
-    console.log("[repo_execution_bootstrap] failed:", e?.message);
-  }
+if (bootstrapResponse) {
+  return bootstrapResponse;
 }
 
 const input = [
@@ -3110,244 +349,6 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
 
   const encoder = new TextEncoder();
 
-function emitMaintenanceIfNeeded(
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  encoder: TextEncoder
-) {
-  try {
-    const msgCount = Number(totalMsgCount ?? 0);
-    const MESSAGE_CAP = 160; // dev test
-
-    const shouldEmit = forceMaintenance || msgCount >= MAINTENANCE_TRIGGER_MSGS;
-
-    if (!shouldEmit) return;
-
-    const payload = forceMaintenance
-      ? { type: "recommend_resummarize", reason: "dev_force", count: msgCount, cap: MESSAGE_CAP }
-      : { type: "recommend_resummarize", reason: "message_cap", count: msgCount, cap: MESSAGE_CAP };
-
-    console.log("[maintenance] trigger", { repoId, msgCount, cap: MESSAGE_CAP, forceMaintenance });
-
-    controller.enqueue(
-      encoder.encode(`\n__MAINTENANCE__:${JSON.stringify(payload)}\n`)
-    );
-
-    console.log("[maintenance] emitted", payload);
-  } catch (e: any) {
-    console.log("[maintenance] emit failed:", e?.message ?? e);
-  }
-}
-
-function dedupePendingProposals(
-  proposals: Array<{
-    fileId?: string;
-    path?: string | null;
-    meta?: any;
-    [key: string]: any;
-  }>
-) {
-  const byKey = new Map<string, any>();
-
-  for (const proposal of proposals) {
-    const op = String(proposal?.meta?.op ?? "").trim().toLowerCase();
-    const fileId = String(proposal?.fileId ?? "").trim();
-    const path = String(proposal?.path ?? proposal?.meta?.path ?? "").trim();
-
-    const key =
-      op === "create"
-        ? (path ? `create:${path}` : "")
-        : fileId
-          ? `file:${fileId}`
-          : path
-            ? `path:${path}`
-            : "";
-
-    if (!key) continue;
-console.log("[proposal_dedupe key]", {
-  op,
-  fileId,
-  path,
-  key,
-});
-    // last proposal wins
-    byKey.set(key, proposal);
-  }
-
-  return Array.from(byKey.values());
-}
-
-function isProbablyBrokenSplitFile(path: string, content: string) {
-  const text = String(content ?? "").trim();
-  const lower = text.toLowerCase();
-
-  if (!text) {
-    return { broken: true, reason: "empty_file" };
-  }
-
-  if (text.length < 40) {
-    return { broken: true, reason: "too_small" };
-  }
-
-  const hasDefaultExport = /\bexport\s+default\s+([A-Za-z0-9_]+)\s*;?/.test(text);
-  const defaultExportMatch = text.match(/\bexport\s+default\s+([A-Za-z0-9_]+)\s*;?/);
-  const defaultExportName = defaultExportMatch?.[1] ?? null;
-
-  if (hasDefaultExport && defaultExportName) {
-    const definesLocally =
-      new RegExp(`\\bconst\\s+${defaultExportName}\\b`).test(text) ||
-      new RegExp(`\\bfunction\\s+${defaultExportName}\\b`).test(text) ||
-      new RegExp(`\\bclass\\s+${defaultExportName}\\b`).test(text);
-
-    const importsName =
-      new RegExp(`\\bimport\\s+${defaultExportName}\\b`).test(text) ||
-      new RegExp(`\\bimport\\s*\\{[^}]*\\b${defaultExportName}\\b[^}]*\\}`).test(text);
-
-    if (!definesLocally && !importsName) {
-      return { broken: true, reason: "dangling_default_export" };
-    }
-  }
-
-  const placeholderPatterns = [
-    "rest of file unchanged",
-    "other code remains unchanged",
-    "the rest of the file",
-    "omitted",
-    "...",
-  ];
-
-  if (placeholderPatterns.some((p) => lower.includes(p))) {
-    return { broken: true, reason: "placeholder_text" };
-  }
-
-  return { broken: false as const, reason: null };
-}
-
-function validateGeneratedSplitFiles(args: {
-  sourcePath: string;
-  sourceContent: string;
-  targetPaths: string[];
-  files: Array<{ path: string; content: string }>;
-}) {
-  const { sourcePath, sourceContent, targetPaths, files } = args;
-
-  if (!Array.isArray(files) || files.length !== targetPaths.length) {
-    return {
-      ok: false,
-      reason: "target_count_mismatch",
-      details: {
-        expected: targetPaths.length,
-        actual: Array.isArray(files) ? files.length : 0,
-      },
-    };
-  }
-
-  const returnedPaths = files.map((f) => String(f.path ?? "").trim());
-  const expectedPaths = targetPaths.map((p) => String(p).trim());
-
-  for (let i = 0; i < expectedPaths.length; i++) {
-    if (returnedPaths[i] !== expectedPaths[i]) {
-      return {
-        ok: false,
-        reason: "target_path_mismatch",
-        details: {
-          expectedPaths,
-          returnedPaths,
-        },
-      };
-    }
-  }
-
-  const badFiles: Array<{ path: string; reason: string }> = [];
-
-  for (const file of files) {
-    const content = String(file.content ?? "");
-
-    if (!content.trim()) {
-      badFiles.push({
-        path: file.path,
-        reason: "empty_content",
-      });
-      continue;
-    }
-
-    const check = isProbablyBrokenSplitFile(file.path, content);
-    if (check.broken) {
-      badFiles.push({ path: file.path, reason: String(check.reason) });
-      continue;
-    }
-
-    if (!looksLikeStandaloneModule(file.path, content)) {
-      badFiles.push({
-        path: file.path,
-        reason: "not_standalone_module",
-      });
-      continue;
-    }
-  }
-
-  if (badFiles.length > 0) {
-    return {
-      ok: false,
-      reason: "invalid_split_shape",
-      details: { badFiles },
-    };
-  }
-
-  const sourceLen = String(sourceContent ?? "").trim().length;
-  const fileLens = files.map((f) => String(f.content ?? "").trim().length);
-  const tinyCount = fileLens.filter((n) => n < Math.max(60, Math.floor(sourceLen * 0.08))).length;
-
-  if (files.length >= 2 && tinyCount >= Math.max(1, files.length - 1)) {
-    return {
-      ok: false,
-      reason: "over_fragmented_split",
-      details: { fileLens, sourceLen },
-    };
-  }
-
-  return {
-    ok: true as const,
-    reason: null,
-    details: null,
-  };
-}
-
-function assertCanonicalProposal(proposal: any) {
-  const content = String(proposal?.content ?? "");
-  const fileId = String(proposal?.fileId ?? "");
-  const nextHash = String(proposal?.nextHash ?? "");
-  const op = String(proposal?.meta?.op ?? "");
-  const confirm = String(proposal?.confirm ?? "");
-
-  const recomputedHash = sha256(normalizeForNoopCheck(content));
-  const expectedConfirm =
-    op === "create"
-      ? confirmCreatePhrase(fileId, recomputedHash)
-      : confirmPhrase(fileId, recomputedHash);
-
-  console.log("[proposal_canonical_check]", {
-    fileId,
-    path: proposal?.path ?? null,
-    op,
-    nextHash,
-    recomputedHash,
-    confirm,
-    expectedConfirm,
-    contentHead: content.slice(0, 80),
-  });
-
-  if (nextHash !== recomputedHash) {
-    throw new Error(
-      `Non-canonical proposal hash for ${proposal?.path ?? fileId}: expected ${recomputedHash}, got ${nextHash}`
-    );
-  }
-
-  if (confirm !== expectedConfirm) {
-    throw new Error(
-      `Non-canonical proposal confirm for ${proposal?.path ?? fileId}`
-    );
-  }
-}
 
  const stream = new ReadableStream<Uint8Array>({
   async start(controller) {
@@ -3367,264 +368,7 @@ function assertCanonicalProposal(proposal: any) {
     
 
     try {
-      async function streamResponse(respStream: any, mode: "pass1" | "pass2") {
-        let sawToolsThisPass = false;
-        let sentAnyDelta = false;
-        let messageDoneText = "";
-        // pass1 buffers EVERYTHING, pass2 can stream
-        let buffer = "";
-
-        for await (const event of respStream) {
-          const e: any = event;
-
-          if (
-            (e.type === "response.created" || e.type === "response.running") &&
-            e.response?.id
-          ) {
-            lastResponseId = e.response.id;
-          }
-
-          if (e.type === "response.output_item.added" && e.item?.type === "function_call") {
-            sawToolsThisPass = true;
-
-            const callId = e.item.call_id || e.item.id;
-            if (callId) {
-              toolNameByCallId.set(callId, String(e.item.name ?? ""));
-              if (typeof e.item.arguments === "string") {
-                toolArgsByCallId.set(callId, e.item.arguments);
-              }
-              console.log("[tool] registered", {
-                name: e.item.name,
-                callId,
-                initialArgsLen: String(e.item.arguments ?? "").length,
-              });
-            }
-            continue;
-          }
-
-          if (e.type === "response.function_call_arguments.delta") {
-            const callId = e.call_id || e.item_id;
-            if (callId) {
-              toolArgsByCallId.set(
-                callId,
-                (toolArgsByCallId.get(callId) ?? "") + (e.delta ?? "")
-              );
-            }
-            continue;
-          }
-
-          if (e.type === "response.function_call_arguments.done") {
-            const callId = e.call_id || e.item_id;
-            if (callId && typeof e.arguments === "string") {
-              toolArgsByCallId.set(callId, e.arguments);
-            }
-            continue;
-          }
-
-          if (e.type === "response.output_item.done" && e.item?.type === "function_call") {
-            const callId = e.item.call_id || e.item.id;
-            if (callId) {
-              toolNameByCallId.set(
-                callId,
-                String(e.item.name ?? toolNameByCallId.get(callId) ?? "")
-              );
-              if (typeof e.item.arguments === "string") {
-                toolArgsByCallId.set(callId, e.item.arguments);
-              }
-
-              console.log("[tool] finalized", {
-                name: e.item.name,
-                callId,
-                finalArgsLen: String(e.item.arguments ?? "").length,
-                finalArgsHead: String(e.item.arguments ?? "").slice(0, 300),
-              });
-            }
-            continue;
-          }
-
-          if (e.type === "response.output_item.done" && e.item?.type === "message") {
-            let combined = "";
-            const parts = Array.isArray(e.item.content) ? e.item.content : [];
-
-            for (const p of parts) {
-              if (typeof p?.text === "string") combined += p.text;
-              if (typeof p?.output_text === "string") combined += p.output_text;
-              if (typeof p?.content === "string") combined += p.content;
-              if (typeof p?.value === "string") combined += p.value;
-              if (p?.text && typeof p.text?.value === "string") combined += p.text.value;
-            }
-
-            if (combined) {
-              messageDoneText = combined;
-            }
-            continue;
-          }
-
-          if (e.type === "response.function_call_arguments.done") {
-            
-            const callId = e.call_id || e.item_id;
-            if (callId) {
-              const finalArgs = (e.arguments ?? "").toString();
-              if (finalArgs) toolArgsByCallId.set(callId, finalArgs);
-            }
-            continue;
-          }
-
-          if (e.type === "response.function_call_arguments.delta") {
-            const callId = e.call_id || e.item_id;
-            if (callId) {
-              toolArgsByCallId.set(
-                callId,
-                (toolArgsByCallId.get(callId) ?? "") + (e.delta ?? "")
-              );
-            }
-            continue;
-          }
-
-          if (e.type === "response.output_text.delta") {
-            if (firstTokenTime === null) {
-              firstTokenTime = performance.now();
-              console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
-            }
-
-            sentAnyDelta = true;
-            const chunk = e.delta ?? "";
-            if (!chunk) continue;
-
-            
-              buffer += chunk;
-            continue;
-          }
-
-          if (e.type === "response.output_text.done") {
-            if (sentAnyDelta) continue;
-            const txt = e.text ?? "";
-            if (!txt) continue;
-
-            if (firstTokenTime === null) {
-              firstTokenTime = performance.now();
-              console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
-            }
-
-            buffer += txt;
-            continue;
-          }
-
-          if (e.type === "response.completed") {
-            const finalText = (e.response?.output_text ?? "").toString();
-
-            if (!sentAnyDelta) {
-              
-              if (finalText) {
-                buffer += finalText;
-              } else if (messageDoneText) {
-                buffer += messageDoneText;
-              }
-            }
-console.log("[stream completed]", {
-  sentAnyDelta,
-  finalTextLen: finalText.length,
-  messageDoneTextLen: messageDoneText.length,
-});
-            const textForBilling = buffer;
-
-                if (!creditsCharged) {
-                  creditsCharged = true;
-
-                  const usage = e.response?.usage ?? null;
-                  const inputTokens = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0) || 0;
-                  const outputTokens =
-                    Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0) || 0;
-
-                  const estimated = inputTokens === 0 && outputTokens === 0;
-
-                  const amount = estimated
-                    ? Math.max(1, Math.ceil(textForBilling.length / 4))
-                    : Math.max(1, inputTokens + outputTokens);
-
-                  const meta = {
-                    requestId,
-                    mode,
-                    tier: tierPolicy.tier,
-                    runtimeTier: runtimePolicy.tier,
-                    model: runtimePolicy.model,
-                    estimated,
-                    inputTokens,
-                    outputTokens,
-                    responseId: lastResponseId,
-                  };
-
-                  if (runtimePolicy.tier === "admin") {
-                    controller.enqueue(
-                      encoder.encode(
-                        `\n__CREDITS__:${JSON.stringify({
-                          remaining: 99999999,
-                          charged: 0,
-                          duplicated: false,
-                          requestId,
-                        })}\n`
-                      )
-                    );
-
-                    console.log("[credits] admin tier - skipping deduction", {
-                      requestId,
-                      repoId,
-                      workspaceId,
-                      model: runtimePolicy.model,
-                      inputTokens,
-                      outputTokens,
-                      estimated,
-                    });
-                  } else {
-                    const { data: chargeRows, error: chErr } = await supabase.rpc("credits_charge", {
-                      _workspace_id: workspaceId,
-                      _period_start: periodStart,
-                      _request_id: requestId,
-                      _amount: amount,
-                      _repo_id: repoId,
-                      _meta: meta,
-                    });
-
-                    if (!chErr) {
-                      const charge = Array.isArray(chargeRows) ? chargeRows[0] : chargeRows;
-
-                      controller.enqueue(
-                        encoder.encode(
-                          `\n__CREDITS__:${JSON.stringify({
-                            remaining: Number(charge?.remaining ?? 0),
-                            charged: amount,
-                            duplicated: Boolean(charge?.duplicated),
-                            requestId,
-                          })}\n`
-                        )
-                      );
-
-                      console.log("[credits] charged", {
-                        amount,
-                        ok: charge?.ok,
-                        duplicated: charge?.duplicated,
-                        remaining: charge?.remaining,
-                      });
-                    } else {
-                      console.log("[credits] charge failed:", chErr.message);
-                    }
-                  }
-                }
-
-            break;
-          }
-        }
-        const builtPendingTools = Array.from(toolNameByCallId.entries()).map(
-          ([call_id, name]) => ({
-            call_id,
-            name,
-            arguments: toolArgsByCallId.get(call_id) ?? "",
-          })
-        );
-                return { sawToolsThisPass, buffer, builtPendingTools };
-      }
-
-      let resp = await openai.responses.create({
+            let resp = await openai.responses.create({
         model: runtimePolicy.model,
         instructions: resolvedInstructions,
         input,
@@ -3634,7 +378,21 @@ console.log("[stream completed]", {
         max_output_tokens: runtimePolicy.output.maxOutputTokens,
       });
 
-      const pass1 = await streamResponse(resp, "pass1");
+      const pass1 = await streamResponse({
+        respStream: resp,
+        mode: "pass1",
+        controller,
+        encoder,
+        onFirstToken: () => {
+          if (firstTokenTime === null) {
+            firstTokenTime = performance.now();
+            console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
+          }
+        },
+        onResponseCreated: (id) => {
+          lastResponseId = id;
+        },
+      });
       console.log("[tool] built after pass1", {
         count: (pass1.builtPendingTools ?? []).length,
         tools: (pass1.builtPendingTools ?? []).map((t: any) => ({
@@ -3697,88 +455,88 @@ console.log("[stream completed]", {
 
       console.log("[stream] pass1 flushed", { len: fullText.length });
 
- for (let round = 0; round < runtimePolicy.tools.maxToolRounds; round++) {
-  if (pendingTools.length === 0) break;
+      for (let round = 0; round < runtimePolicy.tools.maxToolRounds; round++) {
+        if (pendingTools.length === 0) break;
 
-  let toolsToRun = pendingTools;
-  pendingTools = [];
+        let toolsToRun = pendingTools;
+        pendingTools = [];
 
-  console.log("[tool] round start", {
-    round,
-    count: toolsToRun.length,
-    tools: toolsToRun.map((t) => ({
-      callId: t.call_id,
-      name: t.name,
-      argsLen: String(t.arguments ?? "").length,
-      argsHead: String(t.arguments ?? "").slice(0, 200),
-    })),
-  });
-
-  let truncated = false;
-
-  if (toolsToRun.length > runtimePolicy.tools.maxToolCallsPerRound) {
-    console.log("[tool] per-round cap exceeded", {
-      requested: toolsToRun.length,
-      allowed: tierPolicy.tools.maxToolCallsPerRound,
-    });
-
-    truncated = true;
-    toolsToRun = toolsToRun.slice(0, tierPolicy.tools.maxToolCallsPerRound);
-  }
-
-  if (pendingTools.length > 0) {
-    console.log("[tool] max rounds reached, terminating deterministically", {
-      remaining: pendingTools.length,
-      maxRounds: tierPolicy.tools.maxToolRounds,
-    });
-
-    const terminationNotice =
-      "[Observation]\nTool execution depth limit reached.\n\n" +
-      "[Assessment]\nThe current tier does not allow additional tool rounds.\n\n" +
-      "[Action]\nRefine the request or upgrade tier for deeper operations.";
-
-    controller.enqueue(encoder.encode(terminationNotice));
-    fullText = terminationNotice;
-  }
-
-  const toolOutputs: any[] = [];
-
-  for (const tool of toolsToRun) {
-    const callId = tool.call_id;
-    const toolName = tool.name;
-
-    if (truncated) {
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: "tier_cap_notice",
-        output: JSON.stringify({
-          error: "Tool call limit per round exceeded for this tier.",
-          code: "TIER_TOOL_ROUND_LIMIT",
-          allowed: runtimePolicy.tools.maxToolCallsPerRound,
-        }),
-      });
-    }
-
-    let argsJson = (toolArgsByCallId.get(callId) ?? tool.arguments ?? "").trim();
-
-    if (!argsJson) {
-      if (toolName === "vault_list_files") {
-        argsJson = "{}";
-      } else {
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({ error: `Empty arguments for ${toolName}` }),
+        console.log("[tool] round start", {
+          round,
+          count: toolsToRun.length,
+          tools: toolsToRun.map((t) => ({
+            callId: t.call_id,
+            name: t.name,
+            argsLen: String(t.arguments ?? "").length,
+            argsHead: String(t.arguments ?? "").slice(0, 200),
+          })),
         });
-        continue;
-      }
-    }
-console.log("[tool] final args snapshot", {
-  toolName,
-  callId,
-  argsLen: argsJson.length,
-  argsHead: argsJson.slice(0, 300),
-});
+
+        let truncated = false;
+
+        if (toolsToRun.length > runtimePolicy.tools.maxToolCallsPerRound) {
+          console.log("[tool] per-round cap exceeded", {
+            requested: toolsToRun.length,
+            allowed: tierPolicy.tools.maxToolCallsPerRound,
+          });
+
+          truncated = true;
+          toolsToRun = toolsToRun.slice(0, tierPolicy.tools.maxToolCallsPerRound);
+        }
+
+        if (pendingTools.length > 0) {
+          console.log("[tool] max rounds reached, terminating deterministically", {
+            remaining: pendingTools.length,
+            maxRounds: tierPolicy.tools.maxToolRounds,
+          });
+
+          const terminationNotice =
+            "[Observation]\nTool execution depth limit reached.\n\n" +
+            "[Assessment]\nThe current tier does not allow additional tool rounds.\n\n" +
+            "[Action]\nRefine the request or upgrade tier for deeper operations.";
+
+          controller.enqueue(encoder.encode(terminationNotice));
+          fullText = terminationNotice;
+        }
+
+        const toolOutputs: any[] = [];
+
+        for (const tool of toolsToRun) {
+          const callId = tool.call_id;
+          const toolName = tool.name;
+
+          if (truncated) {
+            toolOutputs.push({
+              type: "function_call_output",
+              call_id: "tier_cap_notice",
+              output: JSON.stringify({
+                error: "Tool call limit per round exceeded for this tier.",
+                code: "TIER_TOOL_ROUND_LIMIT",
+                allowed: runtimePolicy.tools.maxToolCallsPerRound,
+              }),
+            });
+          }
+
+          let argsJson = (toolArgsByCallId.get(callId) ?? tool.arguments ?? "").trim();
+
+          if (!argsJson) {
+            if (toolName === "vault_list_files") {
+              argsJson = "{}";
+            } else {
+              toolOutputs.push({
+                type: "function_call_output",
+                call_id: callId,
+                output: JSON.stringify({ error: `Empty arguments for ${toolName}` }),
+              });
+              continue;
+            }
+          }
+      console.log("[tool] final args snapshot", {
+        toolName,
+        callId,
+        argsLen: argsJson.length,
+        argsHead: argsJson.slice(0, 300),
+      });
     console.log("[tool] args", { toolName, callId, argsJson });
 
     let parsedArgs: any;
@@ -4302,14 +1060,15 @@ console.log(
 if (splitShouldPreverify) {
   console.log("[split_preverify] starting");
 
-  const result = await finalizeProposalSet({
-    openai,
-    model: runtimePolicy.model,
-    repoId,
-    userRequest: content,
-    baselineVerifyPayload: baselineVerify.verifyPayload,
-    proposals: localSplitProposals,
-  });
+const result = await finalizeProposalSet({
+  openai,
+  model: runtimePolicy.model,
+  repoId,
+  userRequest: content,
+  baselineVerifyPayload: baselineVerify.verifyPayload,
+  verifyCmd: inferredVerifyCmd,
+  proposals: localSplitProposals,
+});
 
   controller.enqueue(
     encoder.encode(
@@ -5379,14 +2138,15 @@ if (pendingProposalOuts.length === 1) {
     if (shouldPreVerifyProposalSet(proposals)) {
       console.log("[preverify] starting");
 
-      const result = await finalizeProposalSet({
-        openai,
-        model: runtimePolicy.model,
-        repoId,
-        userRequest: content,
-        baselineVerifyPayload: baselineVerify.verifyPayload,
-        proposals,
-      });
+const result = await finalizeProposalSet({
+  openai,
+  model: runtimePolicy.model,
+  repoId,
+  userRequest: content,
+  baselineVerifyPayload: baselineVerify.verifyPayload,
+  verifyCmd: inferredVerifyCmd,
+  proposals,
+});
 
 if (result.repaired) {
   for (const p of result.finalProposals) {
@@ -5421,7 +2181,7 @@ if (result.repaired) {
       encoder.encode(
         `\n__PREVERIFY__:${JSON.stringify({
           ok: false,
-          command: "node_verify",
+          verifyCmd: "node_verify",
           exitCode: -1,
           durationMs: 0,
           stdout: "",
@@ -5463,14 +2223,15 @@ if (result.repaired) {
     if (shouldPreVerifyProposalSet(proposals)) {
       console.log("[preverify] starting");
 
-      const result = await finalizeProposalSet({
-        openai,
-        model: runtimePolicy.model,
-        repoId,
-        userRequest: content,
-        baselineVerifyPayload: baselineVerify.verifyPayload,
-        proposals,
-      });
+const result = await finalizeProposalSet({
+  openai,
+  model: runtimePolicy.model,
+  repoId,
+  userRequest: content,
+  baselineVerifyPayload: baselineVerify.verifyPayload,
+  verifyCmd: inferredVerifyCmd,
+  proposals,
+});
 
 if (result.repaired) {
   for (const p of result.finalProposals) {
@@ -5505,7 +2266,7 @@ if (result.repaired) {
       encoder.encode(
         `\n__PREVERIFY__:${JSON.stringify({
           ok: false,
-          command: "node_verify",
+          command: inferredVerifyCmd,
           exitCode: -1,
           durationMs: 0,
           stdout: "",
@@ -5552,7 +2313,21 @@ if (deterministicToolHandled) {
       max_output_tokens: runtimePolicy.output.maxOutputTokens,
     });
 
-    const pass2 = await streamResponse(resp, "pass2");
+    const pass2 = await streamResponse({
+      respStream: resp,
+      mode: "pass2",
+      controller,
+      encoder,
+      onFirstToken: () => {
+        if (firstTokenTime === null) {
+          firstTokenTime = performance.now();
+          console.log("TTFT (ms):", Math.round(firstTokenTime - t0));
+        }
+      },
+      onResponseCreated: (id) => {
+        lastResponseId = id;
+      },
+    });
     rawAssistantText = pass2.buffer ?? "";
     fullText = pass2.buffer ?? "";
   } catch (err: any) {
@@ -5663,25 +2438,19 @@ const { error: aInsErr } = await supabase.from("repo_messages").insert({
         console.log("[repo_messages] assistant insert failed:", aInsErr.message);
       }
 
-      emitMaintenanceIfNeeded(controller, encoder);
+            emitMaintenanceIfNeeded({
+        controller,
+        encoder,
+        forceMaintenance,
+        totalMsgCount,
+        repoId,
+        triggerMsgs: MAINTENANCE_TRIGGER_MSGS,
+      });
 
-      try {
-        const MESSAGE_CAP = 160;
-        const msgCount = Number(totalMsgCount ?? 0);
-
-        if (msgCount >= MESSAGE_CAP) {
-          console.log("[maintenance] auto-resummarize trigger", {
-            repoId,
-            msgCount,
-          });
-
-          await fetch(`/api/repo/${repoId}/maintenance/resummarize`, {
-            method: "POST",
-          });
-        }
-      } catch (e: any) {
-        console.log("[maintenance] auto-resummarize failed:", e?.message);
-      }
+        await autoResummarizeIfNeeded({
+        repoId,
+        totalMsgCount,
+      });
 
       try {
         const engraving = await maybeSummarizeAndEngraveProposal(supabase, repoId, user.id);

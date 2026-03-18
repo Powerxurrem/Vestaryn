@@ -58,37 +58,50 @@ export default function GoalPlanCard({
         )}
       </div>
 
-      {/* Steps */}
-      <div className="space-y-2">
-        {goal.steps.map((step) => {
-          const isActive = step.id === goal.currentStepId;
+ {/* Steps */}
+<div className="space-y-2">
+  {goal.steps.map((step) => {
+    const goalCompleted = goal.status === "completed";
+    const goalCancelled = goal.status === "cancelled";
 
-          return (
-            <div
-              key={step.id}
-              className={`flex items-start gap-2 rounded-md px-2 py-1 text-sm transition ${
-                isActive
-                  ? "bg-blue-500/10 text-blue-200 shadow-[0_0_18px_rgba(59,130,246,0.15)]"
-                  : "text-white/80"
-              }`}
-            >
-              <div className="w-5">{statusIcon(step.status)}</div>
+    const isDone = goalCompleted || step.status === "verified";
+    const isActive =
+      !goalCompleted &&
+      !goalCancelled &&
+      step.id === goal.currentStepId;
 
-              <div>
-                <div className={isActive ? "font-semibold" : ""}>
-                  {step.title}
-                </div>
+    return (
+      <div
+        key={step.id}
+        className={`flex items-start gap-2 rounded-md px-2 py-1 text-sm transition ${
+          isActive
+            ? "bg-blue-500/10 text-blue-200 shadow-[0_0_18px_rgba(59,130,246,0.15)]"
+            : isDone
+            ? "text-emerald-200"
+            : "text-white/80"
+        }`}
+      >
+        <div className="w-5">
+          {goalCompleted && step.status !== "verified"
+            ? statusIcon("verified")
+            : statusIcon(step.status)}
+        </div>
 
-                {step.description && (
-                  <div className="text-xs text-white/50">
-                    {step.description}
-                  </div>
-                )}
-              </div>
+        <div>
+          <div className={isActive ? "font-semibold" : ""}>
+            {step.title}
+          </div>
+
+          {step.description && (
+            <div className="text-xs text-white/50">
+              {step.description}
             </div>
-          );
-        })}
+          )}
+        </div>
       </div>
+    );
+  })}
+</div>
 
       {goal.status === "completed" && (
         <div className="text-sm text-emerald-300 pt-1">

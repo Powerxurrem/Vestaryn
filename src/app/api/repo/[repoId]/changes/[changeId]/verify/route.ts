@@ -16,6 +16,7 @@ import { supabaseServerComponent } from "@/lib/supabase/server"; // src/lib/supa
 import { createSupabaseAdmin } from "@/lib/supabase/admin";      // src/lib/supabase/admin.ts
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot"; // src/lib/runner/snapshot.ts
 import { runnerRun } from "@/lib/runner/client";                   // src/lib/runner/client.ts
+import { ALLOWED_VERIFY_COMMANDS, type VerifyCommand } from "@/lib/chamber/verifyRuntime";
 
 export const runtime = "nodejs";
 
@@ -86,17 +87,26 @@ export async function POST(
   // ─────────────────────────────────────────────
   // 4) Snapshot + runner execution
   // ─────────────────────────────────────────────
-  const body = await req.json().catch(() => ({} as any));
-  const verifyCmd: VerifyCmd =
-    body?.commandId === "node_verify" ||
-    body?.commandId === "node_typecheck" ||
-    body?.commandId === "node_lint" ||
-    body?.commandId === "node_test"
-      ? body.commandId
-      : "node_verify"; // ✅ default to full verify
-  const jobId = `verify-${repoId}-${changeId}-${Date.now()}`;
 
-  console.log("[change_verify] start", { requestId, repoId, changeId, jobId, verifyCmd });
+const body = await req.json().catch(() => ({} as any));
+
+const requestedCommand = String(body?.commandId ?? "");
+const fallbackCommand = "node_verify" as VerifyCommand;
+
+const verifyCmd: VerifyCommand =
+  ALLOWED_VERIFY_COMMANDS.includes(requestedCommand as VerifyCommand)
+    ? (requestedCommand as VerifyCommand)
+    : fallbackCommand;
+    
+const jobId = `verify-${repoId}-${changeId}-${Date.now()}`;
+
+console.log("[change_verify] start", {
+  requestId,
+  repoId,
+  changeId,
+  jobId,
+  verifyCmd,
+});
 
   try {
     // build snapshot zip in storage + signed URL

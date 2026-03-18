@@ -39,14 +39,17 @@ export function isExplainOnlyQuestion(text: string) {
   return explainSignal && noDirectExecutionSignal;
 }
 
-export function isRepositoryExecutionIntent(text: string) {
-  const t = normText(text).toLowerCase();
+export function isRepositoryExecutionIntent(content: string) {
+  const t = normText(content).toLowerCase();
 
   if (!t) return false;
   if (isInternalControlPrompt(t)) return false;
 
+  // Explicit planning requests should not be treated as execution
+  if (isGoalPlanningUserIntent(t)) return false;
+
   const hasStrongActionVerb =
-    /\b(create|build|make|implement|fix|update|edit|modify|rewrite|refactor|replace|delete|remove|add|repair|resolve)\b/.test(t);
+    /\b(create|build|implement|fix|update|edit|modify|rewrite|refactor|replace|delete|remove|add|repair|resolve)\b/.test(t);
 
   const hasExecutionTarget =
     /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(t) ||
@@ -328,39 +331,30 @@ export function buildGoalExecutionInstruction(step: any, plan: any) {
 export function isGoalPlanningUserIntent(content: string) {
   const text = normText(content).toLowerCase();
 
-  const planningPhrases = [
-    "make a plan",
-    "create a plan",
-    "goal plan",
-    "step by step plan",
-    "roadmap",
-    "break this down into steps",
-    "plan this project",
-    "help me plan",
-    "build plan",
+  if (!text) return false;
+  if (isInternalControlPrompt(text)) return false;
+
+  const planningPatterns = [
+    /\bgoal plan\b/,
+    /\bnew goal plan\b/,
+    /\bmake (a )?(new )?goal plan\b/,
+    /\bcreate (a )?(new )?goal plan\b/,
+    /\bmake a plan\b/,
+    /\bcreate a plan\b/,
+    /\bstep by step plan\b/,
+    /\broadmap\b/,
+    /\bbreak (this|it|the project) down into steps\b/,
+    /\bplan this project\b/,
+    /\bhelp me plan\b/,
+    /\bbuild plan\b/,
+    /\bimplementation plan\b/,
+    /\bimprovement plan\b/,
+    /\bplan for (this|the current|my) project\b/,
+    /\bplan to improve\b/,
+    /\bimprove the current project\b/,
   ];
 
-  const executionHeavyPhrases = [
-    "create",
-    "build",
-    "make",
-    "fix",
-    "update",
-    "edit",
-    "change",
-    "implement",
-    "execute",
-    "apply",
-  ];
-
-  const asksForPlanning = planningPhrases.some((p) => text.includes(p));
-  const looksLikeInternal = isInternalControlPrompt(content);
-
-  // Optional: if user explicitly says both plan + build, still allow planning
-  // only if they asked for plan-like wording.
-  if (looksLikeInternal) return false;
-
-  return asksForPlanning;
+  return planningPatterns.some((re) => re.test(text));
 }
 
 export function extractGoalExecute(text: string) {
@@ -381,5 +375,14 @@ export function extractGoalExecute(text: string) {
   }
 }
 
+export function isNewGoalPlanIntent(text: string): boolean {
+  const t = normText(text);
 
+  return (
+    /\b(new|another|fresh|replace|redo)\s+(goal\s+plan|plan)\b/i.test(t) ||
+    /\b(make|create|build|generate)\s+(a\s+)?(new\s+)?goal\s+plan\b/i.test(t) ||
+    /\b(goal\s+plan)\s+(for|to)\s+(improve|upgrade|refine|extend)\b/i.test(t) ||
+    /\bimprove\b.*\b(current project|existing project|project in the vault|vault)\b/i.test(t)
+  );
+}
 

@@ -8,10 +8,15 @@ import { supabaseServerComponent } from "@/lib/supabase/server";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { runnerRun } from "@/lib/runner/client";
-
+import {
+  ALLOWED_VERIFY_COMMANDS,
+  type VerifyCommand,
+  resolveVerifyCommand,
+} from "@/lib/chamber/verifyRuntime";
+import { loadRepoInference } from "@/lib/chamber/repoContext";
 export const runtime = "nodejs";
 
-type VerifyCmd = "node_typecheck" | "node_lint" | "node_test" | "node_verify";
+
 
 export async function POST(
   req: Request,
@@ -46,14 +51,22 @@ export async function POST(
   if (!isMember) return new Response("Forbidden", { status: 403 });
 
   // 3) Body
+    // 3) Body
   const body = await req.json().catch(() => ({} as any));
-  const verifyCmd: VerifyCmd =
-    body?.commandId === "node_verify" ||
-    body?.commandId === "node_typecheck" ||
-    body?.commandId === "node_lint" ||
-    body?.commandId === "node_test"
-      ? body.commandId
-      : "node_verify";
+  const requestedCommand = String(body?.commandId ?? "");
+
+  const { inference } = await loadRepoInference({
+    supabase,
+    repoId,
+  });
+
+  const inferredFallback =
+    resolveVerifyCommand(inference?.projectType ?? null) ?? "node_verify";
+
+  const verifyCmd: VerifyCommand =
+    ALLOWED_VERIFY_COMMANDS.includes(requestedCommand as VerifyCommand)
+      ? (requestedCommand as VerifyCommand)
+      : inferredFallback;
 
   const runId = typeof body?.runId === "string" ? body.runId : crypto.randomUUID();
   const changeId = typeof body?.changeId === "string" ? body.changeId : null;

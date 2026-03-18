@@ -203,6 +203,21 @@ if (sections.action.includes(stagedPhrase)) {
   return sections;
 }
 
+function goalStatusRank(status?: GoalStatus | null) {
+  switch (status) {
+    case "completed":
+      return 4;
+    case "running":
+      return 3;
+    case "awaiting_approval":
+      return 2;
+    case "cancelled":
+      return 0;
+    default:
+      return 0;
+  }
+}
+
 function dispatchGoalInstructionWhenIdle(instruction: string, tries = 0) {
   if (!instruction.trim()) return;
 
@@ -498,53 +513,75 @@ useEffect(() => {
     }
   }
 
-if (!latestPlan) {
-  console.log("[goalPlan derived from messages] no latest plan found");
-  setGoalPlan(null);
-  return;
-}
+  setGoalPlan((prev) => {
+    if (!latestPlan) {
+      console.log("[goalPlan derived from messages] no latest plan found");
+      return null;
+    }
 
-  let merged: GoalPlan = { ...latestPlan };
-  const activeGoalId = merged.goalId;
+    let merged: GoalPlan = { ...latestPlan };
+    const activeGoalId = merged.goalId;
 
-  for (let i = latestPlanIndex + 1; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role !== "assistant") continue;
+    for (let i = latestPlanIndex + 1; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.role !== "assistant") continue;
 
-    const text = String(msg.content ?? "");
+      const text = String(msg.content ?? "");
 
-    const status = extractGoalStatus(text);
-    if (status) {
-      if ((status as any).goalId && (status as any).goalId !== activeGoalId) {
+      const status = extractGoalStatus(text);
+      if (status) {
+        if ((status as any).goalId && (status as any).goalId !== activeGoalId) {
+          continue;
+        }
+
+        merged = reconcileGoalPlanState(merged, status);
         continue;
       }
 
-      const nextCurrentStepId =
-        typeof (status as any).currentStepId === "string"
-          ? (status as any).currentStepId
-          : merged.currentStepId ?? null;
+      const done = extractGoalDone(text);
+      if (done) {
+        if ((done as any).goalId && (done as any).goalId !== activeGoalId) {
+          continue;
+        }
 
-            merged = reconcileGoalPlanState(merged, status);
-
-      continue;
-    }
-
-    const done = extractGoalDone(text);
-    if (done) {
-      if ((done as any).goalId && (done as any).goalId !== activeGoalId) {
-        continue;
+        merged = reconcileGoalPlanState(merged, {
+          ...done,
+          status: "completed",
+          currentStepId: null,
+        });
       }
-
-          merged = reconcileGoalPlanState(merged, {
-        ...done,
-        status: "completed",
-        currentStepId: null,
-      });
     }
-  }
 
-  console.log("[goalPlan derived from messages]", merged);
-  setGoalPlan(merged);
+    // IMPORTANT:
+    // Do not let stale persisted plan data downgrade a newer in-memory state
+    if (prev?.goalId === merged.goalId) {
+      const prevRank = goalStatusRank(prev.status);
+      const mergedRank = goalStatusRank(merged.status);
+
+      const prevCompleted = Array.isArray(prev.completedStepIds)
+        ? prev.completedStepIds.length
+        : 0;
+
+      const mergedCompleted = Array.isArray(merged.completedStepIds)
+        ? merged.completedStepIds.length
+        : 0;
+
+      const shouldKeepPrevState =
+        prevRank > mergedRank ||
+        prevCompleted > mergedCompleted;
+
+      if (shouldKeepPrevState) {
+        merged = reconcileGoalPlanState(merged, {
+          status: prev.status,
+          currentStepId: prev.currentStepId ?? merged.currentStepId ?? null,
+          completedStepIds: prev.completedStepIds ?? merged.completedStepIds ?? [],
+        });
+      }
+    }
+
+    console.log("[goalPlan derived from messages]", merged);
+    return merged;
+  });
 }, [messages]);
 
   // ─────────────────────────────────────────────────────────────
@@ -1259,7 +1296,11 @@ for (let i = 0; i < lines.length; i++) {
       console.log("VERIFY payload", verify);
 
       if (typeof onFileStatus === "function") {
-        if (verify?.pending) {
+        if (verify?.skipped) {
+          for (const fid of ids) {
+            onFileStatus(fid, "ok", "verify skipped");
+          }
+        } else if (verify?.pending) {
           for (const fid of ids) {
             onFileStatus(fid, "pending", "Verifying…");
           }
@@ -2016,24 +2057,23 @@ if (shouldHideEmptyAssistantBubble) {
                   goal={goalPlan}
                   continueDisabled={goalContinueBlocked}
                   onApprove={() => {
-                    setGoalPlan((prev) =>
-                      prev
-                        ? reconcileGoalPlanState(prev, {
-                            status: "running",
-                            currentStepId: prev.steps?.[0]?.id ?? null,
-                            completedStepIds: [],
-                          })
-                        : prev
-                    );
-console.log("[ChatFrame render goalPlan]", goalPlan
-  ? {
-      goalId: goalPlan.goalId,
-      status: goalPlan.status,
-      currentStepId: goalPlan.currentStepId ?? null,
-      stepCount: goalPlan.steps.length,
-    }
-  : null
-);
+                    setGoalPlan((prev) => {
+                      if (!prev) return prev;
+
+                      const firstStepId = prev.steps?.[0]?.id ?? null;
+
+                      return {
+                        ...prev,
+                        status: "running",
+                        currentStepId: firstStepId,
+                        completedStepIds: [],
+                        steps: prev.steps.map((step, idx) => ({
+                          ...step,
+                          status: idx === 0 ? "running" : "pending",
+                        })),
+                      };
+                    });
+
                     handleSend("__GOAL_APPROVE__");
                   }}
                   onContinue={() => {

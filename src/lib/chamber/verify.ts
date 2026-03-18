@@ -75,7 +75,7 @@ export function isBaselinePreverifyFailure(
 
 export async function runPreVerifyForProposalSet(opts: {
   repoId: string;
-  verifyCmd?: VerifyCommand;
+  verifyCmd: VerifyCommand;
   proposals: Array<{
     fileId: string;
     path?: string | null;
@@ -84,7 +84,7 @@ export async function runPreVerifyForProposalSet(opts: {
     meta?: any;
   }>;
 }) {
-  const { repoId, proposals, verifyCmd = "node_verify" } = opts;
+  const { repoId, proposals, verifyCmd } = opts;
   const jobId = `preverify-${repoId}-${Date.now()}`;
   const supabaseAdmin = createSupabaseAdmin();
 
