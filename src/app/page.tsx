@@ -119,13 +119,13 @@ export default async function Home({
                   Enter the Chamber
                 </Link>
               ) : (
-                <a
-                  href="#early-access"
-                  className="group relative rounded-2xl border border-white/10 bg-white px-5 py-3 text-sm font-medium text-black hover:bg-white/90"
-                >
-                  <span className="absolute inset-0 -z-10 rounded-2xl bg-blue-500/20 blur-xl opacity-50 transition-opacity duration-300 group-hover:opacity-80"></span>
-                  Request Early Access
-                </a>
+              <a
+                href="#waitlist-email"
+                className="group relative rounded-2xl border border-white/10 bg-white px-5 py-3 text-sm font-medium text-black hover:bg-white/90"
+              >
+                <span className="absolute inset-0 -z-10 rounded-2xl bg-blue-500/20 blur-xl opacity-50 transition-opacity duration-300 group-hover:opacity-80"></span>
+                Request Early Access
+              </a>
               )}
 
               <a
@@ -402,13 +402,14 @@ export default async function Home({
                   </div>
                 )}
 
-{waitlistState !== "success" && (
-  <form
-    action="/api/waitlist"
-    method="post"
-    className="mt-6 flex flex-col gap-3"
-    >            
+                  {waitlistState !== "success" && (
+                    <form
+                      action="/api/waitlist"
+                      method="post"
+                      className="mt-6 flex flex-col gap-3"
+                      >            
                   <input
+                    id="waitlist-email"
                     type="email"
                     name="email"
                     required
