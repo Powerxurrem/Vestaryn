@@ -4,8 +4,8 @@ import { createServerClient } from "@supabase/ssr";
 import { updateSession } from "./src/lib/supabase/middleware";
 import { isEarlyAccessAllowed } from "@/lib/early-access";
 
-const PUBLIC_PATHS = ["/login", "/early_access"];
-const PUBLIC_PREFIXES = ["/auth", "/api/auth"];
+const PUBLIC_PATHS = ["/", "/login", "/early_access"];
+const PUBLIC_PREFIXES = ["/auth", "/api/auth", "/api/waitlist"];
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
