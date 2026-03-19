@@ -277,7 +277,7 @@ onProposalPreview={(proposals) => {
 {/* Splitter */}
 <div
   onPointerDown={onSplitterPointerDown}
-  className="w-[10px] shrink-0 cursor-col-resize relative group touch-none select-none"
+  className="w-[16px] shrink-0 cursor-col-resize relative group touch-none select-none"
   title="Drag to resize"
 >
   <div className="absolute inset-0 pointer-events-none" />

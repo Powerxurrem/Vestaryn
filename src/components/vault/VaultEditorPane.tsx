@@ -459,12 +459,11 @@ return (
   onPointerDown={onDividerPointerDown}
   onPointerMove={onDividerPointerMove}
   onPointerUp={onDividerPointerUp}
-  className="group relative w-2 shrink-0 cursor-col-resize select-none"
+  className="group relative w-4 shrink-0 cursor-col-resize select-none touch-none"
   title="Drag to resize"
 >
-  <div
-  className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[2px] bg-blue-400/40 shadow-[0_0_8px_rgba(96,165,250,0.6)]"
-/></div>
+  <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[2px] bg-blue-400/40 shadow-[0_0_8px_rgba(96,165,250,0.6)]" />
+</div>
 
 {/* Editor column */}
 <main className="flex-1 min-w-0 flex flex-col">
