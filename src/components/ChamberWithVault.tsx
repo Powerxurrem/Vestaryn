@@ -209,37 +209,40 @@ const markFileUpdated = useCallback(
     });
   }
 
-  function onSplitterMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    e.preventDefault();
+function onSplitterPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+  e.preventDefault();
 
-    const startX = e.clientX;
-    const startPct = leftPct;
+  const startX = e.clientX;
+  const startPct = leftPct;
 
-    const parent = (e.currentTarget.parentElement as HTMLDivElement) || null;
-    if (!parent) return;
+  const parent = (e.currentTarget.parentElement as HTMLDivElement) || null;
+  if (!parent) return;
 
-    const rect = parent.getBoundingClientRect();
+  const rect = parent.getBoundingClientRect();
 
-    function onMove(ev: MouseEvent) {
-      const dx = ev.clientX - startX;
-      const deltaPct = (dx / rect.width) * 100;
-      const next = Math.min(75, Math.max(25, startPct + deltaPct));
-      setLeftPct(next);
-    }
+  e.currentTarget.setPointerCapture?.(e.pointerId);
 
-    function onUp() {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
-
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+  function onMove(ev: PointerEvent) {
+    const dx = ev.clientX - startX;
+    const deltaPct = (dx / rect.width) * 100;
+    const next = Math.min(75, Math.max(25, startPct + deltaPct));
+    setLeftPct(next);
   }
 
+  function onUp(ev: PointerEvent) {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }
+
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+  
  return (
   <VestarynFrame
     repoId={repoId}
@@ -271,15 +274,15 @@ onProposalPreview={(proposals) => {
     />
 </div>
 
-      {/* Splitter */}
-      <div
-        onMouseDown={onSplitterMouseDown}
-        className="w-[10px] shrink-0 cursor-col-resize relative group"
-        title="Drag to resize"
-      >
-        <div className="absolute inset-0 pointer-events-none" />
-        <div className="absolute left-1/2 top-2 bottom-2 w-px -translate-x-1/2 bg-white/10 group-hover:bg-blue-400/40" />
-      </div>
+{/* Splitter */}
+<div
+  onPointerDown={onSplitterPointerDown}
+  className="w-[10px] shrink-0 cursor-col-resize relative group touch-none select-none"
+  title="Drag to resize"
+>
+  <div className="absolute inset-0 pointer-events-none" />
+  <div className="absolute left-1/2 top-2 bottom-2 w-px -translate-x-1/2 bg-white/10 group-hover:bg-blue-400/40" />
+</div>
 
       {/* Right: Editor */}
       <div className="min-w-0 flex-1 relative rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/25 backdrop-blur-md">

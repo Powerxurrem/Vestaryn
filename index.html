@@ -3,208 +3,288 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Gaming Hub — Starter Website</title>
-  <meta name="description" content="A beginner-friendly starter site for gaming news, guides, and game showcase." />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <title>BakeryLink — Connect, Share, Bake</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root{
-      --bg: #0f1724;
-      --card: #0b1220;
-      --muted: #9aa4b2;
-      --accent: #7c5cff;
-      --accent-2: #00d4ff;
-      --glass: rgba(255,255,255,0.04);
-      --radius: 12px;
-      --max-width: 1100px;
-      --glass-2: rgba(255,255,255,0.02);
-      color-scheme: dark;
+      --brand:#0a66c2;
+      --muted:#6b7280;
+      --bg:#f3f6fb;
+      --card:#ffffff;
+      --glass: rgba(255,255,255,0.6);
+      --rounded:12px;
+      --max-width:1100px;
+      --shadow: 0 4px 14px rgba(15,23,42,0.08);
     }
     *{box-sizing:border-box}
     html,body{height:100%}
     body{
       margin:0;
-      background: linear-gradient(180deg,#071021 0%, #081827 50%, #041018 100%);
-      color: #e6eef6;
-      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      background:linear-gradient(180deg,var(--bg),#ffffff);
+      color:#0f172a;
       -webkit-font-smoothing:antialiased;
       -moz-osx-font-smoothing:grayscale;
-      line-height:1.45;
-      display:flex;
-      justify-content:center;
-      padding:32px 16px;
-    }
-    .container{
-      width:100%;
-      max-width:var(--max-width);
+      padding-top:64px;
     }
  
-    header{
+    /* Top Nav */
+    .topbar{
+      position:fixed;
+      top:0;
+      left:0;
+      right:0;
+      height:64px;
+      background:var(--brand);
       display:flex;
       align-items:center;
-      justify-content:space-between;
       gap:16px;
-      margin-bottom:28px;
+      padding:0 18px;
+      z-index:40;
+      box-shadow: 0 1px 0 rgba(11,33,71,0.08);
+    }
+    .topbar .brand{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      color:#fff;
+      text-decoration:none;
+      margin-right:8px;
     }
     .logo{
+      width:36px;
+      height:36px;
+      border-radius:8px;
+      background:linear-gradient(135deg,#ffd6a5,#ffb86b);
       display:flex;
       align-items:center;
-      gap:12px;
-      text-decoration:none;
-      color:inherit;
+      justify-content:center;
+      box-shadow: inset 0 -2px 6px rgba(0,0,0,0.08);
+      font-weight:700;
+      color:#7a2a00;
+      font-size:18px;
     }
-    .logo svg{width:44px;height:44px;flex:0 0 44px}
-    .logo h1{font-size:18px;margin:0;font-weight:700;letter-spacing:0.2px}
-    nav{
+    .brand .title{font-weight:700; font-size:16px; letter-spacing:0.2px}
+    .search{
+      flex:1;
+      max-width:520px;
       display:flex;
+      align-items:center;
+      gap:8px;
+      background:rgba(255,255,255,0.12);
+      border-radius:10px;
+      padding:6px 10px;
+      color:#fff;
+    }
+    .search input{
+      border:0;
+      outline:0;
+      background:transparent;
+      color:#fff;
+      font-size:14px;
+      width:100%;
+    }
+    .nav-actions{
+      display:flex;
+      gap:6px;
+      margin-left:8px;
+      align-items:center;
+    }
+    .nav-btn{
+      color:#cfe6ff;
+      display:flex;
+      align-items:center;
+      gap:8px;
+      padding:6px 10px;
+      border-radius:8px;
+      text-decoration:none;
+      font-size:13px;
+    }
+    .nav-btn:hover{background:rgba(255,255,255,0.06); color:#fff}
+    .nav-icon{
+      width:18px;height:18px;display:inline-block;opacity:0.98;
+    }
+ 
+    /* Layout */
+    .wrap{
+      max-width:var(--max-width);
+      margin:20px auto;
+      display:grid;
+      grid-template-columns:260px 1fr 320px;
+      gap:18px;
+      padding:12px;
+    }
+ 
+    /* Cards */
+    .card{
+      background:var(--card);
+      border-radius:var(--rounded);
+      box-shadow:var(--shadow);
+      padding:14px;
+    }
+    .profile-card{
+      text-align:center;
+      padding:18px;
+      display:flex;
+      flex-direction:column;
       gap:12px;
       align-items:center;
     }
-    .nav-link{
-      color:var(--muted);
+    .avatar{
+      width:84px;height:84px;border-radius:14px;background:linear-gradient(180deg,#fff,#f8efe6);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:30px;color:#7a2a00;box-shadow:0 6px 18px rgba(122,42,0,0.08);
+    }
+    .small{font-size:13px;color:var(--muted)}
+ 
+    .connections{
+      width:100%;
+      display:flex;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .connections .col{flex:1;text-align:center}
+    .connections strong{display:block;font-size:16px}
+ 
+    .sidebar-link{
+      display:block;
+      padding:10px 12px;
+      border-radius:8px;
+      color:#0f172a;
       text-decoration:none;
+      margin-top:10px;
+      border:1px solid rgba(15,23,42,0.04);
+      background:linear-gradient(180deg, rgba(255,255,255,0.8), rgba(255,255,255,0.98));
+    }
+    .sidebar-link:hover{transform:translateY(-2px);transition:all 120ms ease}
+ 
+    /* Main */
+    .main .composer{
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+    }
+    .composer .compose-avatar{width:56px;height:56px;border-radius:12px;background:linear-gradient(180deg,#fff,#f8efe6);display:flex;align-items:center;justify-content:center;font-weight:700;color:#7a2a00}
+    .composer .compose-box{
+      flex:1;
+      border-radius:12px;
+      border:1px solid rgba(15,23,42,0.06);
+      padding:12px;
+      background:linear-gradient(180deg, #fff, #fcfcfd);
+    }
+    .compose-box textarea{
+      width:100%;
+      min-height:64px;
+      resize:vertical;
+      border:0;
+      outline:0;
+      font-size:14px;
+      font-family:inherit;
+      padding:4px 0;
+    }
+    .compose-actions{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      margin-top:8px;
+    }
+    .compose-actions .left{display:flex;gap:8px}
+    .btn{
+      background:var(--brand);
+      color:#fff;
+      border:0;
       padding:8px 12px;
       border-radius:8px;
       font-weight:600;
+      cursor:pointer;
       font-size:14px;
     }
-    .nav-link:hover{color:#fff;background:var(--glass)}
-    .actions{display:flex;gap:8px;align-items:center}
-    .btn{
-      background:linear-gradient(90deg,var(--accent),var(--accent-2));
-      border:none;color:#071424;padding:10px 14px;border-radius:10px;font-weight:700;cursor:pointer;
-      box-shadow:0 6px 20px rgba(124,92,255,0.12);
-    }
-    .btn.ghost{
-      background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted);font-weight:600;
-      box-shadow:none;
-    }
+    .btn.secondary{background:#eef3fb;color:var(--brand);border:1px solid rgba(10,102,194,0.08)}
  
-    main{
-      display:grid;
-      gap:28px;
-    }
- 
-    .hero{
-      background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
-      border-radius:var(--radius);
-      padding:28px;
-      display:grid;
-      grid-template-columns:1fr 420px;
-      gap:20px;
-      align-items:center;
-      backdrop-filter: blur(6px);
-    }
-    .hero h2{margin:0 0 8px 0;font-size:28px}
-    .hero p{margin:0;color:var(--muted);font-size:15px}
-    .hero .cta{display:flex;gap:12px;margin-top:18px}
-    .hero-ill{
-      display:flex;align-items:center;justify-content:center;
-      background: linear-gradient(135deg, rgba(124,92,255,0.12), rgba(0,212,255,0.06));
-      border-radius:12px;padding:18px;height:100%;
-      box-shadow: inset 0 -6px 40px rgba(0,0,0,0.2);
-    }
- 
-    /* Games grid */
-    .section{
-      background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent);
-      border-radius:var(--radius);
-      padding:20px;
-      backdrop-filter: blur(6px);
-    }
-    .section h3{margin:0 0 12px 0}
-    .games-grid{
-      display:grid;
-      grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
-      gap:12px;
-    }
-    .card{
-      background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    .feed{margin-top:12px;display:flex;flex-direction:column;gap:14px}
+    .post{
+      padding:14px;
       border-radius:12px;
-      padding:12px;
+      background:linear-gradient(180deg,#fff,#fff);
+      border:1px solid rgba(15,23,42,0.04);
+    }
+    .post-head{display:flex;gap:12px;align-items:center}
+    .post-author{display:flex;flex-direction:column}
+    .post-meta{font-size:13px;color:var(--muted)}
+    .post-body{margin-top:10px;font-size:15px;line-height:1.45}
+    .post-media{margin-top:10px;border-radius:10px;overflow:hidden}
+    .post-media img{width:100%;height:auto;display:block}
+ 
+    .post-actions{
       display:flex;
       gap:12px;
+      margin-top:12px;
       align-items:center;
-      transition:transform .18s ease, box-shadow .18s ease;
-      border:1px solid var(--glass-2);
+      color:var(--muted);
+      font-size:14px;
     }
-    .card:hover{transform:translateY(-6px);box-shadow:0 12px 40px rgba(2,6,23,0.6)}
-    .thumb{width:86px;height:64px;border-radius:8px;flex:0 0 86px;display:flex;align-items:center;justify-content:center;color:#041018;font-weight:700}
-    .meta{flex:1}
-    .meta h4{margin:0 0 6px 0;font-size:15px}
-    .meta p{margin:0;color:var(--muted);font-size:13px}
-    .meta .tags{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap}
-    .tag{background:rgba(255,255,255,0.02);padding:6px 8px;border-radius:999px;font-size:12px;color:var(--muted)}
- 
-    /* Guides & news */
-    .grid-2{display:grid;grid-template-columns:1fr 360px;gap:12px}
-    .accordion-item{border-radius:10px;padding:12px;background:transparent;border:1px solid var(--glass-2);margin-bottom:8px}
-    .news-item{display:flex;gap:12px;align-items:flex-start;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.02)}
-    .news-item:last-child{border-bottom:0}
-    .muted{color:var(--muted);font-size:13px}
- 
-    /* Contact form */
-    form{display:grid;gap:8px}
-    label{font-size:13px;color:var(--muted)}
-    input[type="text"],input[type="email"],textarea{
-      background:transparent;border:1px solid rgba(255,255,255,0.04);padding:10px;border-radius:8px;color:inherit;
-      outline:none;
+    .action{
+      display:inline-flex;
+      gap:8px;
+      align-items:center;
+      padding:8px 10px;
+      border-radius:8px;
+      cursor:pointer;
     }
-    textarea{min-height:100px;resize:vertical}
-    .success{background:linear-gradient(90deg,#1a5b2f,#155a46);padding:10px;border-radius:8px;color:#dfffe6;font-weight:600}
+    .action:hover{background:rgba(15,23,42,0.03)}
+    .action.liked{color:#c0262a;background:linear-gradient(90deg,#ffe3e3,#fff0f0);border:1px solid rgba(192,38,42,0.06)}
  
-    footer{margin-top:18px;display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:13px;padding-top:18px;border-top:1px solid rgba(255,255,255,0.02)}
-    .socials{display:flex;gap:10px}
- 
-    /* Modal */
-    .modal{
-      position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:linear-gradient(180deg, rgba(2,6,23,0.6), rgba(2,6,23,0.9));padding:28px;
+    /* Right sidebar */
+    .sponsor{display:flex;flex-direction:column;gap:10px}
+    .sponsor img{width:100%;border-radius:8px}
+    .trend{display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:8px;background:linear-gradient(180deg,#fff,#fbfcff);border:1px solid rgba(15,23,42,0.03)}
+    .trend strong{font-size:14px}
+    .cta{
+      display:block;
+      margin-top:8px;
+      padding:10px;
+      border-radius:10px;
+      text-decoration:none;
+      text-align:center;
+      background:linear-gradient(90deg,var(--brand),#0059a6);
+      color:white;
+      font-weight:700;
     }
-    .modal.open{display:flex}
-    .modal-card{background:linear-gradient(180deg,#041018,#071422);padding:18px;border-radius:12px;max-width:860px;width:100%;box-shadow:0 30px 80px rgba(2,6,23,0.8)}
-    .modal-grid{display:grid;grid-template-columns:1fr 320px;gap:18px}
-    .close-btn{background:transparent;border:0;color:var(--muted);cursor:pointer;font-weight:700}
+ 
+    /* Footer */
+    footer{max-width:var(--max-width);margin:24px auto;color:var(--muted);font-size:13px;text-align:center}
  
     /* Responsive */
-    @media (max-width:900px){
-      .hero{grid-template-columns:1fr; text-align:center}
-      .hero-ill{order:-1}
-      .grid-2{grid-template-columns:1fr}
-      .modal-grid{grid-template-columns:1fr}
+    @media (max-width:980px){
+      .wrap{grid-template-columns:1fr; padding:12px}
+      .topbar .search{display:none}
+      .nav-actions .nav-btn span{display:none}
+      body{padding-top:72px}
     }
   </style>
 </head>
 <body>
-  <div class="container" id="top">
-    <header role="banner">
-      <a class="logo" href="#top" aria-label="Gaming Hub Home">
-        <!-- Simple controller logo -->
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-          <rect x="2" y="6" width="20" height="12" rx="3" fill="#0b1220"/>
-          <circle cx="7.5" cy="12" r="2" fill="#7c5cff"/>
-          <rect x="15" y="10.25" width="3" height="1.5" rx="0.75" fill="#00d4ff"/>
-          <path d="M2 13c4 4 10 4 14 0" stroke="rgba(255,255,255,0.06)" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-        <h1>Gaming Hub</h1>
+  <header class="topbar" role="banner" aria-label="Top navigation">
+    <a class="brand" href="#" aria-label="BakeryLink Home">
+      <div class="logo" aria-hidden="true">B</div>
+      <div class="title">BakeryLink</div>
+    </a>
+ 
+    <div class="search" role="search" aria-label="Search bakers and breads">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M21 21l-4.35-4.35" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path><circle cx="11" cy="11" r="6" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></circle></svg>
+      <input id="search" placeholder="Search bakers, breads, recipes..." aria-label="Search" />
+    </div>
+ 
+    <nav class="nav-actions" role="navigation" aria-label="Main">
+      <a class="nav-btn" href="#" title="Bakers" aria-label="Bakers">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M16 11a4 4 0 1 0-8 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 14v6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Bakers</span>
       </a>
- 
-      <nav role="navigation" aria-label="Main navigation">
-        <a class="nav-link" href="#games">Games</a>
-        <a class="nav-link" href="#guides">Guides</a>
-        <a class="nav-link" href="#news">News</a>
-        <a class="nav-link" href="#about">About</a>
-        <a class="nav-link" href="#contact">Contact</a>
-      </nav>
- 
-      <div class="actions">
-        <button class="btn ghost" id="themeToggle" aria-pressed="false" title="Toggle dark/light theme">Light</button>
-        <button class="btn" id="addGameBtn">Add Game</button>
-      </div>
-    </header>
- 
-    <main>
-      <section class="hero" aria-labelledby="hero-title">
-        <div>
-          <h2 id="hero-title">Welcome to Gaming Hub — Your Starter Site</h2>
-          <p>A simple, extendable website template for showcasing games, publishing guides, and sharing news. No setup required — edit this file to begin.</p>
-          <div class="cta">
-            <a class="btn
+      <a class="nav-btn" href="#" title="Orders" aria-label="Orders">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M3 7h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><rect x="3" y="7" width="18" height="13" rx="2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 3l-2 4h-4L8 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <span>Orders</span>
+      </a>
+      <a class="nav-btn" href="#" title="Messages" aria-label="Messages">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Messages</span>
+      </a>
+      <a class="nav-btn" href="#" title="New" aria-label="New">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.
