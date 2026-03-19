@@ -98,7 +98,7 @@ export default function VaultEditorPane({
 // ─────────────────────────────
 const [engravingOpen, setEngravingOpen] = useState(false);
 const engravingWidth = 320;
-const minEditorWidth = 72;      // minimum width of editor
+const minEditorWidth = 300;      // minimum width of editor
 const minExplorerWidth = 330;    // minimum width of explorer
 const vaultW = 320;          // fixed Vault list width
 const minEngravingW = 0;   // minimum engraving area so it’s usable
