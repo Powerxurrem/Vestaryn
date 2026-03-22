@@ -1,3 +1,5 @@
+import {filterExecutionPaths} from "@/lib/chamber/executionMode";
+
 export function extractMentionedPaths(text: string) {
   return Array.from(
     new Set(
@@ -6,9 +8,51 @@ export function extractMentionedPaths(text: string) {
   );
 }
 
+export function isVisualRefinementIntent(text: string) {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isGoalPlanningUserIntent(t)) return false;
+
+  const refinementVerb =
+    /\b(make|improve|refine|polish|upgrade|tweak|adjust|elevate)\b/.test(t);
+
+  const refinementTarget =
+    /\b(look|design|ui|ux|layout|styling|style|appearance|visuals?|theme|premium|modern|cleaner|clean|polished)\b/.test(
+      t
+    );
+
+  const explainOnlyLanguage =
+    /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|help me understand)\b/.test(
+      t
+    );
+
+  return refinementVerb && refinementTarget && !explainOnlyLanguage;
+}
+
 export function extractSingleMentionedPath(text: string) {
   const paths = extractMentionedPaths(text || "");
   return paths.length === 1 ? paths[0] : null;
+}
+
+export function isVisualRefinementExecutionIntent(text: string) {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isGoalPlanningUserIntent(t)) return false;
+
+  const refinementVerb =
+    /\b(change|make|improve|upgrade|refine|polish|adjust)\b/.test(t);
+
+  const visualTarget =
+    /\b(background|layout|sections|section|spacing|styling|style|hero|design|look|ui|colors|visuals)\b/.test(t);
+
+  const explainOnly =
+    /\b(explain|just explain|tell me how|how do i|what is|why is)\b/.test(t);
+
+  return refinementVerb && visualTarget && !explainOnly;
 }
 
 export function isNamedFileExecutionRequest(text: string) {
@@ -16,10 +60,14 @@ export function isNamedFileExecutionRequest(text: string) {
     return false;
   }
 
+  const hasPath = extractMentionedPaths(text || "").length >= 1;
+
+  if (!hasPath) return false;
+
   return (
-    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|review|inspect|turn|transform|convert|evolve/i.test(
+    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|review|inspect|turn|transform|convert|evolve|polish|refine|premium|modernize|restyle/i.test(
       text || ""
-    ) && extractMentionedPaths(text || "").length >= 1
+    ) || isVisualRefinementIntent(text || "")
   );
 }
 
@@ -31,7 +79,7 @@ export function isExplainOnlyQuestion(text: string) {
   if (isInternalGoalExecutionPrompt(t)) return false;
 
   const explainSignal =
-    /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|help me understand|what kind|which kind|which kinds|what are|how does|difference between|pros and cons)\b/.test(t);
+  /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|help me understand|what kind|which kind|which kinds|what are|how does|difference between|pros and cons|how is this repo structured|how is this project structured|repo structure|project structure|walk me through)\b/.test(t);
 
   const noDirectExecutionSignal =
     !/\b(apply|change the repo|edit the file|update the file|create this file|make the file|implement now|build now|fix this file)\b/.test(t);
@@ -48,17 +96,26 @@ export function isRepositoryExecutionIntent(content: string) {
   // Explicit planning requests should not be treated as execution
   if (isGoalPlanningUserIntent(t)) return false;
 
+  if (isVisualRefinementIntent(t)) return true;
+
   const hasStrongActionVerb =
-    /\b(create|build|implement|fix|update|edit|modify|rewrite|refactor|replace|delete|remove|add|repair|resolve)\b/.test(t);
+    /\b(create|build|implement|fix|update|edit|modify|change|rewrite|refactor|replace|delete|remove|add|repair|resolve)\b/.test(
+      t
+    );
 
   const hasExecutionTarget =
-    /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(t) ||
-    extractMentionedPaths(t).length > 0;
+    /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(
+      t
+    ) || filterExecutionPaths(extractMentionedPaths(t)).length > 0
 
   const explainOnlyLanguage =
-    /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|what kind|which kind|which kinds|what are|how does|help me understand)\b/.test(t);
+    /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|what kind|which kind|which kinds|what are|how does|help me understand)\b/.test(
+      t
+    );
 
   if (explainOnlyLanguage) return false;
+
+  if (isVisualRefinementExecutionIntent(t)) return true;
 
   return hasStrongActionVerb && hasExecutionTarget;
 }

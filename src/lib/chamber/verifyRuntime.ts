@@ -3,22 +3,6 @@ import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { runnerRun } from "@/lib/runner/client";
 import { updateChamberStateDoc } from "@/lib/chamber/memory";
 
-
-export function resolveVerifyCommand(
-  projectType?: string | null
-): VerifyCommand | null {
-  switch (projectType) {
-    case "python":
-      return "python_verify";
-    case "node":
-      return "node_verify";
-    case "static_web":
-      return null;
-    default:
-      return null;
-  }
-}
-
 export const ALLOWED_VERIFY_COMMANDS = [
   "node_verify",
   "node_typecheck",
@@ -29,14 +13,39 @@ export const ALLOWED_VERIFY_COMMANDS = [
 
 export type VerifyCommand = (typeof ALLOWED_VERIFY_COMMANDS)[number];
 
+export function resolveVerifyCommand(
+  projectType?: string | null
+): VerifyCommand | null {
+  switch (projectType) {
+    case "python":
+      return "python_verify";
+
+    case "node":
+    case "node_typescript":
+    case "nextjs":
+      return "node_verify";
+
+    case "static_web":
+    case "static_site":
+    case "loose_files":
+    case "unknown":
+    default:
+      return null;
+  }
+}
+
 export function resolveDirectVerifyCommand(content: string): VerifyCommand | null {
   const normalized = String(content ?? "").trim();
 
-  return normalized === "__VERIFY_ALL__" ? "node_verify" :
-    normalized === "__VERIFY_TEST__" ? "node_test" :
-    normalized === "__VERIFY_LINT__" ? "node_lint" :
-    normalized === "__VERIFY_TYPECHECK__" ? "node_typecheck" :
-    null;
+  return normalized === "__VERIFY_ALL__"
+    ? "node_verify"
+    : normalized === "__VERIFY_TEST__"
+    ? "node_test"
+    : normalized === "__VERIFY_LINT__"
+    ? "node_lint"
+    : normalized === "__VERIFY_TYPECHECK__"
+    ? "node_typecheck"
+    : null;
 }
 
 export async function handleDirectVerifyCommand(args: {

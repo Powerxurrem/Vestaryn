@@ -8,6 +8,7 @@ import GoalPlanCard from "@/types/GoalPlanCard";
 import type { GoalPlan, GoalStatus, GoalStep } from "@/types/goalPlan";
 import {
   extractGoalPlan,extractGoalStatus,extractGoalDone,extractGoalExecute,containsGoalMarker} from "@/types/goalMarkers";
+  import VerifyCard from "./VerifyCard";
 
 type Message = {
   id: string;
@@ -33,11 +34,18 @@ type ActiveAssistantTurn = {
   status: "streaming" | "resolved" | "superseded";
   proposalSet: Record<string, ProposalItem>;
   proposalList: ProposalItem[];
+  selectedProposalFileId: string | null;
   pendingConfirm: string | null;
   verify: any | null;
   preverify: any | null;
   engraving: any | null;
   suggestedPrompts: string[];
+  applied: {
+    ok: boolean;
+    touchedFileIds: string[];
+    appliedFiles: Array<{ fileId: string; path?: string | null }>;
+    changeId?: string | null;
+  } | null;
 };
 
 type ChatFrameProps = {
@@ -48,6 +56,7 @@ type ChatFrameProps = {
   refreshFiles?: () => void | Promise<void>;
   openFileById?: (fileId: string) => void;
   onMaintenance?: (payload: any) => void;
+  onPreviewRefresh?: () => void;
 };
 
 type Props = {
@@ -65,21 +74,22 @@ type Props = {
   openFileById?: (fileId: string) => void;
   onMessageStats?: (s: { total: number; user: number; assistant: number; system: number }) => void;
   onMaintenance?: (payload: any) => void;
+  onPreviewRefresh?: () => void;
 
-onProposalPreview?: (
-  proposals:
-    | Record<
-        string,
-        {
-          fileId: string;
-          content: string;
-          path?: string | null;
-          op?: string | null;
-          appendPreview?: string | null;
-        }
-      >
-    | null
-) => void;
+  onProposalPreview?: (
+    proposals:
+      | Record<
+          string,
+          {
+            fileId: string;
+            content: string;
+            path?: string | null;
+            op?: string | null;
+            appendPreview?: string | null;
+          }
+        >
+      | null
+  ) => void;
 };
 
 type ChamberState = "stable" | "analyzing" | "deep" | "archive";
@@ -94,6 +104,7 @@ export default function ChatFrame({
   onMessageStats,
   onMaintenance,
   onProposalPreview,
+  onPreviewRefresh,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -110,6 +121,7 @@ export default function ChatFrame({
   const [lastPreverifyMsgId, setLastPreverifyMsgId] = useState<string | null>(null);
   const [activeTurn, setActiveTurn] = useState<ActiveAssistantTurn | null>(null);
   const [goalPlan, setGoalPlan] = useState<GoalPlan | null>(null);
+  const messagesRef = useRef<Message[]>([]);
   // when user clicks “Confirm & Apply”, we remember which assistant bubble it belonged to
   const applyOriginMsgIdRef = useRef<string | null>(null);
 
@@ -157,7 +169,11 @@ const [lastProposalSet, setLastProposalSet] = useState<
     }
   >
 >({});
+useEffect(() => {
+  messagesRef.current = messages;
 
+  
+}, [messages]);
   const [lastVerify, setLastVerify] = useState<any | null>(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([]);
   const streamingAssistantIdRef = useRef<string | null>(null);
@@ -165,7 +181,7 @@ const [lastProposalSet, setLastProposalSet] = useState<
   const sawGoalInTurnRef = useRef(false);
   // hard lock to prevent double-submit / overlapping requests
   const sendingRef = useRef(false);
-
+  const renderAssistantIdRef = useRef<string | null>(null);
   const ASSISTANT_PLACEHOLDER = `[Observation]\n…\n\n[Assessment]\n…\n\n[Action]\n…`;
 
   const makeId = () =>
@@ -243,11 +259,13 @@ function emptyActiveTurn(turnId: string): ActiveAssistantTurn {
     status: "streaming",
     proposalSet: {},
     proposalList: [],
+    selectedProposalFileId: null,
     pendingConfirm: null,
     verify: null,
     preverify: null,
     engraving: null,
     suggestedPrompts: [],
+    applied: null,
   };
 }
 
@@ -324,9 +342,24 @@ function patchActiveTurn(
   setActiveTurn((prev) => {
     const base =
       prev && prev.turnId === turnId ? prev : emptyActiveTurn(turnId);
-    return updater(base);
+
+    const next = updater(base);
+
+    console.log("[patchActiveTurn]", {
+      turnId,
+      prevTurnId: prev?.turnId ?? null,
+      basePendingConfirm: base.pendingConfirm ?? null,
+      baseProposalCount: base.proposalList?.length ?? 0,
+      nextPendingConfirm: next.pendingConfirm ?? null,
+      nextProposalCount: next.proposalList?.length ?? 0,
+      nextStatus: next.status,
+    });
+
+    return next;
   });
 }
+
+
 
 function applyParsedProposals(
   proposals: ProposalItem[],
@@ -357,11 +390,33 @@ function applyParsedProposals(
   if (proposalList.length === 0) return;
 
   const first = proposalList[0];
+  const targetAssistantId = renderAssistantIdRef.current;
+    if (!targetAssistantId) {
+      console.log("[applyParsedProposals missing render anchor]", {
+        passedAssistantId: assistantId,
+        renderAssistantId: renderAssistantIdRef.current,
+      });
+      return;
+    }
 
-  patchActiveTurn(assistantId, (prev) => ({
+  console.log("[applyParsedProposals anchor]", {
+    passedAssistantId: assistantId,
+    renderAssistantId: renderAssistantIdRef.current,
+    targetAssistantId,
+    count: proposalList.length,
+    ids: proposalList.map((p) => p.fileId),
+    paths: proposalList.map((p) => p.path),
+  });
+
+  patchActiveTurn(targetAssistantId, (prev) => ({
     ...prev,
+    turnId: targetAssistantId,
     proposalSet: nextMap,
     proposalList,
+    selectedProposalFileId:
+      prev.selectedProposalFileId && nextMap[prev.selectedProposalFileId]
+        ? prev.selectedProposalFileId
+        : first.fileId,
     pendingConfirm: proposalList.length > 1 ? "APPLY_SET" : first.confirm,
   }));
 
@@ -708,7 +763,6 @@ useEffect(() => {
 
 const handleSend = async (text: string) => {
   
-  
 const trimmed = text.trim();
 console.log("[handleSend] sending:", trimmed);
 if (!trimmed) return;
@@ -733,10 +787,25 @@ console.log("[handleSend proceed]", {
 });
   sendingRef.current = true;
   const assistantId = makeId();
+const shouldCreateAssistantBubble = !isControlCommand;
+
+const turnAnchorId = shouldCreateAssistantBubble
+  ? assistantId
+  : applyOriginMsgIdRef.current ?? renderAssistantIdRef.current ?? assistantId;
+
+if (shouldCreateAssistantBubble) {
+  renderAssistantIdRef.current = assistantId;
+}
   setPendingConfirm(null);
   sawGoalInTurnRef.current = false;
 
 if (!isControlCommand) {
+  console.log("[handleSend reset proposal preview]", {
+    assistantId,
+    trimmed,
+    isControlCommand,
+  });
+
   setActiveTurn((prev) =>
     prev ? { ...prev, status: "superseded" } : prev
   );
@@ -754,6 +823,13 @@ if (!isControlCommand) {
   setLastPreverify(null);
   setLastPreverifyMsgId(null);
   setSuggestedPrompts([]);
+
+  console.log("[handleSend clear proposal preview]", {
+    assistantId,
+    isControlCommand,
+    trimmedHead: trimmed.slice(0, 80),
+  });
+
   onProposalPreview?.(null);
 
   const userMsg: Message = {
@@ -762,28 +838,29 @@ if (!isControlCommand) {
     content: trimmed,
     createdAt: Date.now(),
   };
-  setMessages((prev) => [...prev, userMsg]);
+
+  const assistantMsg: Message = {
+    id: assistantId,
+    role: "assistant",
+    content: ASSISTANT_PLACEHOLDER,
+    createdAt: Date.now(),
+  };
+
+  flushSync(() => {
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+  });
+
+  console.log("[messages inserted atomically]", {
+    userId: userMsg.id,
+    assistantId,
+  });
 }
 
-  
-  streamingAssistantIdRef.current = assistantId;
 
-  setThinking(true);
-  setState("analyzing");
 
-  const shouldCreateAssistantBubble = !isControlCommand;
-
-if (shouldCreateAssistantBubble) {
-  setMessages((prev) => [
-    ...prev,
-    {
-      id: assistantId,
-      role: "assistant",
-      content: ASSISTANT_PLACEHOLDER,
-      createdAt: Date.now(),
-    },
-  ]);
-}
+streamingAssistantIdRef.current = assistantId;
+setThinking(true);
+setState("analyzing");
 
   try {
 const tier =
@@ -802,9 +879,25 @@ const res = await fetch(`/api/repo/${repoId}/chat`, {
 
 
     if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(errText || `Request failed (${res.status})`);
-    }
+  const errText = await res.text().catch(() => "");
+
+  setThinking(false);
+  setState("stable");
+
+  setMessages((prev) => [
+    ...prev,
+    {
+      id: makeId(),
+      role: "system",
+      content: errText || `Request failed (${res.status})`,
+      createdAt: Date.now(),
+    },
+  ]);
+
+  sendingRef.current = false;
+  streamingAssistantIdRef.current = null;
+  return;
+}
     if (!res.body) throw new Error("No response body");
 
     const reader = res.body.getReader();
@@ -835,6 +928,13 @@ const res = await fetch(`/api/repo/${repoId}/chat`, {
 
       rawAccumulated += chunk;
       accumulated += chunk;
+
+      console.log("[marker scan raw]", {
+  hasProposalMarker: accumulated.includes("__PROPOSAL__:"),
+  hasProposalSetMarker: accumulated.includes("__PROPOSAL_SET__:"),
+  hasApplyMarker: accumulated.includes("__APPLY__:"),
+  tail: accumulated.slice(-300),
+});
 // ✅ RESET: detect before any stripping/parsing
 const normalized = accumulated.replace(/\r/g, "");
 if (RESET_LINE_RE.test(normalized)) {
@@ -891,7 +991,7 @@ setActiveTurn((prev) =>
 const maybeConfirm = extractConfirmPhrase(accumulated);
 if (maybeConfirm) {
   setPendingConfirm(maybeConfirm);
-  setPendingConfirmMsgId(assistantId); // ✅ anchor to this assistant message
+  setPendingConfirmMsgId(turnAnchorId); // ✅ anchor to this assistant message
   
 }
 
@@ -903,6 +1003,12 @@ if (maybeConfirm) {
 // We strip them out so they never render as chat text.
 // ─────────────────────────────────────────────
 const lines = accumulated.split("\n");
+console.log("[proposal scan]", {
+  assistantId,
+  hasProposalMarker: accumulated.includes("__PROPOSAL__:"),
+  hasProposalSetMarker: accumulated.includes("__PROPOSAL_SET__:"),
+  last400: accumulated.slice(-400),
+});
 let changed = false;
 
 
@@ -911,68 +1017,81 @@ for (let i = 0; i < lines.length; i++) {
   const line = lines[i] ?? "";
 
   // Proposal marker
-  if (line.startsWith("__PROPOSAL__:")) {
-    const jsonStr = line.slice("__PROPOSAL__:".length).trim();
+  if (line.includes("__PROPOSAL__:")) {
+  const idx = line.indexOf("__PROPOSAL__:");
+  const before = line.slice(0, idx).trimEnd();
+  const jsonStr = line.slice(idx + "__PROPOSAL__:".length).trim();
 
-    try {
-      const proposal = JSON.parse(jsonStr);
+  try {
+    const proposal = JSON.parse(jsonStr);
 
-      console.log("[proposalPreview]", {
+    console.log("[proposal branch hit]", {
+      assistantId,
+      lineHead: line.slice(0, 160),
+      before,
+      jsonHead: jsonStr.slice(0, 160),
+    });
+
+    const proposalKey = `PROPOSAL:${repoId}:${proposal?.fileId ?? "?"}:${proposal?.nextHash ?? "?"}:${assistantId}`;
+
+    onceMarker(proposalKey, () => {
+      const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
+      const op = String(proposal?.meta?.op ?? "");
+
+      const isConfirmable =
+        confirm.startsWith("APPLY ") ||
+        confirm.startsWith("CREATE ") ||
+        op === "create";
+
+      if (proposal?.meta?.kind === "engraving") {
+        return;
+      }
+
+      console.log("[proposal marker detected]", {
+        assistantId,
         fileId: proposal?.fileId,
-        op: proposal?.meta?.op,
         path: proposal?.path ?? proposal?.meta?.path ?? null,
-        contentHead: String(proposal?.content ?? "").slice(0, 80),
+        confirm,
       });
 
-      const proposalKey = `PROPOSAL:${repoId}:${proposal?.fileId ?? "?"}:${proposal?.nextHash ?? "?"}:${assistantId}`;
-
-      onceMarker(proposalKey, () => {
-        const confirm = String(proposal?.confirm || proposal?.pendingConfirmPhrase || "");
-        const op = String(proposal?.meta?.op ?? "");
-
-        const isConfirmable =
-          confirm.startsWith("APPLY ") ||
-          confirm.startsWith("CREATE ") ||
-          op === "create";
-
-        if (proposal?.meta?.kind === "engraving") {
-          return;
-        }
-
-        if (
-          isConfirmable &&
-          proposal?.fileId &&
-          proposal?.content != null &&
-          proposal?.prevHash &&
-          proposal?.nextHash &&
-          confirm
-        ) {
-          applyParsedProposals(
-            [
-              {
-                fileId: proposal.fileId,
-                content: proposal.content,
-                prevHash: proposal.prevHash,
-                nextHash: proposal.nextHash,
-                confirm,
-                meta: proposal.meta ?? null,
-                path: proposal.path ?? proposal.meta?.path ?? undefined,
-                name: proposal.name ?? undefined,
-                mime: proposal.mime ?? proposal.meta?.mime ?? undefined,
-              },
-            ],
-            assistantId
-          );
-        }
-      });
-    } catch (e) {
-      console.log("[proposal parse failed]", e);
-    }
-
-    lines[i] = "";
-    changed = true;
-    continue;
+      if (
+        isConfirmable &&
+        proposal?.fileId &&
+        proposal?.content != null &&
+        proposal?.prevHash &&
+        proposal?.nextHash &&
+        confirm
+      ) {
+        applyParsedProposals(
+          [
+            {
+              fileId: proposal.fileId,
+              content: proposal.content,
+              prevHash: proposal.prevHash,
+              nextHash: proposal.nextHash,
+              confirm,
+              meta: proposal.meta ?? null,
+              path: proposal.path ?? proposal.meta?.path ?? undefined,
+              name: proposal.name ?? undefined,
+              mime: proposal.mime ?? proposal.meta?.mime ?? undefined,
+            },
+          ],
+          assistantId
+        );
+      }
+    });
+  } catch (e) {
+    console.log("[proposal parse failed]", {
+      error: e,
+      jsonStr,
+      line,
+    });
   }
+
+  lines[i] = before;
+  changed = true;
+  continue;
+}
 
   if (line.startsWith("__SUGGESTED_PROMPTS__:")) {
     const isLastLine = i === lines.length - 1;
@@ -992,7 +1111,7 @@ for (let i = 0; i < lines.length; i++) {
       console.log("[suggestedPrompts parsed]", prompts);
 
       if (Array.isArray(prompts)) {
-        patchActiveTurn(assistantId, (prev) => ({
+        patchActiveTurn(turnAnchorId, (prev) => ({
           ...prev,
           suggestedPrompts: prompts.filter((x) => typeof x === "string").slice(0, 3),
         }));
@@ -1006,15 +1125,16 @@ for (let i = 0; i < lines.length; i++) {
     continue;
   }
 
-  if (line.startsWith("__PROPOSAL_SET__:")) {
+  if (line.includes("__PROPOSAL_SET__:")) {
+  const idx = line.indexOf("__PROPOSAL_SET__:");
+  const before = line.slice(0, idx).trimEnd();
+  const jsonStr = line.slice(idx + "__PROPOSAL_SET__:".length).trim();
     const isLastLine = i === lines.length - 1;
     const streamEndsWithNewline = accumulated.endsWith("\n");
 
     if (isLastLine && !streamEndsWithNewline) {
       continue;
     }
-
-    const jsonStr = line.slice("__PROPOSAL_SET__:".length).trim();
 
     try {
       const payload = JSON.parse(jsonStr);
@@ -1084,7 +1204,7 @@ for (let i = 0; i < lines.length; i++) {
       }
 
       const proposalList = Object.values(nextMap);
-
+      
       console.log("[proposalSet parsed]", {
         count: proposalList.length,
         ids: proposalList.map((p: any) => p.fileId),
@@ -1102,128 +1222,149 @@ for (let i = 0; i < lines.length; i++) {
       if (proposalList.length > 0) {
         applyParsedProposals(proposalList, assistantId);
       }
-    } catch (e) {
-      console.log("[proposalSet parse failed]", e);
-    }
+          } catch (e) {
+            console.log("[proposalSet parse failed]", e);
+          }
 
-    lines[i] = "";
-    changed = true;
-    continue;
-  }
+          lines[i] = "";
+          changed = true;
+          continue;
+        }
 
   // Apply marker (REQUEST or RESULT) — strip always; auto-verify only on RESULT.
-      if (
-      line.startsWith("__APPLY__:") ||
-      line.startsWith("__APPLY_SET__:") ||
-      line.startsWith("__APPLIED__:") ||
-      line.startsWith("__APPLIED_SET__:")
-    ) {
-      const jsonStr = line
-        .slice(
-          line.startsWith("__APPLIED_SET__:")
-            ? "__APPLIED_SET__:".length
-            : line.startsWith("__APPLIED__:")
-            ? "__APPLIED__:".length
-            : line.startsWith("__APPLY_SET__:")
-            ? "__APPLY_SET__:".length
-            : "__APPLY__:".length
-        )
-        .trim();
+     if (
+  line.startsWith("__APPLY__:") ||
+  line.startsWith("__APPLY_SET__:") ||
+  line.startsWith("__APPLIED__:") ||
+  line.startsWith("__APPLIED_SET__:")
+) {
+  const marker = line.startsWith("__APPLIED_SET__:")
+    ? "__APPLIED_SET__:"
+    : line.startsWith("__APPLIED__:")
+    ? "__APPLIED__:"
+    : line.startsWith("__APPLY_SET__:")
+    ? "__APPLY_SET__:"
+    : "__APPLY__:";
 
-    try {
-      const payload = JSON.parse(jsonStr);
+  const idx = line.indexOf(marker);
+  const before = line.slice(0, idx).trimEnd();
+  const jsonStr = line.slice(idx + marker.length).trim();
 
-      const looksLikeRequest =
-        payload &&
-        typeof payload === "object" &&
-        typeof payload.fileId === "string" &&
-        typeof payload.prevHash === "string" &&
-        typeof payload.nextHash === "string";
+  try {
+    const payload = JSON.parse(jsonStr);
 
-      if (!looksLikeRequest) {
-        const ok = Boolean(payload?.ok);
-        const changeId = typeof payload?.changeId === "string" ? payload.changeId : "";
-        const touchedFileIds = Array.isArray(payload?.touchedFileIds)
-          ? payload.touchedFileIds.filter((x: any) => typeof x === "string")
-          : [];
+    const looksLikeRequest =
+      payload &&
+      typeof payload === "object" &&
+      typeof payload.fileId === "string" &&
+      typeof payload.prevHash === "string" &&
+      typeof payload.nextHash === "string";
 
-        const applyKey = `APPLIED:${repoId}:${changeId || payload?.nextHash || `${touchedFileIds.join(",")}:${assistantId}`}`;
+    if (!looksLikeRequest) {
+      const ok = Boolean(payload?.ok);
+      const changeId = typeof payload?.changeId === "string" ? payload.changeId : "";
+      const touchedFileIds = Array.isArray(payload?.touchedFileIds)
+        ? payload.touchedFileIds.filter((x: any) => typeof x === "string")
+        : [];
 
-        if (ok) {
-          onceMarker(applyKey, () => {
-            const appliedFiles = Array.isArray(payload?.appliedFiles)
-              ? payload.appliedFiles
-              : payload?.appliedFile
-              ? [payload.appliedFile]
-              : [];
+      const applyKey = `APPLIED:${repoId}:${changeId || payload?.nextHash || `${touchedFileIds.join(",")}:${assistantId}`}`;
 
-            const verifiableIds = appliedFiles
-              .filter((f: any) => isVerifiablePath(f?.path))
-              .map((f: any) => String(f.fileId))
-              .filter(Boolean);
+      if (ok) {
+        onceMarker(applyKey, () => {
+          const appliedFiles = Array.isArray(payload?.appliedFiles)
+            ? payload.appliedFiles
+            : payload?.appliedFile
+            ? [payload.appliedFile]
+            : [];
 
-            const skippedIds = touchedFileIds.filter(
-              (fid: string) => !verifiableIds.includes(fid)
-            );
+          const verifiableIds = appliedFiles
+            .filter((f: any) => isVerifiablePath(f?.path))
+            .map((f: any) => String(f.fileId))
+            .filter(Boolean);
 
-            console.log("[apply_result]", {
-              changeId,
+          const skippedIds = touchedFileIds.filter(
+            (fid: string) => !verifiableIds.includes(fid)
+          );
+
+          console.log("[apply_result]", {
+            changeId,
+            touchedFileIds,
+            appliedFiles,
+            verifiableIds,
+            skippedIds,
+            originMsgId: applyOriginMsgIdRef.current ?? assistantId,
+          });
+
+          const visibleTurnId = applyOriginMsgIdRef.current ?? turnAnchorId;
+
+          patchActiveTurn(visibleTurnId, (prev) => ({
+            ...prev,
+            proposalSet: {},
+            proposalList: [],
+            selectedProposalFileId: null,
+            pendingConfirm: null,
+            applied: {
+              ok: true,
+              touchedFileIds,
+              appliedFiles: appliedFiles.map((f: any) => ({
+                fileId: String(f.fileId),
+                path: f.path ?? null,
+              })),
+              changeId: changeId || null,
+            },
+          }));
+
+          setPendingConfirm(null);
+          setPendingConfirmMsgId(null);
+          setLastProposal(null);
+          setLastProposalSet(null);
+          setProposalSet({});
+          onProposalPreview?.(null);
+
+          for (const fid of touchedFileIds) {
+            onFileUpdated?.(fid);
+          }
+
+          if (typeof onFileStatus === "function") {
+            for (const fid of skippedIds) {
+              onFileStatus(fid, "ok", "verify skipped (non-code file)");
+            }
+            for (const fid of verifiableIds) {
+              onFileStatus(fid, "pending", "verifying");
+            }
+          }
+
+          Promise.resolve(refreshFiles?.()).finally(() => {
+            const firstAppliedId =
+              appliedFiles[0]?.fileId ??
+              touchedFileIds[0] ??
+              null;
+
+            console.log("[apply_result after refresh]", {
+              firstAppliedId,
               touchedFileIds,
               appliedFiles,
               verifiableIds,
               skippedIds,
-              originMsgId: applyOriginMsgIdRef.current ?? assistantId,
             });
 
-            setPendingConfirm(null);
-            setPendingConfirmMsgId(null);
-            setLastProposal(null);
-            setLastProposalSet(null);
-            setProposalSet({});
-            onProposalPreview?.(null);
-
-            for (const fid of touchedFileIds) {
-              onFileUpdated?.(fid);
+            if (firstAppliedId) {
+              openFileById?.(firstAppliedId);
             }
 
-            if (typeof onFileStatus === "function") {
-              for (const fid of skippedIds) {
-                onFileStatus(fid, "ok", "verify skipped (non-code file)");
-              }
-              for (const fid of verifiableIds) {
-                onFileStatus(fid, "pending", "verifying");
-              }
-            }
-
-            Promise.resolve(refreshFiles?.()).finally(() => {
-              const firstAppliedId =
-                appliedFiles[0]?.fileId ??
-                touchedFileIds[0] ??
-                null;
-
-              console.log("[apply_result after refresh]", {
-                firstAppliedId,
-                touchedFileIds,
-                appliedFiles,
-                verifiableIds,
-                skippedIds,
-              });
-
-              if (firstAppliedId) {
-                openFileById?.(firstAppliedId);
-              }
-            });
-
-            applyOriginMsgIdRef.current = null;
+            onPreviewRefresh?.();
           });
-        }
-      }
-    } catch {}
 
-    lines[i] = "";
-    changed = true;
-    continue;
-  }
+          applyOriginMsgIdRef.current = null;
+        });
+      }
+    }
+  } catch {}
+
+  lines[i] = before;
+  changed = true;
+  continue;
+}
 
   if (line.includes("__PREVERIFY__:")) {
     const idx = line.indexOf("__PREVERIFY__:");
@@ -1240,17 +1381,17 @@ for (let i = 0; i < lines.length; i++) {
         failedStep: preverify?.failedStep,
       });
 
-      patchActiveTurn(assistantId, (prev) => ({
+      patchActiveTurn(turnAnchorId, (prev) => ({
         ...prev,
         preverify,
       }));
 
       setLastPreverify(preverify);
-      setLastPreverifyMsgId(assistantId);
+      setLastPreverifyMsgId(turnAnchorId);
 
       console.log("[preverify ui state set]", {
-        assistantId,
-        lastPreverifyMsgId: assistantId,
+        turnAnchorId,
+        lastPreverifyMsgId: turnAnchorId,
       });
     } catch (e) {
       console.log("[preverify parse failed]", e);
@@ -1269,13 +1410,12 @@ for (let i = 0; i < lines.length; i++) {
     try {
       const verify = JSON.parse(jsonStr);
 
-      patchActiveTurn(assistantId, (prev) => ({
+      patchActiveTurn(turnAnchorId, (prev) => ({
         ...prev,
         verify,
       }));
-
       setLastVerify(verify);
-      setLastVerifyMsgId(assistantId);
+      setLastVerifyMsgId(turnAnchorId);
 
       console.log("[verify marker parsed in turn]", {
         assistantId,
@@ -1462,7 +1602,7 @@ if (line.startsWith("__GOAL_PLAN__:")) {
     const jsonStr = line.slice("__ENGRAVING__:".length).trim();
     try {
       const engr = JSON.parse(jsonStr);
-      patchActiveTurn(assistantId, (prev) => ({
+      patchActiveTurn(turnAnchorId, (prev) => ({
         ...prev,
         engraving: engr,
       }));
@@ -1482,6 +1622,14 @@ if (!nextText.trim() && sawGoalInTurnRef.current) {
     "[Assessment]\nA structured goal plan was prepared for this request.\n\n" +
     "[Action]\nReview the goal plan below and approve to continue.";
 }
+
+console.log("[stream update target]", {
+  assistantId,
+  existsInMessages: messagesRef.current.some((m) => m.id === assistantId),
+  lastMessageIds: messagesRef.current.slice(-6).map((m) => m.id),
+});
+
+
 
 flushSync(() => {
   setMessages((prev) =>
@@ -1508,10 +1656,10 @@ if (sawGoalInTurnRef.current) {
     setThinking(false);
     setState("stable");
     setActiveTurn((prev) =>
-  prev && prev.turnId === assistantId
-    ? { ...prev, status: "resolved" }
-    : prev
-);
+      prev && prev.turnId === turnAnchorId
+        ? { ...prev, status: "resolved" }
+        : prev
+    );
   } catch (e) {
     setThinking(false);
     setState("archive");
@@ -1530,7 +1678,7 @@ if (sawGoalInTurnRef.current) {
 
     console.error(e);
     setActiveTurn((prev) =>
-  prev && prev.turnId === assistantId
+  prev && prev.turnId === turnAnchorId
     ? { ...prev, status: "resolved" }
     : prev
 );
@@ -1644,8 +1792,14 @@ return (
     msg.role === "assistant" &&
     streamingAssistantIdRef.current === msg.id;
 
-        const turnState = activeTurn?.turnId === msg.id ? activeTurn : null;
-        const turnProposal = turnState?.proposalList?.[0] ?? null;
+        const turnState =
+          activeTurn && msg.id === activeTurn.turnId
+            ? activeTurn
+            : null;
+        const turnProposal =
+          turnState?.selectedProposalFileId
+            ? turnState.proposalSet[turnState.selectedProposalFileId] ?? turnState?.proposalList?.[0] ?? null
+            : turnState?.proposalList?.[0] ?? null;
         const turnProposalSet =
           turnState?.proposalList?.length ? { proposals: turnState.proposalList } : null;
 
@@ -1657,16 +1811,16 @@ const hasVisibleProposal =
   !!turnProposal &&
   !thinking &&
   turnState.status !== "superseded";
-
+const hasVisibleApplied =
+  !!turnState?.applied?.ok &&
+  !thinking;
 const hasVisibleVerify =
-  !!lastVerify &&
-  !thinking &&
-  lastVerifyMsgId === msg.id;
+  !!turnState?.verify &&
+  !thinking;
 
 const hasVisiblePreverify =
-  !!lastPreverify &&
-  !thinking &&
-  lastPreverifyMsgId === msg.id;
+  !!turnState?.preverify &&
+  !thinking;
 
 const hasVisibleSuggestions =
   suggestedPrompts.length > 0 &&
@@ -1697,6 +1851,7 @@ const shouldHideEmptyAssistantBubble =
   !isThinkingBubble &&
   !hasVisibleBody &&
   !hasVisibleProposal &&
+  !hasVisibleApplied &&
   !hasVisibleVerify &&
   !hasVisiblePreverify &&
   !hasVisibleSuggestions &&
@@ -1748,16 +1903,12 @@ if (shouldHideEmptyAssistantBubble) {
 
                     const safe = safeContent;
                     const s = parsed ?? parseSections(safe);
-                    
-                      console.log("[goal_render_check]", {
-                        msgId: msg.id,
-                        lastMsgId: messages[messages.length - 1]?.id,
-                        hasGoalPlan: !!goalPlan,
-                        goalPlanStatus: goalPlan?.status ?? null,
-                        currentStepId: goalPlan?.currentStepId ?? null,
-                        thinking,
-                      });
 
+                    const displayAction =
+                      turnState?.applied?.ok
+                        ? "Changes were applied successfully."
+                        : s.action;
+                    
                     return (
                       <div className="space-y-3">
                         {s.observation && (
@@ -1803,66 +1954,53 @@ if (shouldHideEmptyAssistantBubble) {
 
                         <div className="h-px bg-white/5 my-2" />
 
-                        {s.action && (
+                        {displayAction && (
                           <div className="border-l-2 border-emerald-400/50 pl-3">
                             <div className="text-[10px] uppercase tracking-widest text-emerald-300/70 mb-1">
                               Action
                             </div>
-                            <div className="text-white/95 whitespace-pre-wrap">{s.action}</div>
+                            <div className="text-white/95 whitespace-pre-wrap">{displayAction}</div>
+                          </div>
+                        )}
+
+                        {turnState?.applied?.ok && !thinking && (
+                          <div className="mt-3 rounded-lg border border-sky-400/25 bg-sky-500/10 p-3 text-xs text-sky-100/90">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-[10px] uppercase tracking-widest opacity-80">
+                                  Applied
+                                </div>
+                                <div className="mt-1 truncate">
+                                  {turnState.applied.appliedFiles.length > 1
+                                    ? `${turnState.applied.appliedFiles.length} files updated successfully`
+                                    : `${
+                                        turnState.applied.appliedFiles[0]?.path ||
+                                        turnState.applied.touchedFileIds[0] ||
+                                        "Change"
+                                      } updated successfully`}
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  patchActiveTurn(msg.id, (prev) => ({
+                                    ...prev,
+                                    applied: null,
+                                  }));
+                                }}
+                                className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
+                              >
+                                Dismiss
+                              </button>
+                            </div>
                           </div>
                         )}
 
                         {/* ✅ Anchored VERIFY (inside the bubble) */}
-                        {lastVerify &&
-                          !thinking &&
-                          lastVerifyMsgId === msg.id && (
-                            <div
-                              className={`mt-3 rounded-lg border p-3 text-xs ${
-                                lastVerify.ok
-                                  ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
-                                  : "border-rose-400/25 bg-rose-500/10 text-rose-100/90"
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-[10px] uppercase tracking-widest opacity-80">
-                                    Verification
-                                  </div>
-                                  <div className="mt-1 truncate">
-                                    {lastVerify.ok ? "PASS" : "FAIL"} ·{" "}
-                                    {String(lastVerify.command ?? "")}
-                                  </div>
-                                </div>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setLastVerify(null);
-                                    setLastVerifyMsgId(null);
-                                    setLastPreverify(null);
-                                    setLastPreverifyMsgId(null);
-                                  }}
-                                  className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
-                                >
-                                  Dismiss
-                                </button>
-                              </div>
-
-                              <div className="mt-2 text-[11px] opacity-80 flex flex-wrap gap-x-3 gap-y-1">
-                                <span>exit {Number(lastVerify.exitCode ?? -1)}</span>
-                                <span>{Number(lastVerify.durationMs ?? 0)}ms</span>
-                                {lastVerify.failureKind ? (
-                                  <span>{String(lastVerify.failureKind)}</span>
-                                ) : null}
-                                {lastVerify.failedStep ? (
-                                  <span>({String(lastVerify.failedStep)})</span>
-                                ) : null}
-                                {lastVerify.fingerprint ? (
-                                  <span>{String(lastVerify.fingerprint)}</span>
-                                ) : null}
-                              </div>
-                            </div>
-                          )}
+{turnState?.verify && !thinking && (
+  <VerifyCard v={turnState.verify} />
+)}
 
 {lastPreverify &&
   !thinking &&
@@ -1939,109 +2077,165 @@ if (shouldHideEmptyAssistantBubble) {
     </div>
   )}
 
-                        {/* ✅ Anchored PROPOSAL (inside the bubble) */}
-                {turnState?.pendingConfirm &&
-                  turnProposal &&
-                  !thinking &&
-                  turnState.status !== "superseded" && (
-                            <div className="mt-3 rounded-lg border border-emerald-400/25 bg-emerald-500/10 p-3 text-xs text-emerald-100/90">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
-                                    Pending change
-                                  </div>
-                                  <div className="mt-1 truncate">
-                                    File:{" "}
-                                    <span className="text-emerald-100">
-                                      {turnProposal.fileId}
-                                    </span>
-                                  </div>
-                                </div>
+{(() => {
+console.log("[proposal render gate]", {
+  msgId: msg.id,
+  activeTurnId: activeTurn?.turnId ?? null,
+  match: msg.id === activeTurn?.turnId,
+  thinking,
+  turnStatus: turnState?.status ?? null,
+  pendingConfirm: turnState?.pendingConfirm ?? null,
+  proposalCount: turnState?.proposalList?.length ?? 0,
+  selectedProposalFileId: turnState?.selectedProposalFileId ?? null,
+  hasTurnProposal: !!turnProposal,
+});
+  return null;
+})()}
 
-                                <button
-                                  type="button"
-                                    onClick={() => {
-                                      patchActiveTurn(msg.id, (prev) => ({
-                                        ...prev,
-                                        proposalSet: {},
-                                        proposalList: [],
-                                        pendingConfirm: null,
-                                      }));
+{/* ✅ Anchored PROPOSAL (inside the bubble) */}
+{turnState?.pendingConfirm &&
+  turnProposal &&
+  !thinking &&
+  turnState.status !== "superseded" && (
+    <div className="mt-3 rounded-lg border border-emerald-400/25 bg-emerald-500/10 p-3 text-xs text-emerald-100/90">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+            Pending change
+          </div>
+          <div className="mt-1 truncate">
+            File:{" "}
+            <span className="text-emerald-100">
+              {turnProposal.path || turnProposal.name || turnProposal.fileId}
+            </span>
+          </div>
+        </div>
 
-                                      setLastProposal(null);
-                                      setLastProposalSet(null);
-                                      setProposalSet({});
-                                      setPendingConfirm(null);
-                                      setPendingConfirmMsgId(null);
-                                      onProposalPreview?.(null);
-                                    }}
-                                  className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
-                                >
-                                  Dismiss
-                                </button>
-                              </div>
+        <button
+          type="button"
+          onClick={() => {
+            patchActiveTurn(msg.id, (prev) => ({
+              ...prev,
+              proposalSet: {},
+              proposalList: [],
+              selectedProposalFileId: null,
+              pendingConfirm: null,
+            }));
 
-                              <div className="mt-2">
-                                <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
-                                  Confirmation phrase
-                                </div>
-                                <div className="mt-1 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-emerald-100 break-all">
-                                  {turnState.pendingConfirm}
-                                </div>
+            setLastProposal(null);
+            setLastProposalSet(null);
+            setProposalSet({});
+            setPendingConfirm(null);
+            setPendingConfirmMsgId(null);
+            console.log("[proposal preview cleared]", {
+  source: "dismiss_or_apply_or_reset",
+  msgId: msg.id,
+});
+            onProposalPreview?.(null);
+          }}
+          className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
+        >
+          Dismiss
+        </button>
+      </div>
 
-                                <div className="mt-2">
-                              <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
-                                {turnProposal?.meta?.op === "append"
-                                  ? "Appended content"
-                                  : "Proposed content (preview)"}
-                              </div>
-                                  <div className="mt-1 max-h-[120px] overflow-auto rounded-md bg-black/30 p-2 font-mono text-[11px] text-white/80 whitespace-pre-wrap">
-                                    {previewShort}
-                                  </div>
-                                </div>
+      {turnState.proposalList.length > 1 && (
+        <div className="mt-3">
+          <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+            Staged files
+          </div>
 
-                                <div className="mt-3 flex justify-end">
-                                  <button
-                                  disabled={thinking}
-                                    onClick={() => {
-                                      if (!turnState || !turnProposal) return;
+          <div className="mt-2 flex flex-wrap gap-2">
+            {turnState.proposalList.map((p) => {
+              const selected = p.fileId === turnState.selectedProposalFileId;
 
-                                      applyOriginMsgIdRef.current = msg.id;
+              return (
+                <button
+                  key={p.fileId}
+                  type="button"
+                  onClick={() => {
+                    patchActiveTurn(msg.id, (prev) => ({
+                      ...prev,
+                      selectedProposalFileId: p.fileId,
+                    }));
 
-                                      patchActiveTurn(msg.id, (prev) => ({
-                                        ...prev,
-                                        verify: null,
-                                        preverify: null,
-                                        pendingConfirm: null,
-                                      }));
+                    if (p.fileId) openFileById?.(p.fileId);
+                  }}
+                  className={`rounded-md border px-2 py-1 text-[11px] transition ${
+                    selected
+                      ? "border-emerald-300/40 bg-emerald-400/15 text-emerald-100"
+                      : "border-white/10 bg-black/20 text-white/70 hover:bg-white/10"
+                  }`}
+                >
+                  {p.path || p.name || p.fileId}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
-                                      setLastVerify(null);
-                                      setLastVerifyMsgId(null);
-                                      setLastPreverify(null);
-                                      setLastPreverifyMsgId(null);
+      <div className="mt-2">
+        <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+          Confirmation phrase
+        </div>
+        <div className="mt-1 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-emerald-100 break-all">
+          {turnState.pendingConfirm}
+        </div>
 
-                                      setPendingConfirm(null);
-                                      setPendingConfirmMsgId(null);
+        <div className="mt-2">
+          <div className="text-[10px] uppercase tracking-widest text-emerald-200/70">
+            {turnProposal?.meta?.op === "append"
+              ? "Appended content"
+              : "Proposed content (preview)"}
+          </div>
+          <div className="mt-1 max-h-[120px] overflow-auto rounded-md bg-black/30 p-2 font-mono text-[11px] text-white/80 whitespace-pre-wrap">
+            {previewShort}
+          </div>
+        </div>
 
-                                      const proposalCount = turnState.proposalList.length;
+        <div className="mt-3 flex justify-end">
+          <button
+            disabled={thinking}
+            onClick={() => {
+              if (!turnState || !turnProposal) return;
 
-                                      if (proposalCount > 1) {
-                                        const payload = JSON.stringify(turnProposalSet);
-                                        handleSend(`__APPLY_SET__:${payload}`);
-                                        return;
-                                      }
+              applyOriginMsgIdRef.current = msg.id;
 
-                                      const payload = JSON.stringify(turnProposal);
-                                      handleSend(`__APPLY__:${payload}`);
-                                    }}
-                                    className="h-[36px] rounded-lg px-3 text-[12px] font-medium bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300/40 active:scale-[0.99] transition"
-                                  >
-                                    Confirm &amp; Apply
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          )}
+              patchActiveTurn(msg.id, (prev) => ({
+                ...prev,
+                verify: null,
+                preverify: null,
+                pendingConfirm: null,
+              }));
+
+              setLastVerify(null);
+              setLastVerifyMsgId(null);
+              setLastPreverify(null);
+              setLastPreverifyMsgId(null);
+
+              setPendingConfirm(null);
+              setPendingConfirmMsgId(null);
+
+              const proposalCount = turnState.proposalList.length;
+
+              if (proposalCount > 1) {
+                const payload = JSON.stringify(turnProposalSet);
+                handleSend(`__APPLY_SET__:${payload}`);
+                return;
+              }
+
+              const payload = JSON.stringify(turnProposal);
+              handleSend(`__APPLY__:${payload}`);
+            }}
+            className="h-[36px] rounded-lg px-3 text-[12px] font-medium bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 hover:bg-emerald-500/25 hover:border-emerald-300/40 active:scale-[0.99] transition"
+          >
+            Confirm &amp; Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
                       </div>
                     );
                   })()
@@ -2056,26 +2250,40 @@ if (shouldHideEmptyAssistantBubble) {
                 <GoalPlanCard
                   goal={goalPlan}
                   continueDisabled={goalContinueBlocked}
-                  onApprove={() => {
-                    setGoalPlan((prev) => {
-                      if (!prev) return prev;
+                 onApprove={() => {
+                  if (!goalPlan || goalPlan.status !== "awaiting_approval") {
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: makeId(),
+                        role: "system",
+                        content:
+                          "[Observation]\nGoal approval failed.\n\n[Assessment]\nNo pending goal plan was found.\n\n[Action]\nCreate a plan first.",
+                        createdAt: Date.now(),
+                      },
+                    ]);
+                    return;
+                  }
 
-                      const firstStepId = prev.steps?.[0]?.id ?? null;
+                  setGoalPlan((prev) => {
+                    if (!prev) return prev;
 
-                      return {
-                        ...prev,
-                        status: "running",
-                        currentStepId: firstStepId,
-                        completedStepIds: [],
-                        steps: prev.steps.map((step, idx) => ({
-                          ...step,
-                          status: idx === 0 ? "running" : "pending",
-                        })),
-                      };
-                    });
+                    const firstStepId = prev.steps?.[0]?.id ?? null;
 
-                    handleSend("__GOAL_APPROVE__");
-                  }}
+                    return {
+                      ...prev,
+                      status: "running",
+                      currentStepId: firstStepId,
+                      completedStepIds: [],
+                      steps: prev.steps.map((step, idx) => ({
+                        ...step,
+                        status: idx === 0 ? "running" : "pending",
+                      })),
+                    };
+                  });
+
+                  handleSend("__GOAL_APPROVE__");
+                }}
                   onContinue={() => {
                     if (goalContinueBlocked) {
                       setMessages((prev) => [

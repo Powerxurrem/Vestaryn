@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>About — Connective Studio</title>
+  <meta name="description" content="Learn about Connective Studio — our mission, team, and the principles that guide the work we build across web, design and community." />
+  <style>
+    :root{
+      --bg:#0f1720;
+      --card:#0b1220;
+      --muted:#9aa6b2;
+      --accent:#22c1c3;
+      --accent-2:#6dd3f0;
+      --glass: rgba(255,255,255,0.03);
+      --radius:10px;
+      --max-width:980px;
+      --gap:18px;
+      --fw-regular:500;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;
+      color:#e6eef6;
+      background:linear-gradient(180deg,#071024 0%, #08111a 50%, #041018 100%);
+      line-height:1.45;
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      padding:32px;
+      display:flex;
+      justify-content:center;
+    }
+    .wrap{
+      width:100%;
+      max-width:var(--max-width);
+    }
+    header{
+      display:flex;
+      align-items:center;
+      gap:18px;
+      margin-bottom:22px;
+    }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap:12px;
+      text-decoration:none;
+      color:inherit;
+    }
+    .logo{
+      width:44px;height:44px;
+      display:inline-grid;
+      place-items:center;
+      background:linear-gradient(135deg,var(--accent),var(--accent-2));
+      border-radius:10px;
+      box-shadow:0 6px 20px rgba(33,150,160,0.12), inset 0 -6px 18px rgba(0,0,0,0.18);
+      font-weight:700;
+      color:#042027;
+      letter-spacing:-0.02em;
+    }
+    .title{
+      font-size:16px;
+      font-weight:700;
+      margin:0;
+    }
+    nav{
+      margin-left:auto;
+    }
+    .nav-list{
+      display:flex;
+      gap:12px;
+      list-style:none;
+      padding:0;
+      margin:0;
+      align-items:center;
+    }
+    .nav-list a{
+      color:var(--muted);
+      text-decoration:none;
+      padding:8px 12px;
+      border-radius:8px;
+      font-size:14px;
+    }
+    .nav-list a:hover{color:#fff;background:rgba(255,255,255,0.03)}
+    .nav-list a.active{
+      color:#041018;
+      background:linear-gradient(90deg,var(--accent),var(--accent-2));
+      box-shadow:0 8px 24px rgba(34,193,195,0.12);
+    }
+ 
+    main{
+      background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+      border-radius:var(--radius);
+      padding:22px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 8px 40px rgba(3,8,15,0.6);
+    }
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 320px;
+      gap:var(--gap);
+      align-items:start;
+    }
+    .hero{
+      margin-bottom:18px;
+    }
+    h1{margin:0 0 8px 0;font-size:24px}
+    p.lead{color:var(--muted);margin:0 0 14px 0}
+    .card{
+      background:var(--card);
+      border-radius:12px;
+      padding:16px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+    }
+    .meta{display:flex;gap:12px;color:var(--muted);font-size:13px;flex-wrap:wrap}
+    .section{margin-bottom:16px}
+    .values{
+      display:flex;
+      gap:12px;
+      flex-wrap:wrap;
+    }
+    .value{
+      background:var(--glass);
+      padding:12px;
+      border-radius:10px;
+      min-width:140px;
+      flex:1;
+    }
+    .value h4{margin:0 0 6px 0;font-size:15px}
+    .timeline{display:flex;flex-direction:column;gap:10px}
+    .t-item{display:flex;gap:12px;align-items:flex-start}
+    .t-dot{width:10px;height:10px;border-radius:50%;background:var(--accent);margin-top:6px}
+    .t-body{color:var(--muted);font-size:14px}
+    aside{
+      position:relative;
+    }
+    .aside-top{display:flex;flex-direction:column;gap:12px;margin-bottom:12px}
+    .stat{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      background:linear-gradient(90deg, rgba(255,255,255,0.02), transparent);
+      padding:12px;border-radius:10px;
+    }
+    .stat strong{font-size:20px}
+    .cta{
+      display:block;
+      text-align:center;
+      padding:12px 14px;
+      border-radius:10px;
+      background:linear-gradient(90deg,var(--accent),var(--accent-2));
+      color:#042027;
+      text-decoration:none;
+      font-weight:700;
+      box-shadow:0 12px 34px rgba(34,193,195,0.12);
+    }
+    footer{
+      margin-top:20px;
+      color:var(--muted);
+      font-size:13px;
+      text-align:center;
+    }
+    @media (max-width:880px){
+      .grid{grid-template-columns:1fr; padding-bottom:6px}
+      aside{order:2}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap" role="document">
+    <header>
+      <a href="index.html" class="brand" aria-label="Go to homepage">
+        <div class="logo">CS</div>
+        <div>
+          <p class="title">Connective Studio</p>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">Design · Web · Community</div>
+        </div>
+      </a>
+ 
+      <nav aria-label="Primary">
+        <ul class="nav-list">
+          <li><a href="index.html">Home</a></li>
+          <li><a class="active" href="about.html">About</a></li>
+          <li><a href="projects.html">Projects</a></li>
+          <li><a href="blog.html">Blog</a></li>
+          <li><a href="contact.html">Contact</a></li>
+        </ul>
+      </nav>
+    </header>
+ 
+    <main>
+      <div class="grid">
+        <div>
+          <section class="hero">
+            <h1>Who we are and how we connect</h1>
+            <p class="lead">We build simple, thoughtful digital experiences that help people and organizations communicate clearly. Our work blends design systems, accessible interactions, and pragmatic engineering.</p>
+            <div class="meta">
+              <div>Founded 2018</div>
+              <div>Remote-first</div>
+              <div>Clients worldwide</div>
+            </div>
+          </section>
+ 
+          <section class="card section" aria-labelledby="mission">
+            <h2 id="mission" style="font-size:16px;margin:0 0 8px 0">Our mission</h2>
+            <p style="margin:0;color:var(--muted)">Connective Studio exists to make purposeful digital products that bring people closer to the things that matter. We prioritize clarity, empathy, and sustainability: solving real problems with durable solutions that scale.</p>
+          </section>
+ 
+          <section class="card section" aria-labelledby="principles">
+            <h2 id="principles" style="font-size:16px;margin:0 0 12px 0">Principles that guide us</h2>
+            <div class="values">
+              <div class="value">
+                <h4>Human-first</h4>
+                <div style="color:var(--muted);font-size:14px">Design for real people, not just personas — listen, iterate, and validate.</div>
+              </div>
+              <div class="value">
+                <h4>Clarity</h4>
+                <div style="color:var(--muted);font-size:14px">Reduce noise. Communicate intent. Make interactions obvious and pleasant.</div>
+              </div>
+              <div class="value">
+                <h4>Build for growth</h4>
+                <div style="color:var(--muted);font-size:14px">Ship maintainable systems that help teams move faster over time.</div>
+              </div>
+            </div>
+          </section>
+ 
+          <section class="card section" aria-labelledby="story">
+            <h2 id="story" style="font-size:16px;margin:0 0 12px 0">A brief story</h2>
+            <div class="timeline" aria-hidden="false">
+              <div class="t-item">
+                <div style="min-width:72px;color:var(--accent);font-weight:700">2018</div>
+                <div class="t-body">Started as a two-person studio focusing on accessible websites and design systems.</div>
+              </div>
+              <div class="t-item">
+                <div style="min-width:72px;color:var(--accent);font-weight:700">2020</div>
+                <div class="t-body">Expanded to product work — product strategy, frontend engineering and design ops for growing teams.</div>
+              </div>
+              <div class="t-item">
+                <div style="min-width:72px;color:var(--accent);font-weight:700">2023</div>
+                <div class="t-body">Transitioned to remote-first and launched our community series to share practice and resources.</div>
+              </div>
+            </div>
+          </section>
+ 
+          <section class="card section" aria-labelledby="approach">
+            <h2 id="approach" style="font-size:16px;margin:0 0 12px 0">How we work</h2>
+            <ol style="margin:0;color:var(--muted);padding-left:18px">
+              <li style="margin-bottom:8px"><strong style="color:#fff">Discover:</strong> Kickoffs either in-person or remote, research, and alignment workshops.</li>
+              <li style="margin-bottom:8px"><strong style="color:#fff">Design & Iterate:</strong> Rapid prototypes, user testing, and accessible patterns.</li>
+              <li style="margin-bottom:8px"><strong style="color:#fff">Build & Scale:</strong> Production-ready frontends, component libraries, and handoff support.</li>
+            </ol>
+            <p style="margin-top:12px;color:var(--muted)">We tailor scope to the outcome — some engagements are short and tactical, others are multi-year partnerships. Wherever possible we document decisions so teams can continue with confidence after the engagement ends.</p>
+          </section>
+ 
+          <section class="card section" aria-labelledby="team">
+            <h2 id="team" style="font-size:16px;margin:0 0 12px 0">The team</h2>
+            <p style="margin:0 0 12px 0;color:var(--muted)">A distributed group of designers, developers, and strategists. We keep the core small and collaborate with trusted specialists as needed — research, animation, and backend partners.</p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <div style="background:linear-gradient(180deg, rgba(34,193,195,0.08), transparent);padding:10px;border-radius:10px;min-width:120px">
+                <strong>Alex R.</strong><div style="color:var(--muted);font-size:13px">Lead Product Designer</div>
+              </div>
+              <div style="background:linear-gradient(180deg, rgba(109,211,240,0.06), transparent);padding:10px;border-radius:10px;min-width:120px">
+                <strong>Maya L.</strong><div style="color:var(--muted);font-size:13px">Frontend Engineer</div>
+              </div>
+              <div style="background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);padding:10px;border-radius:10px;min-width:120px">
+                <strong>Samir K.</strong><div style="color:var(--muted);font-size:13px">Strategy & Ops</div>
+              </div>
+            </div>
+          </section>
+        </div>
+ 
+        <aside>
+          <div class="aside-top">
+            <div class="card stat" aria-hidden="false">
+              <div style="font-size:13px;color:var(--muted)">Projects shipped</div>
+              <strong>84+</strong>
+            </div>
+ 
+            <div class="card stat" aria-hidden="false">
+              <div style="font-size:13px;color:var(--muted)">Avg. engagement</div>
+              <strong>6 months</strong>
+            </div>
+ 
+            <div class="card stat" aria-hidden="false">
+              <div style="font-size:13px;color:var(--muted)">Working hours</div>
+              <strong>Remote • UTC-10 → UTC+3</strong>
+            </div>
+          </div>
+ 
+          <div class="card" style="text-align:left">
+            <h3 style="margin:0 0 8px 0;font-size:15px">Get in touch</h3>
+            <p style="margin:0 0 12px 0;color:var(--muted)">We love short exploratory calls. Tell us a little about your goals and timeline.</p>
+            <a class="cta" href="contact.html">Start a conversation</a>
+            <div style="margin-top:12px;font-size:13px;color:var(--muted);line-height:1.35">
+              Or email <a href="mailto:hello@connectivestudio.example" style="color:var(--accent);text-decoration:none">hello@connectivestudio.example</a>
+            </div>
+          </div>
+ 
+          <div style="height:12px"></div>
+ 
+          <div class="card" style="text-align:left">
+            <h3 style="margin:0 0 8px 0;font-size:15px">Careers</h3>
+            <p style="margin:0 0 10px 0;color:var(--muted)">We're occasionally hiring: product designers, frontend engineers, and community leads.</p>
+            <a class="cta" href="careers.html" style="background:linear-gradient(90deg,#9be7e8,#6dd3f0)">View openings</a>
+          </div>
+        </aside>
+      </div>
+ 
+      <footer>
+        <div style="max-width:720px;margin:18px auto 0 auto">
+          <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
+            <a href="index.html" style="color:var(--muted);text-decoration:none">Home</a>·
+            <a href="projects.html" style="color:var(--muted);text-decoration:none">Projects</a>·
+            <a href="blog.html" style="color:var(--muted);text-decoration:none">Blog</a>·
+            <a href="contact.html" style="color:var(--muted);text-decoration:none">Contact</a>
+          </div>
+          <div style="margin-top:10px">© <span id="year"></span> Connective Studio — Crafted with clarity.</div>
+        </div>
+      </footer>
+    </main>
+  </div>
+ 
+  <script>
+    // set year
+    document.getElementById('year').textContent = new Date().getFullYear();
+  </script>
+</body>
+</html>

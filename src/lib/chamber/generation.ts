@@ -1,6 +1,57 @@
 import OpenAI from "openai";
 import { stripCodeFences } from "@/lib/vault/utils";
 
+function looksTruncatedHtml(text: string) {
+  const t = String(text ?? "").trim().toLowerCase();
+  if (!t) return true;
+  if (t.includes("<html") && !t.includes("</html>")) return true;
+  if (t.includes("<body") && !t.includes("</body>")) return true;
+  return false;
+}
+
+function looksTruncatedCss(text: string) {
+  const t = String(text ?? "").trim();
+  if (!t) return true;
+
+  const openBraces = (t.match(/\{/g) ?? []).length;
+  const closeBraces = (t.match(/\}/g) ?? []).length;
+
+  return openBraces !== closeBraces;
+}
+
+function looksTruncatedJsLike(text: string) {
+  const t = String(text ?? "").trim();
+  if (!t) return true;
+
+  const openCurly = (t.match(/\{/g) ?? []).length;
+  const closeCurly = (t.match(/\}/g) ?? []).length;
+  const openParen = (t.match(/\(/g) ?? []).length;
+  const closeParen = (t.match(/\)/g) ?? []).length;
+  const openBracket = (t.match(/\[/g) ?? []).length;
+  const closeBracket = (t.match(/\]/g) ?? []).length;
+
+  return (
+    openCurly !== closeCurly ||
+    openParen !== closeParen ||
+    openBracket !== closeBracket
+  );
+}
+
+function detectTruncation(path: string, text: string) {
+  const p = String(path ?? "").toLowerCase();
+
+  if (p.endsWith(".html")) return looksTruncatedHtml(text);
+  if (p.endsWith(".css")) return looksTruncatedCss(text);
+  if (p.endsWith(".js") || p.endsWith(".jsx") || p.endsWith(".ts") || p.endsWith(".tsx")) {
+    return looksTruncatedJsLike(text);
+  }
+
+  return false;
+}
+
+
+
+
 export async function generateSplitFileContents(opts: {
   openai: OpenAI;
   model: string;
@@ -71,6 +122,22 @@ FILE
       path: String(f.path).trim(),
       content: String(f.content),
     }));
+}
+
+function extractJsonObject(text: string) {
+  const s = String(text ?? "").trim();
+
+  const fenced = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const unfenced = fenced?.[1]?.trim() ?? s;
+
+  const first = unfenced.indexOf("{");
+  const last = unfenced.lastIndexOf("}");
+
+  if (first === -1 || last === -1 || last <= first) {
+    throw new Error("No JSON object found in model output");
+  }
+
+  return unfenced.slice(first, last + 1);
 }
 
 export async function generateExtractHelpersResult(opts: {
@@ -148,25 +215,199 @@ FILE
     throw new Error(`Model returned invalid JSON: ${e?.message ?? "unknown parse error"}`);
   }
 
-function extractJsonObject(text: string) {
-  const s = String(text ?? "").trim();
-
-  const fenced = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  const unfenced = fenced?.[1]?.trim() ?? s;
-
-  const first = unfenced.indexOf("{");
-  const last = unfenced.lastIndexOf("}");
-
-  if (first === -1 || last === -1 || last <= first) {
-    throw new Error("No JSON object found in model output");
-  }
-
-  return unfenced.slice(first, last + 1);
-}
-
   return {
     targetContent: String(parsed?.targetContent ?? ""),
     sourceContent: String(parsed?.sourceContent ?? ""),
+  };
+}
+
+export type WebsiteSectionBrief = {
+  type: "about" | "features" | "services" | "menu" | "contact";
+  title: string;
+  body?: string;
+  items?: string[];
+};
+
+export type WebsiteBootstrapBrief = {
+  siteTitle: string;
+  heroTitle: string;
+  heroSubtitle: string;
+  ctaText: string;
+  secondaryCtaText?: string;
+  styleMood: string;
+  paletteHint?: string;
+  includeAboutPage: boolean;
+  sections: WebsiteSectionBrief[];
+};
+
+export async function generateWebsiteBootstrapBrief(opts: {
+  openai: OpenAI;
+  model: string;
+  userRequest: string;
+}) {
+  const prompt = `
+You are creating a small structured brief for an initial static website bootstrap.
+
+Return ONLY valid JSON in this exact shape:
+{
+  "siteTitle": "string",
+  "heroTitle": "string",
+  "heroSubtitle": "string",
+  "ctaText": "string",
+  "secondaryCtaText": "string",
+  "styleMood": "string",
+  "paletteHint": "string",
+  "includeAboutPage": true,
+  "sections": [
+    {
+      "type": "about",
+      "title": "string",
+      "body": "string",
+      "items": ["string"]
+    }
+  ]
+}
+
+Rules:
+- Do not include markdown fences.
+- Do not include explanation.
+- Keep the result compact.
+- Prefer 1 to 3 sections maximum.
+- Use only section types: about, features, services, menu, contact.
+- Every string must be fully filled.
+- No placeholders.
+- No ellipses.
+- Do not use trailing commas.
+
+User request:
+${opts.userRequest}
+`.trim();
+
+  const resp = await opts.openai.responses.create({
+    model: opts.model,
+    input: prompt,
+    max_output_tokens: 1200,
+  });
+
+  const raw = resp.output_text ?? "";
+
+  try {
+    const jsonText = extractJsonObject(raw);
+    const parsed = JSON.parse(jsonText);
+
+    return {
+      siteTitle: String(parsed?.siteTitle ?? "").trim() || "Landing Page",
+      heroTitle: String(parsed?.heroTitle ?? "").trim() || "Welcome",
+      heroSubtitle: String(parsed?.heroSubtitle ?? "").trim() || "A simple, polished website starter.",
+      ctaText: String(parsed?.ctaText ?? "").trim() || "Learn More",
+      secondaryCtaText: String(parsed?.secondaryCtaText ?? "").trim() || "",
+      styleMood: String(parsed?.styleMood ?? "").trim() || "clean modern",
+      paletteHint: String(parsed?.paletteHint ?? "").trim() || "",
+      includeAboutPage: Boolean(parsed?.includeAboutPage),
+      sections: Array.isArray(parsed?.sections) ? parsed.sections : [],
+    };
+  } catch (e: any) {
+    console.log("[website_brief parse failed]", {
+      message: e?.message,
+      rawHead: raw.slice(0, 1200),
+    });
+
+    return fallbackWebsiteBootstrapBrief(opts.userRequest);
+  }
+}
+
+function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBrief {
+  const s = String(userRequest ?? "").toLowerCase();
+
+  const isPokemon = s.includes("pokemon");
+  const isCoffee = s.includes("coffee");
+  const isPortfolio = s.includes("portfolio");
+  const includeAboutPage = isPortfolio || s.includes("about");
+
+  if (isPokemon) {
+    return {
+      siteTitle: "PokeHub",
+      heroTitle: "Discover Your Favorite Pokémon",
+      heroSubtitle: "A playful landing page for exploring featured Pokémon, trainers, and adventures.",
+      ctaText: "Explore Now",
+      secondaryCtaText: includeAboutPage ? "About" : "",
+      styleMood: "playful modern",
+      paletteHint: "yellow blue red",
+      includeAboutPage,
+      sections: [
+        {
+          type: "features",
+          title: "Featured Pokémon",
+          body: "Spotlight a few popular characters and quick facts.",
+          items: ["Pikachu", "Charmander", "Squirtle"],
+        },
+        {
+          type: "about",
+          title: "Why Fans Love It",
+          body: "Fast, bright, and easy to explore.",
+        },
+      ],
+    };
+  }
+
+  if (isCoffee) {
+    return {
+      siteTitle: "Morning Roast",
+      heroTitle: "Coffee for Calm Mornings",
+      heroSubtitle: "A cozy landing page for a café, roastery, or coffee brand.",
+      ctaText: "View Menu",
+      secondaryCtaText: includeAboutPage ? "About" : "",
+      styleMood: "warm minimal",
+      paletteHint: "cream brown",
+      includeAboutPage,
+      sections: [
+        {
+          type: "services",
+          title: "What We Serve",
+          body: "Simple, quality coffee and fresh pastries.",
+          items: ["Espresso", "Pour over", "Pastries"],
+        },
+      ],
+    };
+  }
+
+  if (isPortfolio) {
+    return {
+      siteTitle: "Portfolio",
+      heroTitle: "Designing Clear, Useful Experiences",
+      heroSubtitle: "A simple starter portfolio for showcasing work and background.",
+      ctaText: "View Work",
+      secondaryCtaText: "About",
+      styleMood: "clean professional",
+      paletteHint: "slate blue",
+      includeAboutPage: true,
+      sections: [
+        {
+          type: "features",
+          title: "Selected Work",
+          body: "Highlight a few strong projects or case studies.",
+          items: ["Project One", "Project Two", "Project Three"],
+        },
+      ],
+    };
+  }
+
+  return {
+    siteTitle: "Landing Page",
+    heroTitle: "Welcome",
+    heroSubtitle: "A clean, simple website starter.",
+    ctaText: "Learn More",
+    secondaryCtaText: includeAboutPage ? "About" : "",
+    styleMood: "clean modern",
+    paletteHint: "blue slate",
+    includeAboutPage,
+    sections: [
+      {
+        type: "about",
+        title: "Built to Start Fast",
+        body: "A reliable starter layout with room to customize.",
+      },
+    ],
   };
 }
 
@@ -176,6 +417,7 @@ export async function generateNewFileContent(opts: {
   userRequest: string;
   path: string;
   mime: string;
+  maxOutputTokens?: number;
 }) {
   const prompt = `
 You are creating a NEW repository file.
@@ -196,12 +438,18 @@ ${opts.userRequest}
 `.trim();
 
   const resp = await opts.openai.responses.create({
-    model: opts.model,
-    input: prompt,
-    max_output_tokens: 3200,
-  });
+  model: opts.model,
+  input: prompt,
+  max_output_tokens: opts.maxOutputTokens ?? 3200,
+});
 
-  return (resp.output_text || "").trim();
+const text = (resp.output_text || "").trim();
+
+if (detectTruncation(opts.path, text)) {
+  throw new Error(`Generated file appears truncated: ${opts.path}`);
+}
+
+return text;
 }
 
 export async function generateRewrittenFileContent(opts: {
@@ -211,27 +459,96 @@ export async function generateRewrittenFileContent(opts: {
   path: string;
   mime: string;
   currentContent: string;
+  maxOutputTokens?: number;
 }) {
-  const prompt = `
-You are rewriting an existing repository file.
+  const {
+    openai,
+    model,
+    userRequest,
+    path,
+    mime,
+    currentContent,
+    maxOutputTokens,
+  } = opts;
 
-Return ONLY the full rewritten file content.
+  const isHtmlFile =
+    /\.(html?)$/i.test(path) || String(mime ?? "").includes("html");
+
+  const isCssFile =
+    /\.css$/i.test(path) || String(mime ?? "").includes("text/css");
+
+  const htmlCssCoordinationRules = isHtmlFile
+    ? `
+HTML/CSS coordination rules:
+- Keep styling out of inline style attributes whenever possible.
+- Prefer semantic structure and class names over inline presentation.
+- If a styles.css file exists in the repo, assume shared styling should live there.
+- Do not solve layout requests by stuffing large inline style attributes into HTML.
+- Only use inline styles for tiny one-off exceptions if absolutely necessary.
+- If the request implies visual redesign across the page, preserve clean HTML structure and rely on existing CSS classes or simple new class hooks.
+- Do not add external image placeholders, fake CDN assets, or dummy remote banners unless explicitly requested.
+- Do not add fake forms, fake newsletter sections, or fake contact flows unless explicitly requested.
+- Improve structure, hierarchy, sections, and reuse rather than adding bloat.
+`.trim()
+    : "";
+
+  const cssLocalizationRules = isCssFile
+    ? `
+CSS rewrite rules:
+- Prefer the smallest localized edit possible.
+- If the request targets a specific area (for example nav, header, hero, footer, button, card), only modify selectors relevant to that area.
+- Keep unrelated selectors unchanged.
+- Do not restyle the whole file for a local visual request.
+- Preserve existing variables, spacing, typography, and unrelated colors unless the request requires changing them.
+- When possible, change only the declarations inside the most relevant existing selector block.
+- Do not rename selectors, restructure the stylesheet, or reorder large sections unless necessary.
+- Return the full file, but keep the actual diff minimal.
+`.trim()
+    : "";
+
+  const htmlLocalizationRules = isHtmlFile
+    ? `
+HTML rewrite rules:
+- Prefer the smallest localized edit possible.
+- If the request targets one section, modify only that section.
+- Keep unrelated sections and copy unchanged.
+- Preserve document structure unless the request clearly asks for structural changes.
+`.trim()
+    : "";
+
+  const prompt = `
+You are rewriting a single repository file.
 
 Rules:
+- Return ONLY the full rewritten file contents.
 - Do not include markdown fences.
 - Do not include explanation.
-- Do not include [Observation]/[Assessment]/[Action].
-- Do not include JSON.
-- Preserve valid syntax.
+- Preserve the user's intent.
+- Make the smallest good change that satisfies the request.
+- Prefer a minimal diff.
+- Keep unrelated parts unchanged.
+- Do not truncate the file.
+- Keep the file valid for its type.
+- Do not invent major new content, features, sections, forms, or assets unless the user asked for them.
 
-Target file: ${opts.path}
+${htmlCssCoordinationRules}
+
+${cssLocalizationRules}
+
+${htmlLocalizationRules}
 
 User request:
-${opts.userRequest}
+${userRequest}
+
+Target file:
+${path}
+
+Mime:
+${mime}
 
 Current file content:
 <<<FILE
-${opts.currentContent}
+${currentContent}
 FILE
 >>>
 `.trim();
@@ -239,8 +556,14 @@ FILE
   const resp = await opts.openai.responses.create({
     model: opts.model,
     input: prompt,
-    max_output_tokens: 3200,
+    max_output_tokens: opts.maxOutputTokens ?? 3200,
   });
 
-  return (resp.output_text || "").trim();
+  const text = (resp.output_text || "").trim();
+
+  if (detectTruncation(opts.path, text)) {
+    throw new Error(`Rewritten file appears truncated: ${opts.path}`);
+  }
+
+  return text;
 }

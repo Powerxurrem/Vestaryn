@@ -186,10 +186,7 @@ useEffect(() => {
 {/* Center nav / Chamber Core */}
 <div className="mx-auto flex items-center gap-4">
 
-  {/* Left mode */}
-  <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
-    Cinematic (WIP)
-  </button>
+
 
   {/* Sigil + Chamber Core menu */}
   <div ref={coreRef} className="relative px-3">
@@ -501,9 +498,7 @@ useEffect(() => {
   </div>
 
   {/* Right mode */}
-  <button className="px-3 py-1.5 text-sm rounded-lg text-white/65 hover:text-white hover:bg-white/5">
-    Serious (WIP)
-  </button>
+
 </div>
 
         {/* Right slot */}

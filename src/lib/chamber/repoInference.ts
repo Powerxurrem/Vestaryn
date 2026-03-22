@@ -2,6 +2,7 @@ export type RepoProjectType =
   | "node_typescript"
   | "nextjs"
   | "python"
+  | "static_site"
   | "loose_files"
   | "unknown";
 
@@ -35,6 +36,10 @@ export function inferRepoProfile(paths: string[]): RepoInference {
     nonMemoryPaths.length > 0 &&
     nonMemoryPaths.every((p) => p.endsWith(".zip"));
 
+  const hasHtml = hasExt(".html");
+  const hasCss = hasExt(".css", ".scss");
+  const hasBrowserJs = hasExt(".js", ".jsx", ".mjs", ".cjs");
+
   // Next.js
   if (
     has("package.json") &&
@@ -67,6 +72,19 @@ export function inferRepoProfile(paths: string[]): RepoInference {
     return {
       projectType: "python",
       confidence: "medium",
+      needsBootstrap: false,
+      reasons: [],
+    };
+  }
+
+  // Static website
+  if (
+    has("index.html") ||
+    (hasHtml && (hasCss || hasBrowserJs))
+  ) {
+    return {
+      projectType: "static_site",
+      confidence: has("index.html") ? "high" : "medium",
       needsBootstrap: false,
       reasons: [],
     };

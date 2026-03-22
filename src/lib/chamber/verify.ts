@@ -205,7 +205,7 @@ FILE
 `.trim();
 
   const resp = await openai.responses.create({
-    model: "gpt-4.1-mini",
+    model: "gpt-5-mini",
     input: prompt,
     max_output_tokens: 2200,
   });
@@ -220,9 +220,9 @@ FILE
 
 export async function runAutoVerifyForRepo(opts: {
   repoId: string;
-  verifyCmd?: VerifyCommand;
+  verifyCmd?: VerifyCommand | null;
 }) {
-  const { repoId, verifyCmd = "node_verify" } = opts;
+  const { repoId, verifyCmd = null } = opts;
   const jobId = `verify-${repoId}-${Date.now()}`;
   const supabaseAdmin = createSupabaseAdmin();
 
@@ -307,6 +307,32 @@ export async function runAutoVerifyForRepo(opts: {
     };
   }
 
+  if (!verifyCmd) {
+    console.log("[verify] skipped: no_verify_command", { repoId });
+
+    return {
+      skipped: true,
+      skipReason: "no_verify_command",
+      verifyPayload: {
+        command: null,
+        ok: true,
+        skipped: true,
+        skipReason: "no_verify_command",
+        exitCode: 0,
+        durationMs: 0,
+        stdout: "",
+        stderr: "",
+        error: null,
+        jobId: null,
+        fingerprint: null,
+        failedStep: null,
+        failureKind: null,
+        timedOut: false,
+      },
+      result: null,
+    };
+  }
+
   const snap = await buildRepoSnapshotSignedUrl(supabaseAdmin, repoId, jobId, {
     signedUrlTtlSec: 600,
   });
@@ -359,11 +385,11 @@ export async function runAutoVerifyForRepo(opts: {
 
 export function buildPendingVerifyPayload(opts: {
   fileIds: string[];
-  command?: VerifyCommand;
+  command?: VerifyCommand | null;
 }) {
   return {
     pending: true,
-    command: opts.command ?? "node_verify",
+    command: opts.command ?? null,
     fileIds: opts.fileIds,
   };
 }

@@ -141,7 +141,7 @@ export async function handleApplySetCommand(args: {
       projectType: inference?.projectType ?? null,
       verifyCmd,
       skipped: !verifyCmd,
-      reason: !verifyCmd ? "unsupported_project_type" : null,
+      reason: !verifyCmd ? "static site (no verify pipeline)" : null,
     });
 
     let goalAdvanceText = "";
@@ -193,7 +193,7 @@ export async function handleApplySetCommand(args: {
         ok: true,
         skipped: true,
         command: null,
-        reason: "unsupported_project_type",
+        reason: "static site (no verify pipeline)",
         fileIds: touchedFileIds,
       };
 
@@ -407,10 +407,12 @@ export async function handleApplyCommand(args: {
       );
     }
 
+    const appliedPath = String(applied?.path ?? proposal?.path ?? "the file");
+
     const appliedAssistantText =
-      "[Observation]\nWrites applied.\n\n" +
-      "[Assessment]\nThe staged multi-file change set was confirmed and file versions advanced.\n\n" +
-      "[Action]\nNo pending confirmation remains for this applied change set.";
+      `[Observation]\nWrite applied.\n\n` +
+      `[Assessment]\nThe staged change to ${appliedPath} was confirmed and the file version advanced.\n\n` +
+      `[Action]\nNo pending confirmation remains for this applied file change.`;
 
     if (proposal?.meta?.kind === "engraving" && Array.isArray(proposal?.meta?.keepIds)) {
       const keepIds = proposal.meta.keepIds.map((x: any) => String(x)).filter(Boolean);
@@ -542,7 +544,7 @@ export async function handleApplyCommand(args: {
       projectType: inference?.projectType ?? null,
       verifyCmd,
       skipped: !verifyCmd,
-      reason: !verifyCmd ? "unsupported_project_type" : null,
+      reason: !verifyCmd ? "static site (no verify pipeline)" : null,
     });
 
     if (!verifyCmd) {
@@ -597,7 +599,7 @@ export async function handleApplyCommand(args: {
         ok: true,
         skipped: true,
         command: null,
-        reason: "unsupported_project_type",
+        reason: "static site (no verify pipeline)",
         fileIds: touchedFileIds,
       };
 

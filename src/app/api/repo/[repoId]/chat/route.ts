@@ -18,6 +18,7 @@ import { TOOLS, runTool}from "@/lib/vault/toolRuntime";
 import { hasValidAssistantContract}from "@/lib/chamber/output";
 import { finalizeProposalSet } from "@/lib/chamber/proposalFlow";
 import { containsGoalMarker, extractRawGoalMarkerBlock } from "@/types/goalMarkers";
+import { loadRepoInference } from "@/lib/chamber/repoInferenceRuntime";
 import {
   resolveDirectVerifyCommand,
   handleDirectVerifyCommand,
@@ -31,9 +32,16 @@ import { tryHandlePreStreamRepoOps } from "@/lib/chamber/preStreamRuntime";
 import { dedupePendingProposals,isProbablyBrokenSplitFile,validateGeneratedSplitFiles,assertCanonicalProposal} from "@/lib/chamber/proposalRuntimeUtils";
 import { emitMaintenanceIfNeeded,autoResummarizeIfNeeded} from "@/lib/chamber/maintenanceRuntime";
 import { tryHandleRunnerPing } from "@/lib/chamber/runnerRuntime";
-import { resolveRuntimePolicyFromCredits } from "@/lib/chamber/creditsRuntime";
+import {
+  resolveRuntimePolicyFromCredits,
+  chargeCreditsForUsage,
+} from "@/lib/chamber/creditsRuntime";
 import { tryHandleDeterministicCommands } from "@/lib/chamber/deterministicCommands";
 import { streamResponse } from "@/lib/chamber/streamRuntime";
+import {  resolveExecutionMode,shouldAllowBootstrapForMode,shouldAllowPreStreamRepoOpsForMode,  shouldRunBaselineVerifyForMode} from "@/lib/chamber/executionMode";
+import { handleSurgicalMode } from "@/lib/chamber/handleSurgicalMode";
+import { handleCreateMissingFileMode } from "@/lib/chamber/handleCreateMissingFileMode";
+import { handleImplicitStaticPageMode } from "@/lib/chamber/handleImplicitStaticPageMode";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -83,6 +91,15 @@ const { content } = await req.json();
 if (!content?.trim()) return new Response("Missing content", { status: 400 });
 
 const text = normText(content);
+
+const executionMode = resolveExecutionMode(text);
+
+console.log("[execution_mode]", {
+  mode: executionMode.mode,
+  confidence: executionMode.confidence,
+  reasons: executionMode.reasons,
+  mentionedPaths: executionMode.mentionedPaths,
+});
 
 const explicitGoalPlanRequest =
   !isInternalControlPrompt(text) &&
@@ -173,7 +190,32 @@ if (deterministicResponse) {
 
 console.log("[verify_probe] content:", JSON.stringify(content));
 
-const baselineVerify = await runAutoVerifyForRepo({ repoId });
+let baselineVerify = {
+  verifyPayload: {
+    ok: true,
+    skipped: true,
+    reason: "mode_skipped",
+    failedStep: null,
+  },
+} as any;
+
+if (shouldRunBaselineVerifyForMode(executionMode.mode)) {
+  baselineVerify = await runAutoVerifyForRepo({ repoId });
+
+  console.log("[baseline_verify]", {
+    ok: baselineVerify.verifyPayload.ok,
+    failedStep: baselineVerify.verifyPayload.failedStep,
+    mode: executionMode.mode,
+  });
+
+  if (!baselineVerify.verifyPayload.ok) {
+    console.log("[baseline_verify] repo currently broken, repair needed");
+  }
+} else {
+  console.log("[baseline_verify] skipped", {
+    mode: executionMode.mode,
+  });
+}
 
 console.log("[baseline_verify]", {
   ok: baselineVerify.verifyPayload.ok,
@@ -284,21 +326,233 @@ console.log("[credits]", {
   runtimeTier: runtimePolicy.tier,
 });
 
-const preStreamResponse = await tryHandlePreStreamRepoOps({
+const shouldRunCreateMissingMode =
+  executionMode.mode === "bootstrap" ||
+  executionMode.mode === "incremental" ||
+  executionMode.mode === "surgical" ||
+  executionMode.mode === "rewrite";
+
+if (shouldRunCreateMissingMode) {
+  console.log("[execution_mode] create-missing-file handler active", {
+    confidence: executionMode.confidence,
+    paths: executionMode.mentionedPaths,
+  });
+
+  const createMissingResponse = await handleCreateMissingFileMode({
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    model: runtimePolicy.model,
+  });
+
+  if (createMissingResponse) {
+    const responseText = await createMissingResponse.text();
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          controller.enqueue(encoder.encode(responseText));
+
+          const { error: aInsErr } = await supabase.from("repo_messages").insert({
+            repo_id: repoId,
+            user_id: user.id,
+            role: "assistant",
+            content: responseText,
+          });
+
+          if (aInsErr) {
+            console.log("[repo_messages] create-missing assistant insert failed:", aInsErr.message);
+          }
+          if (!aInsErr) {
+            await chargeCreditsForUsage({
+              supabase,
+              workspaceId,
+              periodStart,
+              repoId,
+              requestId,
+              amount: 1,
+              kind: "chat_turn",
+              metadata: {
+                mode: executionMode.mode,
+                model: runtimePolicy.model,
+                tier: runtimePolicy.tier,
+              },
+            });
+          }
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+}
+
+if (executionMode.mode === "surgical") {
+  console.log("[execution_mode] surgical handler active", {
+    confidence: executionMode.confidence,
+    paths: executionMode.mentionedPaths,
+  });
+
+  const surgicalResponse = await handleSurgicalMode({
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    model: runtimePolicy.model,
+    baselineVerify,
+    inferredVerifyCmd,
+  });
+
+  if (surgicalResponse) {
+    const responseText = await surgicalResponse.text();
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        try {
+          controller.enqueue(encoder.encode(responseText));
+
+          const { error: aInsErr } = await supabase.from("repo_messages").insert({
+            repo_id: repoId,
+            user_id: user.id,
+            role: "assistant",
+            content: responseText,
+          });
+
+          if (aInsErr) {
+            console.log("[repo_messages] surgical assistant insert failed:", aInsErr.message);
+          }
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
+}
+
+if (executionMode.mode === "explain") {
+  console.log("[execution_mode] explain guard active");
+
+  const explainInput = [
+    { role: "system", content: membershipBlock },
+    { role: "system", content: sacredBlock },
+    { role: "system", content: profileBlock },
+    { role: "system", content: masterBlock },
+    { role: "system", content: chamberBlock },
+    { role: "system", content: treeBlock },
+    { role: "system", content: ledgerBlock },
+    ...cleanedHistory.map((m: any) => ({
+      role: m.role,
+      content: m.content,
+    })),
+    {
+      role: "system",
+      content:
+        "Mode: EXPLAIN_ONLY. Analyze and explain the repository or requested files. Do not propose changes. Do not emit __PROPOSAL__ or __PROPOSAL_SET__. Do not claim staged changes. Reference real files when possible.",
+    },
+    { role: "user", content },
+  ];
+
+  const resp = await openai.responses.create({
+    model: runtimePolicy.model,
+    instructions: resolvedInstructions,
+    input: explainInput,
+    tools: TOOLS,
+    tool_choice: "auto",
+    max_output_tokens: runtimePolicy.output.maxOutputTokens,
+  });
+
+  const rawText = String((resp as any).output_text ?? "").trim();
+  let out = scrubVisibleToolPayload(rawText);
+  out = ensureTriplet(stripDuplicateTriplet(out)).trim();
+
+  if (!hasValidAssistantContract(out)) {
+    out =
+      "[Observation]\nRepository explanation requested.\n\n" +
+      "[Assessment]\nThe chamber analyzed the request in explain mode without staging changes.\n\n" +
+      "[Action]\nReview the explanation above and request a concrete file change when ready.";
+  }
+
+  const { error: aInsErr } = await supabase.from("repo_messages").insert({
+    repo_id: repoId,
+    user_id: user.id,
+    role: "assistant",
+    content: out,
+  });
+
+  if (aInsErr) {
+    console.log("[repo_messages] assistant insert failed:", aInsErr.message);
+  }
+
+  return new Response(out, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+    },
+  });
+}
+
+
+const implicitStaticPageResponse = await handleImplicitStaticPageMode({
   openai,
   supabase,
   repoId,
   userId: user.id,
   content,
-  runtimePolicy,
+  model: runtimePolicy.model,
+  inference,
   baselineVerify,
+  inferredVerifyCmd,
 });
 
-if (preStreamResponse) {
-  return preStreamResponse;
+if (implicitStaticPageResponse) {
+  return implicitStaticPageResponse;
 }
 
-const bootstrapResponse = await tryHandleBootstrap({
+if (shouldAllowPreStreamRepoOpsForMode(executionMode.mode)) {
+  const preStreamResponse = await tryHandlePreStreamRepoOps({
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    runtimePolicy,
+    baselineVerify,
+  });
+
+  if (preStreamResponse) {
+    return preStreamResponse;
+  }
+} else {
+  console.log("[prestream] skipped", {
+    mode: executionMode.mode,
+  });
+}
+
+if (shouldAllowBootstrapForMode(executionMode.mode)) {
+  const bootstrapResponse = await tryHandleBootstrap({
   openai,
   supabase,
   repoId,
@@ -315,10 +569,18 @@ const bootstrapResponse = await tryHandleBootstrap({
   ledgerBlock,
   cleanedHistory,
   baselineVerify,
+  workspaceId,
+  periodStart,
+  requestId,
 });
 
-if (bootstrapResponse) {
-  return bootstrapResponse;
+  if (bootstrapResponse) {
+    return bootstrapResponse;
+  }
+} else {
+  console.log("[bootstrap] skipped", {
+    mode: executionMode.mode,
+  });
 }
 
 const input = [
@@ -368,7 +630,7 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
     
 
     try {
-            let resp = await openai.responses.create({
+      let resp = await openai.responses.create({
         model: runtimePolicy.model,
         instructions: resolvedInstructions,
         input,
@@ -393,6 +655,7 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
           lastResponseId = id;
         },
       });
+
       console.log("[tool] built after pass1", {
         count: (pass1.builtPendingTools ?? []).length,
         tools: (pass1.builtPendingTools ?? []).map((t: any) => ({
@@ -402,11 +665,18 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
           argsHead: String(t.arguments ?? "").slice(0, 200),
         })),
       });
+
       pendingTools = pass1.builtPendingTools ?? [];
       rawAssistantText = pass1.buffer ?? "";
-      const initialHadTools = pendingTools.length > 0 || pass1.sawToolsThisPass;
 
-      console.log("[pass1] hadTools=", initialHadTools, "bufLen=", pass1.buffer?.length ?? 0);
+      let initialHadTools = pendingTools.length > 0 || pass1.sawToolsThisPass;
+
+      console.log(
+        "[pass1] hadTools=",
+        initialHadTools,
+        "bufLen=",
+        pass1.buffer?.length ?? 0
+      );
 
       console.log("[tool] built after pass1", {
         count: (pass1.builtPendingTools ?? []).length,
@@ -422,26 +692,104 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
         const rawOut = String(pass1.buffer ?? "");
         const hasGoalMarkers = containsGoalMarker(rawOut);
 
-        if (hasGoalMarkers) {
-          console.log("[contract] goal marker response detected; skipping fallback");
+        // ─────────────────────────────────────────────
+        // Deterministic fallback when incremental repo execution produced no tools
+        // ─────────────────────────────────────────────
+        if (
+          !hasGoalMarkers &&
+          isRepositoryExecutionIntent(content) &&
+          executionMode.mode === "incremental"
+        ) {
+          try {
+            console.log(
+              "[pass1_fallback] incremental repo execution produced no tools"
+            );
 
-          fullText = rawOut.trim();
-          controller.enqueue(encoder.encode(fullText));
-        } else {
-          let out = scrubVisibleToolPayload(rawOut);
-          out = ensureTriplet(stripDuplicateTriplet(out));
-          out = out.trim();
+            const inferred = await loadRepoInference({
+              supabase,
+              repoId,
+            });
 
-          if (!hasValidAssistantContract(out)) {
-            console.log("[contract] violation: pass1 missing [Observation]");
-            out =
-              "[Observation]\nContract violation detected.\n\n" +
-              "[Assessment]\nAssistant output did not start with [Observation].\n\n" +
-              "[Action]\nRetry the request or adjust prompt to conform to the output contract.";
+            const filePaths = Array.isArray(inferred?.filePaths)
+              ? inferred.filePaths
+              : [];
+
+            const preferredPath =
+              /background|color|spacing|padding|margin|font|shadow|border|animation|styles?/i.test(
+                content
+              )
+                ? filePaths.includes("styles.css")
+                  ? "styles.css"
+                  : filePaths.includes("index.html")
+                    ? "index.html"
+                    : filePaths.includes("app/page.tsx")
+                      ? "app/page.tsx"
+                      : null
+                : /section|layout|structure|hero|content|sidebar|footer|header/i.test(
+                      content
+                    )
+                  ? filePaths.includes("index.html")
+                    ? "index.html"
+                    : filePaths.includes("app/page.tsx")
+                      ? "app/page.tsx"
+                      : filePaths.includes("styles.css")
+                        ? "styles.css"
+                        : null
+                  : filePaths.includes("index.html")
+                    ? "index.html"
+                    : filePaths.includes("app/page.tsx")
+                      ? "app/page.tsx"
+                      : filePaths.includes("styles.css")
+                        ? "styles.css"
+                        : null;
+
+            if (preferredPath) {
+              console.log("[pass1_fallback] forcing read", {
+                repoId,
+                preferredPath,
+              });
+
+              initialHadTools = true;
+              pendingTools = [
+                {
+                  call_id: `fallback_${Date.now()}`,
+                  name: "vault_read_text",
+                  arguments: JSON.stringify({ path: preferredPath }),
+                } as any,
+              ];
+            }
+          } catch (e: any) {
+            console.log("[pass1_fallback] failed", {
+              repoId,
+              message: e?.message ?? "unknown error",
+            });
           }
+        }
 
-          fullText = out;
-          controller.enqueue(encoder.encode(out));
+        if (!initialHadTools) {
+          if (hasGoalMarkers) {
+            console.log("[contract] goal marker response detected; skipping fallback");
+
+            fullText = rawOut.trim();
+            controller.enqueue(encoder.encode(fullText));
+          } else {
+            let out = scrubVisibleToolPayload(rawOut);
+            out = ensureTriplet(stripDuplicateTriplet(out));
+            out = out.trim();
+
+            if (!hasValidAssistantContract(out)) {
+              console.log("[contract] violation: pass1 missing [Observation]");
+              out =
+                "[Observation]\nContract violation detected.\n\n" +
+                "[Assessment]\nAssistant output did not start with [Observation].\n\n" +
+                "[Action]\nRetry the request or adjust prompt to conform to the output contract.";
+            }
+
+            fullText = out;
+            controller.enqueue(encoder.encode(out));
+          }
+        } else {
+          fullText = "";
         }
       } else {
         fullText = "";
@@ -690,114 +1038,295 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
     continue;
   }
 
-    // ─────────────────────────────────────────────
-    // Deterministic create+modify orchestration
-    // Example: create components/X.tsx and use it in app/page.tsx
-    // ─────────────────────────────────────────────
-    if (
-      toolName === "vault_list_files" &&
-      isCreateAndModifyIntent(content) &&
-      out &&
-      typeof out === "object" &&
-      !("error" in out)
-    ) {
-      if (requestHandledByOrchestration) {
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify(out),
-        });
-        continue;
-      }
-      const paths = extractMentionedPaths(content);
-  
-      const createPath = paths.find((p) => p.startsWith("components/"));
-      const modifyPath = paths.find((p) => p !== createPath);
+   // ─────────────────────────────────────────────
+// Deterministic create+modify orchestration
+// Example: create components/X.tsx and use it in app/page.tsx
+// ─────────────────────────────────────────────
+if (
+  toolName === "vault_list_files" &&
+  isCreateAndModifyIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  if (requestHandledByOrchestration) {
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
+    continue;
+  }
 
-      const files = Array.isArray((out as any).files) ? (out as any).files : [];
-      const existingPaths = new Set(files.map((f: any) => String(f.path)));
+  const paths = extractMentionedPaths(content);
+
+  const createPath = paths.find((p) => p.startsWith("components/"));
+  const modifyPath = paths.find((p) => p !== createPath);
+
+  const files = Array.isArray((out as any).files) ? (out as any).files : [];
+  const existingPaths = new Set(files.map((f: any) => String(f.path)));
+
+  if (
+    createPath &&
+    modifyPath &&
+    !existingPaths.has(createPath) &&
+    existingPaths.has(modifyPath)
+  ) {
+    const newFileContent = await generateNewFileContent({
+      openai,
+      model: runtimePolicy.model,
+      userRequest: content,
+      path: createPath,
+      mime: inferTextMimeFromPath(createPath),
+    });
+
+    const createProposal = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_propose_create",
+      {
+        path: createPath,
+        content: newFileContent,
+        mime: inferTextMimeFromPath(createPath),
+      },
+    );
+
+    if (
+      createProposal &&
+      typeof createProposal === "object" &&
+      !("error" in createProposal)
+    ) {
+      pendingProposalOuts.push(createProposal);
+    }
+
+    const existingFile = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_read_text",
+      { path: modifyPath },
+    );
+
+    if (
+      existingFile &&
+      typeof existingFile === "object" &&
+      !("error" in existingFile)
+    ) {
+      const rewritten = await generateRewrittenFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        path: String((existingFile as any).path ?? modifyPath),
+        mime: String((existingFile as any).mime ?? "text/plain"),
+        currentContent: String((existingFile as any).content ?? ""),
+      });
+
+      const writeProposal = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: (existingFile as any).id,
+          content: rewritten,
+        },
+      );
 
       if (
-        createPath &&
-        modifyPath &&
-        !existingPaths.has(createPath) &&
-        existingPaths.has(modifyPath)
+        writeProposal &&
+        typeof writeProposal === "object" &&
+        !("error" in writeProposal)
       ) {
-        const newFileContent = await generateNewFileContent({
+        pendingProposalOuts.push(writeProposal);
+      }
+    }
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
+
+    continue;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Deterministic generic repo edit orchestration
+// Example: "make it look more premium"
+// ─────────────────────────────────────────────
+const isEditExecutionMode =
+  executionMode.mode === "incremental" ||
+  executionMode.mode === "rewrite" ||
+  executionMode.mode === "surgical";
+
+if (
+  toolName === "vault_list_files" &&
+  !requestHandledByOrchestration &&
+  isEditExecutionMode &&
+  !isCreateAndModifyIntent(content) &&
+  !isSourceTargetTransferIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  const files = Array.isArray((out as any).files) ? (out as any).files : [];
+
+  const requestedPath = extractSingleMentionedPath(content);
+
+  const editableFiles = files.filter((f: any) => {
+    const path = String(f?.path ?? "").toLowerCase();
+    if (!path) return false;
+    if (path.startsWith("memory/")) return false;
+
+    return (
+      path.endsWith(".html") ||
+      path.endsWith(".css") ||
+      path.endsWith(".ts") ||
+      path.endsWith(".tsx") ||
+      path.endsWith(".js") ||
+      path.endsWith(".jsx")
+    );
+  });
+
+  let targetFile: any | null = null;
+
+  if (requestedPath) {
+    targetFile =
+      editableFiles.find((f: any) => String(f.path) === requestedPath) ?? null;
+  }
+
+  if (!targetFile) {
+    const cssFile =
+      editableFiles.find((f: any) =>
+        String(f.path ?? "").toLowerCase().endsWith(".css")
+      ) ?? null;
+
+    const htmlFile =
+      editableFiles.find((f: any) =>
+        String(f.path ?? "").toLowerCase().endsWith(".html")
+      ) ?? null;
+
+    const tsxFile =
+      editableFiles.find((f: any) =>
+        String(f.path ?? "").toLowerCase().endsWith(".tsx")
+      ) ?? null;
+
+    const tsFile =
+      editableFiles.find((f: any) =>
+        String(f.path ?? "").toLowerCase().endsWith(".ts")
+      ) ?? null;
+
+    // Prefer CSS first for visual polish requests
+    if (/\b(look|design|style|premium|modern|cleaner|nicer|prettier|polish|visual)\b/i.test(content)) {
+      targetFile = cssFile ?? htmlFile ?? tsxFile ?? tsFile ?? editableFiles[0] ?? null;
+    } else {
+      targetFile = htmlFile ?? tsxFile ?? tsFile ?? cssFile ?? editableFiles[0] ?? null;
+    }
+  }
+
+  if (targetFile?.path) {
+    console.log("[generic_edit_orchestration] target selected", {
+      repoId,
+      requestedPath: requestedPath ?? null,
+      selectedPath: targetFile.path,
+    });
+
+    const existingFile = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_read_text",
+      { path: targetFile.path },
+    );
+
+    if (
+      existingFile &&
+      typeof existingFile === "object" &&
+      !("error" in existingFile)
+    ) {
+      const resolvedPath = String((existingFile as any).path ?? targetFile.path);
+      const resolvedMime = String(
+        (existingFile as any).mime ?? targetFile.mime ?? "text/plain"
+      );
+      const currentContent = String((existingFile as any).content ?? "");
+
+      let rewritten: string;
+
+      try {
+        rewritten = await generateRewrittenFileContent({
           openai,
           model: runtimePolicy.model,
           userRequest: content,
-          path: createPath,
-          mime: inferTextMimeFromPath(createPath),
+          path: resolvedPath,
+          mime: resolvedMime,
+          currentContent,
         });
+      } catch (e: any) {
+        const msg = String(e?.message ?? "");
 
-        const createProposal = await runTool(
-          supabase,
-          repoId,
-          user.id,
-          content,
-          "vault_propose_create",
-          {
-            path: createPath,
-            content: newFileContent,
-            mime: inferTextMimeFromPath(createPath),
-          },
-          
-        );
-
-        if (createProposal && typeof createProposal === "object" && !("error" in createProposal)) {
-          pendingProposalOuts.push(createProposal);
+        if (!/appears truncated/i.test(msg)) {
+          throw e;
         }
 
-        const existingFile = await runTool(
-          supabase,
+        console.log("[generic_edit_orchestration] retrying after truncation", {
           repoId,
-          user.id,
-          content,
-          "vault_read_text",
-          { path: modifyPath },
-          
-        );
-
-        if (existingFile && typeof existingFile === "object" && !("error" in existingFile)) {
-
-          const rewritten = await generateRewrittenFileContent({
-            openai,
-            model: runtimePolicy.model,
-            userRequest: content,
-            path: String((existingFile as any).path ?? modifyPath),
-            mime: String((existingFile as any).mime ?? "text/plain"),
-            currentContent: String((existingFile as any).content ?? ""),
-          });
-
-          const writeProposal = await runTool(
-            supabase,
-            repoId,
-            user.id,
-            content,
-            "vault_propose_write",
-            {
-              fileId: (existingFile as any).id,
-              content: rewritten,
-            },
-            
-          );
-
-          if (writeProposal && typeof writeProposal === "object" && !("error" in writeProposal)) {
-            pendingProposalOuts.push(writeProposal);
-
-          }
-        }
-
-        toolOutputs.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify(out),
+          selectedPath: resolvedPath,
+          reason: msg,
         });
 
-        continue;
+        rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest:
+            `${content}\n\nRetry rules:\n` +
+            `- Return the FULL complete file.\n` +
+            `- Do not truncate.\n` +
+            `- Keep changes focused.\n` +
+            `- Prefer structure over bloated inline styling.\n`,
+          path: resolvedPath,
+          mime: resolvedMime,
+          currentContent,
+          maxOutputTokens: 5200,
+        });
+      }
+
+      const writeProposal = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: (existingFile as any).id,
+          content: rewritten,
+        },
+      );
+
+      if (
+        writeProposal &&
+        typeof writeProposal === "object" &&
+        !("error" in writeProposal)
+      ) {
+        pendingProposalOuts.push(writeProposal);
+        requestHandledByOrchestration = true;
       }
     }
+  }
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify(out),
+  });
+
+  continue;
+}
 
 // ─────────────────────────────────────────────
 // Deterministic split-file orchestration
@@ -1847,8 +2376,6 @@ toolOutputs.push({
   output: JSON.stringify(out),
 });
 
-continue;
-
     continue;
   } catch (e: any) {
     toolOutputs.push({
@@ -1866,7 +2393,10 @@ continue;
 // ─────────────────────────────────────────────
 // Deterministic rewrite orchestration for existing files
 // ─────────────────────────────────────────────
-const isEditIntent = isRepositoryExecutionIntent(content);
+const isEditIntent =
+  executionMode.mode === "surgical" ||
+  executionMode.mode === "incremental" ||
+  executionMode.mode === "rewrite";
 
 if (
   toolName === "vault_read_text" &&
@@ -1886,27 +2416,27 @@ if (
   if (typeof readOut.id === "string" && typeof readOut.content === "string") {
     const requestedPath = extractSingleMentionedPath(content);
 
-if (requestedPath && readOut.path && requestedPath !== readOut.path) {
-  console.log("[rewrite_orchestration] skipped because requested path does not match read path", {
-    requestedPath,
-    readPath: readOut.path,
-  });
+    if (requestedPath && readOut.path && requestedPath !== readOut.path) {
+      console.log(
+        "[rewrite_orchestration] skipped because requested path does not match read path",
+        {
+          requestedPath,
+          readPath: readOut.path,
+        }
+      );
 
-  toolOutputs.push({
-    type: "function_call_output",
-    call_id: callId,
-    output: JSON.stringify(out),
-  });
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
 
-  continue;
-}
+      continue;
+    }
 
     const requestedPaths = extractMentionedPaths(content);
 
-    const isMultiPath = requestedPaths.length >= 2;
-    const hasRewriteTarget = Boolean(readOut?.path);
-
-    if (isMultiPath && !isImportRefactorIntent(content) && !hasRewriteTarget) {
+    if (requestedPaths.length >= 2 && !isImportRefactorIntent(content)) {
       console.log("[rewrite_orchestration] skipped because multiple paths were requested", {
         requestedPaths,
         readPath: readOut.path,
@@ -1920,41 +2450,154 @@ if (requestedPath && readOut.path && requestedPath !== readOut.path) {
 
       continue;
     }
-if (
-  /\bcreate\b/i.test(content) ||
-  /\bmove\b/i.test(content) ||
-  /\bextract\b/i.test(content) ||
-  /\bthen update\b/i.test(content)
-) {
-  console.log("[rewrite_orchestration] skipped for create/move/extract request", {
-    content,
-    requestedPaths,
-    readPath: readOut.path,
-  });
 
-  toolOutputs.push({
-    type: "function_call_output",
-    call_id: callId,
-    output: JSON.stringify(out),
-  });
+    if (
+      /\bcreate\b/i.test(content) ||
+      /\bmove\b/i.test(content) ||
+      /\bextract\b/i.test(content) ||
+      /\bthen update\b/i.test(content)
+    ) {
+      console.log("[rewrite_orchestration] skipped for create/move/extract request", {
+        content,
+        requestedPaths,
+        readPath: readOut.path,
+      });
 
-  continue;
-}
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
 
-console.log("[rewrite_orchestration] triggered", {
-  paths: requestedPaths,
-  readPath: readOut.path,
-});
+      continue;
+    }
+
+
+    
+    // ─────────────────────────────────────────────
+    // Guard: avoid multi-file rewrite on vague incremental requests
+    // ─────────────────────────────────────────────
+    const isVagueIncremental =
+      executionMode.mode === "incremental" &&
+      requestedPaths.length === 0;
+
+    if (isVagueIncremental) {
+      const primaryTargets = ["index.html", "app/page.tsx"];
+
+      const isPrimary = primaryTargets.some((p) =>
+        String(readOut.path ?? "").includes(p)
+      );
+
+      if (!isPrimary) {
+        console.log("[rewrite_orchestration] skipped secondary file in vague incremental request", {
+          readPath: readOut.path,
+        });
+
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(out),
+        });
+
+        continue;
+      }
+    }
+
+    const isMultiPath = requestedPaths.length >= 2;
+    const hasRewriteTarget = Boolean(readOut?.path);
+
+
+    
+    if (isMultiPath && !isImportRefactorIntent(content) && !hasRewriteTarget) {
+      console.log(
+        "[rewrite_orchestration] skipped because multiple paths were requested",
+        {
+          requestedPaths,
+          readPath: readOut.path,
+        }
+      );
+
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
+
+      continue;
+    }
+
+    if (
+      /\bcreate\b/i.test(content) ||
+      /\bmove\b/i.test(content) ||
+      /\bextract\b/i.test(content) ||
+      /\bthen update\b/i.test(content)
+    ) {
+      console.log("[rewrite_orchestration] skipped for create/move/extract request", {
+        content,
+        requestedPaths,
+        readPath: readOut.path,
+      });
+
+      toolOutputs.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(out),
+      });
+
+      continue;
+    }
+
+    console.log("[rewrite_orchestration] triggered", {
+      paths: requestedPaths,
+      readPath: readOut.path,
+    });
 
     try {
-      const rewritten = await generateRewrittenFileContent({
-        openai,
-        model: runtimePolicy.model,
-        userRequest: content,
-        path: String(readOut.path ?? ""),
-        mime: String(readOut.mime ?? "text/plain"),
-        currentContent: String(readOut.content ?? ""),
-      });
+      let rewritten: string;
+
+      try {
+        rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest: content,
+          path: String(readOut.path ?? ""),
+          mime: String(readOut.mime ?? "text/plain"),
+          currentContent: String(readOut.content ?? ""),
+        });
+      } catch (e: any) {
+        const message = String(e?.message ?? e ?? "");
+
+        if (!/appears truncated/i.test(message)) {
+          throw e;
+        }
+
+        console.log("[rewrite_orchestration] retrying after truncation", {
+          repoId,
+          readPath: readOut.path,
+          reason: message,
+        });
+
+        const retryPrompt = [
+          content,
+          "",
+          "Retry rules:",
+          "- Return the FULL complete file.",
+          "- Keep the edit compact and focused.",
+          "- Do not truncate.",
+          "- Do not leave partial sections.",
+          "- Prefer minimal safe edits over broad rewrites.",
+        ].join("\n");
+
+        rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest: retryPrompt,
+          path: String(readOut.path ?? ""),
+          mime: String(readOut.mime ?? "text/plain"),
+          currentContent: String(readOut.content ?? ""),
+          maxOutputTokens: 5200,
+        });
+      }
 
       if (!rewritten) {
         throw new Error("Model returned empty rewritten content");
@@ -1969,8 +2612,7 @@ console.log("[rewrite_orchestration] triggered", {
         {
           fileId: readOut.id,
           content: rewritten,
-        },
-        
+        }
       );
 
       if (proposal && typeof proposal === "object" && !("error" in proposal)) {
@@ -1985,18 +2627,25 @@ console.log("[rewrite_orchestration] triggered", {
 
       continue;
     } catch (e: any) {
+      const message = String(e?.message ?? e ?? "");
+
+      console.log("[rewrite_orchestration] soft-skip", {
+        repoId,
+        reason: message,
+        readPath: readOut.path,
+      });
+
       toolOutputs.push({
         type: "function_call_output",
         call_id: callId,
-        output: JSON.stringify({
-          error: `rewrite_orchestration_failed: ${e?.message ?? "unknown error"}`,
-        }),
+        output: JSON.stringify(out),
       });
 
       continue;
     }
   }
 }
+
 const hasError = typeof out === "object" && out !== null && "error" in out;
 const isNoop = typeof out === "object" && out !== null && (out as any).noop === true;
 
@@ -2123,6 +2772,13 @@ if (pendingProposalOuts.length === 1) {
   const proposals = [...pendingProposalOuts];
   const proposal = proposals[0];
 
+  console.log("[stream enqueue proposal]", {
+    kind: "single",
+    fileId: proposal?.fileId,
+    path: proposal?.path ?? proposal?.meta?.path ?? null,
+    confirm: proposal?.confirm ?? null,
+  });
+
   controller.enqueue(
     encoder.encode(`\n__PROPOSAL__:${JSON.stringify(proposal)}\n`)
   );
@@ -2206,6 +2862,13 @@ if (result.repaired) {
   const proposals = [...pendingProposalOuts];
   const proposalSet = { proposals };
 
+  console.log("[stream enqueue proposal_set]", {
+    kind: "set",
+    count: proposals.length,
+    ids: proposals.map((p) => p?.fileId),
+    paths: proposals.map((p) => p?.path ?? p?.meta?.path ?? null),
+  });
+
   controller.enqueue(
     encoder.encode(
       `\n__PROPOSAL_SET__:${JSON.stringify(proposalSet)}\n`
@@ -2286,8 +2949,35 @@ if (result.repaired) {
   pendingProposalOuts = [];
 }
 
+const hadDeterministicRewriteFailure =
+  toolOutputs.some((t: any) =>
+    String(t?.output ?? "").includes("rewrite_orchestration_failed") ||
+    String(t?.output ?? "").includes("Rewritten file appears truncated")
+  );
 
-if (deterministicToolHandled) {
+const noProposalPrepared =
+  !hadAnyProposalSet && pendingProposalOuts.length === 0;
+
+if (hadAnyProposalSet) {
+  fullText =
+    "[Observation]\nRequired repository changes were staged.\n\n" +
+    "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
+    "[Action]\nA staged change is ready. Confirm to apply.";
+
+  console.log("[pass2] skipped because proposals already exist");
+  controller.enqueue(encoder.encode(fullText));
+} else if (
+  deterministicToolHandled &&
+  hadDeterministicRewriteFailure &&
+  noProposalPrepared
+) {
+  fullText =
+    "[Observation]\nThe requested rewrite could not be staged safely.\n\n" +
+    "[Assessment]\nThe rewrite attempt failed because the generated file output was truncated before a valid repository proposal could be produced.\n\n" +
+    "[Action]\nRetry with a narrower file-scoped request, or split the change into smaller steps.";
+
+  controller.enqueue(encoder.encode(fullText));
+} else if (deterministicToolHandled) {
   console.log("[pass2] skipped due to deterministic tool handling");
 } else {
   console.log("[pass2] starting", {
@@ -2304,7 +2994,14 @@ if (deterministicToolHandled) {
   try {
     resp = await openai.responses.create({
       model: runtimePolicy.model,
-      instructions: resolvedInstructions,
+      instructions:
+        resolvedInstructions +
+        "\n\nPass 2 rule:\n" +
+        "- Do not emit __GOAL_PLAN__, __GOAL_STATUS__, or __GOAL_DONE__.\n" +
+        "- If repository proposals were already prepared, respond only with the normal Vestaryn triplet.\n" +
+        "- Do not create a new plan.\n" +
+        "- Do not discuss planning.\n" +
+        "- Do not claim staged changes unless proposals already exist.\n",
       previous_response_id: lastResponseId as string,
       input: toolOutputs,
       tools: TOOLS,
@@ -2328,6 +3025,7 @@ if (deterministicToolHandled) {
         lastResponseId = id;
       },
     });
+
     rawAssistantText = pass2.buffer ?? "";
     fullText = pass2.buffer ?? "";
   } catch (err: any) {
@@ -2380,40 +3078,49 @@ if (claimsStagedChange && !hadAnyProposalSet) {
 }
 
 if (hadAnyProposalSet) {
-  fullText =
-    "[Observation]\nRequired repository changes were staged.\n\n" +
-    "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-    "[Action]\nA staged change is ready. Confirm to apply.";
+  const normalized = String(fullText ?? "").trim();
+
+  if (!normalized || !hasValidAssistantContract(normalized)) {
+    fullText =
+      "[Observation]\nRequired repository changes were staged.\n\n" +
+      "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
+      "[Action]\nA staged change is ready. Confirm to apply.";
+  } else if (!normalized.includes("A staged change is ready. Confirm to apply.")) {
+    fullText = normalized.replace(
+      /\[Action\]\n([\s\S]*)$/,
+      "[Action]\n$1\n\nA staged change is ready. Confirm to apply."
+    );
+  }
 }
 
 const rawSourceForPersistence = rawAssistantText || fullText;
 let persistedAssistantContent = fullText;
 
-const rawGoalPlan = extractRawGoalMarkerBlock(
-  rawSourceForPersistence,
-  "__GOAL_PLAN__:"
-);
-if (rawGoalPlan) {
-  persistedAssistantContent = rawGoalPlan;
-}
+if (!hadAnyProposalSet) {
+  const rawGoalPlan = extractRawGoalMarkerBlock(
+    rawSourceForPersistence,
+    "__GOAL_PLAN__:"
+  );
+  if (rawGoalPlan) {
+    persistedAssistantContent = rawGoalPlan;
+  }
 
-const rawGoalStatus = extractRawGoalMarkerBlock(
-  rawSourceForPersistence,
-  "__GOAL_STATUS__:"
-);
-if (rawGoalStatus) {
-  persistedAssistantContent = rawGoalStatus;
-}
+  const rawGoalStatus = extractRawGoalMarkerBlock(
+    rawSourceForPersistence,
+    "__GOAL_STATUS__:"
+  );
+  if (rawGoalStatus) {
+    persistedAssistantContent = rawGoalStatus;
+  }
 
-const rawGoalDone = extractRawGoalMarkerBlock(
-  rawSourceForPersistence,
-  "__GOAL_DONE__:"
-);
-if (rawGoalDone) {
-  persistedAssistantContent = rawGoalDone;
+  const rawGoalDone = extractRawGoalMarkerBlock(
+    rawSourceForPersistence,
+    "__GOAL_DONE__:"
+  );
+  if (rawGoalDone) {
+    persistedAssistantContent = rawGoalDone;
+  }
 }
-
-console.log("========== BEFORE ASSISTANT INSERT ==========");
 
 console.log("========== ASSISTANT PERSIST DEBUG ==========", {
   rawLen: rawSourceForPersistence.length,

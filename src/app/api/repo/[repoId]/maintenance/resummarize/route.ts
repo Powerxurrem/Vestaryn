@@ -271,7 +271,7 @@ ${chatContext}
 `.trim();
 
   const resp = await openai.responses.create({
-    model: "gpt-4o-mini",
+    model: "gpt-5-mini",
     input: prompt,
     max_output_tokens: 900,
   });

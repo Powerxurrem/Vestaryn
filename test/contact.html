@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Contact — My Website</title>
+  <link rel="stylesheet" href="styles.css" />
+  <meta name="description" content="Get in touch with us — contact page." />
+  <style>
+    /* Minimal page-specific tweaks to fit most site styles */
+    .container { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
+    @media(min-width:700px){ .grid { grid-template-columns: 1fr 340px; align-items:start; } }
+    .card { background: var(--card-bg, #fff); border: 1px solid rgba(0,0,0,0.06); padding: 1.25rem; border-radius: 8px; }
+    label { display:block; font-size: .95rem; margin-bottom:.35rem; }
+    input[type="text"], input[type="email"], textarea, select {
+      width:100%; padding:.6rem .7rem; border:1px solid #cfcfcf; border-radius:6px; font-size:1rem;
+      background:var(--input-bg,#fff);
+    }
+    textarea { min-height:140px; resize:vertical; }
+    .muted { color:#666; font-size:.95rem; }
+    .btn {
+      display:inline-block; padding:.6rem .9rem; background:#1a73e8; color:#fff; border-radius:6px;
+      border:0; font-weight:600; cursor:pointer;
+    }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+    .contact-list { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:.85rem; }
+    .contact-item { display:flex; gap:.6rem; align-items:flex-start; }
+    .icon { width:20px; height:20px; flex:0 0 20px; color: #1a73e8; }
+    .status { margin-top:.75rem; font-size:.95rem; }
+    .note { font-size:.9rem; color:#555; margin-top:.6rem; }
+  </style>
+</head>
+<body>
+  <header class="site-header" role="banner">
+    <div class="container" style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
+      <a href="index.html" class="site-title" style="text-decoration:none; color:inherit; font-weight:700;">My Website</a>
+      <nav class="nav" aria-label="Main navigation">
+        <ul style="list-style:none; display:flex; gap:1rem; margin:0; padding:0;">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="about.html">About</a></li>
+          <li><a href="projects.html">Projects</a></li>
+          <li><a href="blog.html">Blog</a></li>
+          <li><a href="contact.html" aria-current="page">Contact</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+ 
+  <main class="container" role="main">
+    <h1>Contact</h1>
+    <p class="muted">Have a question, a project idea, or want to say hello? Send a message and we'll get back to you as soon as we can.</p>
+ 
+    <section class="grid" aria-labelledby="contact-heading">
+      <div class="card" id="form-wrap">
+        <h2 id="contact-heading" style="margin-top:0;">Send a message</h2>
+ 
+        <form id="contact-form" novalidate>
+          <!-- Honeypot field to reduce spam -->
+          <div style="position:absolute; left:-10000px; top:auto; width:1px; height:1px; overflow:hidden;" aria-hidden="true">
+            <label for="website">Website</label>
+            <input id="website" name="website" type="text" tabindex="-1" autocomplete="off" />
+          </div>
+ 
+          <div style="margin-bottom:.85rem;">
+            <label for="name">Name <span style="color:#d00;">*</span></label>
+            <input id="name" name="name" type="text" required placeholder="Your full name" />
+          </div>
+ 
+          <div style="margin-bottom:.85rem;">
+            <label for="email">Email <span style="color:#d00;">*</span></label>
+            <input id="email" name="email" type="email" required placeholder="you@example.com" />
+          </div>
+ 
+          <div style="margin-bottom:.85rem;">
+            <label for="subject">Subject</label>
+            <input id="subject" name="subject" type="text" placeholder="Brief subject" />
+          </div>
+ 
+          <div style="margin-bottom:.85rem;">
+            <label for="message">Message <span style="color:#d00;">*</span></label>
+            <textarea id="message" name="message" required placeholder="Tell us about your inquiry"></textarea>
+          </div>
+ 
+          <div style="display:flex; gap:.6rem; align-items:center;">
+            <button type="submit" class="btn" id="submit-btn">Send message</button>
+            <div id="form-status" class="status" aria-live="polite"></div>
+          </div>
+ 
+          <p class="note">By sending this message you agree we may use your contact details to reply. See our <a href="privacy.html">privacy policy</a>.</p>
+        </form>
+      </div>
+ 
+      <aside class="card" aria-labelledby="info-heading">
+        <h3 id="info-heading" style="margin-top:0;">Other ways to reach us</h3>
+        <ul class="contact-list" role="list">
+          <li class="contact-item">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 8v8a2 2 0 0 1-2 2h-4l-3 3-3-3H5a2 2 0 0 1-2-2V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div>
+              <div style="font-weight:600;">Email</div>
+              <a href="mailto:hello@example.com">hello@example.com</a>
+            </div>
+          </li>
+ 
+          <li class="contact-item">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 12h20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 6l6 6-6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <div>
+              <div style="font-weight:600;">Phone</div>
+              <a href="tel:+15551234567">+1 (555) 123‑4567</a>
+            </div>
+          </li>
+ 
+          <li class="contact-item">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/></svg>
+            <div>
+              <div style="font-weight:600;">Address</div>
+              <div class="muted">123 Main St, Suite 400<br/>City, State 12345</div>
+            </div>
+          </li>
+ 
+          <li class="contact-item">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2v20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M5 7h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div>
+              <div style="font-weight:600;">Hours</div>
+              <div class="muted">Mon–Fri 9:00–17:00</div>
+            </div>
+          </li>
+        </ul>
+ 
+        <div style="margin-top:1rem;">
+          <div style="font-weight:600; margin-bottom:.5rem;">Follow</div>
+          <div style="display:flex; gap:.6rem;">
+            <a href="https://github.com/" aria-label="GitHub" title="GitHub" style="text-decoration:none;">
+              <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.9 5.3.9 11.6c0 4.7 3 8.7 7.2 10.1.5.1.7-.2.7-.5v-1.9c-2.9.6-3.5-1.3-3.5-1.3-.5-1.3-1.2-1.7-1.2-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.1 1.7 1.1 1 .1 1.7.7 2.2 1.2.1-.9.4-1.6.8-2-2.3-.3-4.7-1.1-4.7-5 0-1.1.4-2 1.1-2.7-.1-.3-.5-1.4.1-2.8 0 0 .9-.3 2.8 1.1.8-.2 1.6-.3 2.4-.3s1.6.1 2.4.3c1.9-1.4 2.8-1.1 2.8-1.1.6 1.4.2 2.5.1 2.8.7.7 1.1 1.6 1.1 2.7 0 3.9-2.4 4.6-4.7 4.9.4.3.8 1 .8 2v3c0 .3.2.6.7.5 4.2-1.5 7.2-5.5 7.2-10.1C23.1 5.3 18.3.5 12 .5z"/></svg>
+            </a>
+ 
+            <a href="https://twitter.com/" aria-label="Twitter" title="Twitter" style="text-decoration:none;">
+              <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M23 4.6c-.7.3-1.4.5-2.2.6.8-.5 1.3-1.3 1.6-2.2-.7.4-1.5.7-2.3.8C19.4 3 18.4 2.5 17.3 2.5c-2.1 0-3.7 1.9-3 3.8C9.7 6 7.1 4.6 5 2.6 3.8 4.3 4.3 6.6 6 7.5c-.6 0-1.2-.2-1.7-.4v.1c0 1.9 1.3 3.6 3 4-.5.1-1 .2-1.6.1.5 1.6 2 2.6 3.8 2.6C8 16 6.4 16.6 4.8 16.6 4 16.6 3.2 16.5 2.5 16.2c1 1.6 2.7 2.6 4.5 2.6 5.4 0 8.4-4.6 8.4-8.6v-.4c.6-.4 1.1-.9 1.5-1.5-.4.2-.8.3-1.2.4z"/></svg>
+            </a>
+ 
+            <a href="https://www.linkedin.com/" aria-label="LinkedIn" title="LinkedIn" style="text-decoration:none;">
+              <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.98 3.5C4.98 4.6 4.13 5.5 3 5.5 1.9 5.5 1 4.6 1 3.5 1 2.4 1.9 1.5 3 1.5c1.13 0 1.98.9 1.98 2zM.5 8.98h4.99V23H.5zM9.5 8.98h4.79v1.94h.07c.67-1.3 2.31-2.67 4.75-2.67 5.09 0 6.03 3.36 6.03 7.72V23h-4.99v-6.03c0-1.44-.03-3.29-2.01-3.29-2.01 0-2.32 1.58-2.32 3.18V23H9.5z"/></svg>
+            </a>
+          </div>
+        </div>
+      </aside>
+    </section>
+  </main>
+ 
+  <footer style="border-top:1px solid rgba(0,0,0,.06); margin-top:2rem; padding:1.25rem 0;">
+    <div class="container" style="display:flex; justify-content:space-between; align-items:center; gap:1rem;">
+      <div class="muted">&copy; <span id="year"></span> My Website</div>
+      <div><a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></div>
+    </div>
+  </footer>
+ 
+  <script>
+    // Set current year
+    document.getElementById('year').textContent = new Date().getFullYear();
+ 
+    (function () {
+      const form = document.getElementById('contact-form');
+      const status = document.getElementById('form-status');
+      const btn = document.getElementById('submit-btn');
+ 
+      function showStatus(message, ok) {
+        status.textContent = message;
+        status.style.color = ok ? '#137333' : '#b00020';
+      }
+ 
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        status.textContent = '';
+        const honeypot = form.querySelector('[name="website"]').value;
+        if (honeypot) {
+          // silent fail for bots
+          return;
+        }
+ 
+        const name = form.name.value.trim();
+        const email = form.email.value.trim();
+        const subject = form.subject.value.trim();
+        const message = form.message.value.trim();
+ 
+        if (!name || !email || !message) {
+          showStatus('Please complete the required fields.', false);
+          return;
+        }
+ 
+        btn.disabled = true;
+        showStatus('Sending…', true);
+ 
+        const payload = { name, email, subject, message, page: location.pathname };
+ 
+        // Try a JSON POST to /contact (serverless endpoint or backend).
+        // If that fails, fall back to opening a mailto: link.
+        fetch('/contact', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+        .then(response => {
+          if (response.ok) return response.json().catch(()=>({}));
+          throw new Error('Network response was not ok');
+        })
+        .then(data => {
+          // Server accepted the message
+          showStatus('Thanks — your message has been sent.', true);
+          form.reset();
+        })
+        .catch(() => {
+          // Fallback: use mailto so the user can still send the message
+          const mailtoTo = 'hello@example.com';
+          const mailtoSubject = encodeURIComponent(subject || 'Contact from website');
+          const mailtoBody = encodeURIComponent(
+            `Name: ${name}\nEmail: ${email}\n\n${message}`
+          );
+          const mailto = `mailto:${mailtoTo}?subject=${mailtoSubject}&body=${mailtoBody}`;
+          showStatus('Could not send from the site. Opening your email client…', true);
+          setTimeout(() => {
+            window.location.href = mailto;
+          }, 700);
+        })
+        .finally(() => {
+          btn.disabled = false;
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

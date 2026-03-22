@@ -30,10 +30,10 @@ export default function ChamberWithVault({
     localStorage.setItem("vestaryn:lastRepoId", repoId);
   }, [repoId]);
 
-  useEffect(() => {
-  console.log("[ChamberWithVault] mounted");
-  return () => console.log("[ChamberWithVault] unmounted");
-}, []);
+    useEffect(() => {
+    console.log("[ChamberWithVault] mounted");
+    return () => console.log("[ChamberWithVault] unmounted");
+  }, []);
 
   console.log("[ChamberWithVault] render", { repoId });
   const [msgStats, setMsgStats] = useState({ total: 0, user: 0, assistant: 0, system: 0 });
@@ -45,48 +45,56 @@ export default function ChamberWithVault({
   // near top of file
   const [maintenance, setMaintenance] = useState<any>(null);
   const [fileStatusById, setFileStatusById] = useState<Record<string, FileStatus>>({});
-type ProposalPreview = {
-  fileId: string;
-  content: string;
-  path?: string | null;
-  op?: string | null;
-  appendPreview?: string | null;
-};
+  type ProposalPreview = {
+    fileId: string;
+    content: string;
+    path?: string | null;
+    op?: string | null;
+    appendPreview?: string | null;
+  };
 
 const [proposalPreviewByFileId, setProposalPreviewByFileId] = useState<
   Record<string, ProposalPreview>
 >({});
-  const MAINTENANCE_CAP = 40;
-  const [fileReloadTokenById, setFileReloadTokenById] = useState<Record<string, number>>({});
-  const bumpFileReload = useCallback((fileId: string) => {
-    setFileReloadTokenById((prev) => ({
-      ...prev,
-      [fileId]: (prev[fileId] ?? 0) + 1,
-    }));
-  }, []);
-const onFileStatus = useCallback(
-  (fileId: string, status: FileStatus["status"], reason?: string) => {
-    const ts = Date.now();
-    setFileStatusById((prev) => {
-      const cur = prev[fileId];
-      console.log("[fileStatus]", { fileId, status, reason });
+
+useEffect(() => {
+  console.log("[proposalPreviewByFileId state]", {
+    keys: Object.keys(proposalPreviewByFileId),
+    activeFileId,
+  });
+  
+}, [proposalPreviewByFileId, activeFileId]);
+    const MAINTENANCE_CAP = 40;
+    const [fileReloadTokenById, setFileReloadTokenById] = useState<Record<string, number>>({});
+    const bumpFileReload = useCallback((fileId: string) => {
+      setFileReloadTokenById((prev) => ({
+        ...prev,
+        [fileId]: (prev[fileId] ?? 0) + 1,
+      }));
+    }, []);
+    const onFileStatus = useCallback(
+      (fileId: string, status: FileStatus["status"], reason?: string) => {
+        const ts = Date.now();
+        setFileStatusById((prev) => {
+          const cur = prev[fileId];
+          console.log("[fileStatus]", { fileId, status, reason });
 
 
-      // Pending is "stronger" than a generic Updated ok.
-      if (cur?.status === "pending") {
-        const canResolvePending =
-          status === "ok" || status === "warn" || status === "error";
+          // Pending is "stronger" than a generic Updated ok.
+          if (cur?.status === "pending") {
+            const canResolvePending =
+              status === "ok" || status === "warn" || status === "error";
 
-        if (!canResolvePending) {
-          return prev;
-        }
-      }
+            if (!canResolvePending) {
+              return prev;
+            }
+          }
 
-      return { ...prev, [fileId]: { ts, status, reason } };
-    });
-  },
-  []
-);
+          return { ...prev, [fileId]: { ts, status, reason } };
+        });
+      },
+      []
+    );
 
   // files touched since last verify started
   const pendingTouchedRef = useRef<Set<string>>(new Set());
@@ -94,18 +102,24 @@ const onFileStatus = useCallback(
 
   const CHAMBER_WIDTH = 360; // px
   const [chamberMode, setChamberMode] = useState<ChamberMode | null>("vault");
-  
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewHeight, setPreviewHeight] = useState(260);
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const [previewPath, setPreviewPath] = useState("index.html");
   const chamberOpen = chamberMode !== null;
-const [chatReloadToken, setChatReloadToken] = useState(0);
+  const [chatReloadToken, setChatReloadToken] = useState(0);
+    const isPreviewablePath = useCallback((path: string) => {
+    return /\.(html|css|js|mjs)$/i.test(path);
+  }, []);
   // clicking the same mode toggles it off (close chamber)
-const toggleMode = (m: ChamberMode) =>
+  const toggleMode = (m: ChamberMode) =>
   setChamberMode((cur) => {
     const next = cur === m ? null : m;
     console.log("[toggleMode]", { cur, m, next });
     return next;
   });
 
-const effectiveMaintenance =
+  const effectiveMaintenance =
   maintenance ??
   (msgStats.total >= MAINTENANCE_CAP
     ? {
@@ -209,6 +223,32 @@ const markFileUpdated = useCallback(
     });
   }
 
+function onPreviewResizePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+  e.preventDefault();
+
+  const startY = e.clientY;
+  const startHeight = previewHeight;
+
+  function onMove(ev: PointerEvent) {
+    const delta = startY - ev.clientY;
+    const next = Math.max(160, Math.min(window.innerHeight * 0.7, startHeight + delta));
+    setPreviewHeight(next);
+  }
+
+  function onUp() {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }
+
+  document.body.style.cursor = "row-resize";
+  document.body.style.userSelect = "none";
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
 function onSplitterPointerDown(e: React.PointerEvent<HTMLDivElement>) {
   e.preventDefault();
 
@@ -243,6 +283,22 @@ function onSplitterPointerDown(e: React.PointerEvent<HTMLDivElement>) {
   window.addEventListener("pointerup", onUp);
 }
   
+useEffect(() => {
+  if (!previewPath) return;
+
+  const validHtmlPaths = new Set(
+    tabs
+      .map((t) => t.path)
+      .filter((p): p is string => !!p && /\.html$/i.test(p))
+  );
+
+  if (validHtmlPaths.size === 0) return;
+
+  if (!validHtmlPaths.has(previewPath)) {
+    setPreviewPath(validHtmlPaths.has("index.html") ? "index.html" : [...validHtmlPaths][0]);
+  }
+}, [previewPath, tabs]);
+
  return (
   <VestarynFrame
     repoId={repoId}
@@ -264,6 +320,11 @@ function onSplitterPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     
      
 onProposalPreview={(proposals) => {
+  console.log("[ChamberWithVault onProposalPreview]", {
+    kind: proposals ? "set" : "clear",
+    keys: proposals ? Object.keys(proposals) : [],
+  });
+
   if (!proposals) {
     setProposalPreviewByFileId({});
     return;
@@ -271,6 +332,11 @@ onProposalPreview={(proposals) => {
 
   setProposalPreviewByFileId(proposals);
 }}
+onPreviewRefresh={() => {
+  setPreviewOpen(true);
+  setPreviewRevision((v) => v + 1);
+}}
+
     />
 </div>
 
@@ -285,42 +351,114 @@ onProposalPreview={(proposals) => {
 </div>
 
       {/* Right: Editor */}
-      <div className="min-w-0 flex-1 relative rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/25 backdrop-blur-md">
-        <VaultEditorPane
-          repoId={repoId}
-          tabs={tabs}
-          activeFileId={activeFileId}
-          onActivate={setActiveFileId}
-          onClose={closeTab}
-          fileReloadTokenById={fileReloadTokenById}
-          proposalPreviewByFileId={proposalPreviewByFileId}
-          sidebar={
-            <RepoVault
-              ref={vaultRef}
-              repoId={repoId}
-              onOpenFile={openFile}
-              fileStatusById={fileStatusById}
-            />
-          }
-          fileStatusById={fileStatusById}
-          onFileStatus={onFileStatus}
-          rightChamber={
-            <HiddenChamber
-              repoId={repoId}
-              mode={chamberMode}
-              onToggleMode={toggleMode}
-              fileStatusById={fileStatusById}
-              maintenance={effectiveMaintenance}
-              onResummarizeDone={() => {
-                setMaintenance(null);
-                setChatReloadToken((v) => v + 1);
-              }}
-            />
-          }
-          rightChamberWidth={CHAMBER_WIDTH}
-          rightChamberOpen={true}
-        />
+      <div className="min-w-0 flex-1 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black/25 backdrop-blur-md">
+  <div className="flex h-full min-h-0 flex-col">
+    <div className="min-h-0 flex-1 relative">
+      <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            const activeTab = tabs.find((t) => t.fileId === activeFileId);
+
+            const preferredPath =
+              activeTab?.path && /\.html$/i.test(activeTab.path)
+                ? activeTab.path
+                : "index.html";
+
+            setPreviewPath(preferredPath);
+            setPreviewOpen(true);
+            setPreviewRevision((v) => v + 1);
+          }}
+          className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white"
+        >
+          Preview
+        </button>
       </div>
+
+      <VaultEditorPane
+        repoId={repoId}
+        tabs={tabs}
+        activeFileId={activeFileId}
+        onActivate={setActiveFileId}
+        onClose={closeTab}
+        fileReloadTokenById={fileReloadTokenById}
+        proposalPreviewByFileId={proposalPreviewByFileId}
+        sidebar={
+          <RepoVault
+            ref={vaultRef}
+            repoId={repoId}
+            onOpenFile={openFile}
+            fileStatusById={fileStatusById}
+          />
+        }
+        fileStatusById={fileStatusById}
+        onFileStatus={onFileStatus}
+        rightChamber={
+          <HiddenChamber
+            repoId={repoId}
+            mode={chamberMode}
+            onToggleMode={toggleMode}
+            fileStatusById={fileStatusById}
+            maintenance={effectiveMaintenance}
+            onResummarizeDone={() => {
+              setMaintenance(null);
+              setChatReloadToken((v) => v + 1);
+            }}
+          />
+        }
+        rightChamberWidth={CHAMBER_WIDTH}
+        rightChamberOpen={true}
+      />
+    </div>
+
+    {previewOpen && (
+      <div
+        className="shrink-0 border-t border-white/10 bg-black/55"
+        style={{ height: previewHeight }}
+      >
+        <div
+          onPointerDown={onPreviewResizePointerDown}
+          className="h-2 cursor-row-resize border-b border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
+          title="Drag to resize preview"
+        />
+
+        <div className="flex h-9 items-center justify-between border-b border-white/10 px-3 text-xs text-white/70">
+          <div className="truncate">
+            Preview · <span className="text-white/90">{previewPath}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPreviewRevision((v) => v + 1)}
+              className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
+            >
+              Refresh
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPreviewOpen(false)}
+              className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div className="h-[calc(100%-2.75rem)] bg-black">
+          <iframe
+            key={`${previewPath}:${previewRevision}`}
+            src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
+            className="h-full w-full bg-white"
+            sandbox="allow-scripts allow-same-origin"
+            title="Repo preview"
+          />
+        </div>
+      </div>
+    )}
+  </div>
+</div>
     </div>
   </VestarynFrame>
 );
@@ -418,18 +556,6 @@ return (
           onClick={() => onToggleMode("memory")}
         >
           Memory
-        </button>
-        <button
-          className={`px-3 py-1.5 rounded-lg text-sm ${btn("handover")}`}
-          onClick={() => onToggleMode("handover")}
-        >
-          Handover
-        </button>
-        <button
-          className={`px-3 py-1.5 rounded-lg text-sm ${btn("sql")}`}
-          onClick={() => onToggleMode("sql")}
-        >
-          SQL
         </button>
 
         <div className="ml-auto text-xs text-white/50">

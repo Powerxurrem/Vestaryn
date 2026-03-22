@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { GoalPlan, GoalStep } from "@/types/goalPlan";
 
 type Props = {
@@ -38,18 +39,36 @@ export default function GoalPlanCard({
   onStop,
   continueDisabled = false,
 }: Props) {
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    setDismissed(false);
+  }, [goal.goalId]);
+
   console.log("[GoalPlanCard render]", {
     goalId: goal.goalId,
     status: goal.status,
     currentStepId: goal.currentStepId ?? null,
     stepCount: goal.steps.length,
+    dismissed,
   });
 
+  if (dismissed) return null;
+
   return (
-    <div className="rounded-xl border border-white/10 bg-black/40 p-4 space-y-4">
+    <div className="relative rounded-xl border border-white/10 bg-black/40 p-4 space-y-4">
+      <button
+        type="button"
+        onClick={() => setDismissed(true)}
+        aria-label="Dismiss goal plan"
+        title="Dismiss"
+        className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-md text-white/50 transition hover:bg-white/10 hover:text-white"
+      >
+        ×
+      </button>
 
       {/* Title */}
-      <div>
+      <div className="pr-10">
         <div className="text-sm text-white/50">Goal Plan</div>
         <div className="text-lg text-white font-semibold">{goal.title}</div>
 
@@ -58,50 +77,50 @@ export default function GoalPlanCard({
         )}
       </div>
 
- {/* Steps */}
-<div className="space-y-2">
-  {goal.steps.map((step) => {
-    const goalCompleted = goal.status === "completed";
-    const goalCancelled = goal.status === "cancelled";
+      {/* Steps */}
+      <div className="space-y-2">
+        {goal.steps.map((step) => {
+          const goalCompleted = goal.status === "completed";
+          const goalCancelled = goal.status === "cancelled";
 
-    const isDone = goalCompleted || step.status === "verified";
-    const isActive =
-      !goalCompleted &&
-      !goalCancelled &&
-      step.id === goal.currentStepId;
+          const isDone = goalCompleted || step.status === "verified";
+          const isActive =
+            !goalCompleted &&
+            !goalCancelled &&
+            step.id === goal.currentStepId;
 
-    return (
-      <div
-        key={step.id}
-        className={`flex items-start gap-2 rounded-md px-2 py-1 text-sm transition ${
-          isActive
-            ? "bg-blue-500/10 text-blue-200 shadow-[0_0_18px_rgba(59,130,246,0.15)]"
-            : isDone
-            ? "text-emerald-200"
-            : "text-white/80"
-        }`}
-      >
-        <div className="w-5">
-          {goalCompleted && step.status !== "verified"
-            ? statusIcon("verified")
-            : statusIcon(step.status)}
-        </div>
+          return (
+            <div
+              key={step.id}
+              className={`flex items-start gap-2 rounded-md px-2 py-1 text-sm transition ${
+                isActive
+                  ? "bg-blue-500/10 text-blue-200 shadow-[0_0_18px_rgba(59,130,246,0.15)]"
+                  : isDone
+                  ? "text-emerald-200"
+                  : "text-white/80"
+              }`}
+            >
+              <div className="w-5">
+                {goalCompleted && step.status !== "verified"
+                  ? statusIcon("verified")
+                  : statusIcon(step.status)}
+              </div>
 
-        <div>
-          <div className={isActive ? "font-semibold" : ""}>
-            {step.title}
-          </div>
+              <div>
+                <div className={isActive ? "font-semibold" : ""}>
+                  {step.title}
+                </div>
 
-          {step.description && (
-            <div className="text-xs text-white/50">
-              {step.description}
+                {step.description && (
+                  <div className="text-xs text-white/50">
+                    {step.description}
+                  </div>
+                )}
+              </div>
             </div>
-          )}
-        </div>
+          );
+        })}
       </div>
-    );
-  })}
-</div>
 
       {goal.status === "completed" && (
         <div className="text-sm text-emerald-300 pt-1">
@@ -140,21 +159,21 @@ export default function GoalPlanCard({
           </button>
         )}
 
-          {goal.status === "running" && (
-            <>
-              {onContinue && (
-                <button
-                  onClick={onContinue}
-                  disabled={continueDisabled}
-                  className={`rounded-md px-3 py-1.5 text-sm text-white ${
-                    continueDisabled
-                      ? "bg-emerald-900/40 opacity-50 cursor-not-allowed"
-                      : "bg-emerald-600 hover:bg-emerald-500"
-                  }`}
-                >
-                  Continue
-                </button>
-              )}
+        {goal.status === "running" && (
+          <>
+            {onContinue && (
+              <button
+                onClick={onContinue}
+                disabled={continueDisabled}
+                className={`rounded-md px-3 py-1.5 text-sm text-white ${
+                  continueDisabled
+                    ? "bg-emerald-900/40 opacity-50 cursor-not-allowed"
+                    : "bg-emerald-600 hover:bg-emerald-500"
+                }`}
+              >
+                Continue
+              </button>
+            )}
 
             {onRepair && (
               <button
@@ -176,7 +195,6 @@ export default function GoalPlanCard({
           </>
         )}
       </div>
-        
-      </div>
+    </div>
   );
 }

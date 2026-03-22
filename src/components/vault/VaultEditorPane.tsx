@@ -16,6 +16,22 @@ function isTextLike(mime: string) {
   );
 }
 
+function inferPreviewMimeFromPath(path: string) {
+  const p = String(path ?? "").toLowerCase();
+
+  if (p.endsWith(".html")) return "text/html";
+  if (p.endsWith(".css")) return "text/css";
+  if (p.endsWith(".js")) return "application/javascript";
+  if (p.endsWith(".jsx")) return "application/javascript";
+  if (p.endsWith(".ts")) return "application/typescript";
+  if (p.endsWith(".tsx")) return "application/typescript";
+  if (p.endsWith(".json")) return "application/json";
+  if (p.endsWith(".md")) return "text/markdown";
+  if (p.endsWith(".txt")) return "text/plain";
+
+  return "text/plain";
+}
+
 export default function VaultEditorPane({
   repoId,
   tabs,
@@ -67,6 +83,30 @@ export default function VaultEditorPane({
     () => tabs.find((t) => t.fileId === activeFileId) ?? null,
     [tabs, activeFileId]
   );
+
+const proposalEntries = useMemo(
+  () => Object.values(proposalPreviewByFileId ?? {}),
+  [proposalPreviewByFileId]
+);
+
+const fallbackProposal = useMemo(() => {
+  if (activeTab) return null;
+  if (proposalEntries.length === 0) return null;
+
+  const preferred =
+    proposalEntries.find((p) => String(p.path ?? "").toLowerCase() === "index.html") ??
+    proposalEntries[0] ??
+    null;
+
+  return preferred;
+}, [activeTab, proposalEntries]);
+
+const effectiveFileId = activeTab?.fileId ?? fallbackProposal?.fileId ?? null;
+const effectivePath = activeTab?.path ?? fallbackProposal?.path ?? "New staged file";
+const effectiveMime =
+  activeTab?.mime ?? inferPreviewMimeFromPath(fallbackProposal?.path ?? "");
+const effectiveOp = fallbackProposal?.op ?? null;
+const isVirtualCreatePreview = !activeTab && !!fallbackProposal;
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -159,9 +199,9 @@ function buildSimpleInlineDiff(oldText: string, newText: string): DiffLine[] {
 }
 
   const dirty = mode === "edit" && content !== original;
-  const canEdit = isTextLike(activeTab?.mime ?? "");
+  const canEdit = isTextLike(effectiveMime);
 const activeProposal =
-  activeTab?.fileId ? proposalPreviewByFileId[activeTab.fileId] ?? null : null;
+  effectiveFileId ? proposalPreviewByFileId[effectiveFileId] ?? fallbackProposal ?? null : null;
 
 const hasProposalForActiveFile = !!activeProposal;
 
@@ -590,11 +630,11 @@ return (
 
 {/* Editor body */}
 <div ref={editorScrollRef} className="flex-1 min-h-0 overflow-auto">
-  {!activeTab ? (
-    <div className="h-full flex items-center justify-center text-sm text-white/35">
-      Open a file from Explorer.
-    </div>
-  ) : !isTextLike(activeTab.mime) ? (
+  {!activeTab && !fallbackProposal ? (
+  <div className="h-full flex items-center justify-center text-sm text-white/35">
+    Open a file from Explorer.
+  </div>
+) : !isTextLike(effectiveMime) ? (
     <div className="h-full flex items-center justify-center text-sm text-white/35">
       Binary file (no preview).
     </div>
@@ -604,6 +644,11 @@ return (
     <div className="p-4 text-sm text-rose-300">{error}</div>
   ) : mode === "read" ? (
 <div className="p-4 text-xs text-white/80 font-mono whitespace-pre-wrap break-words">
+  {isVirtualCreatePreview ? (
+    <div className="mb-3 rounded-md border border-blue-400/25 bg-blue-500/10 px-3 py-2 text-[11px] text-blue-100/80">
+      Previewing staged new file: <span className="font-mono">{effectivePath}</span>
+    </div>
+  ) : null}
   {isInlineDiffPreview ? (
     inlineDiff.map((line, i) => (
       <div
@@ -650,10 +695,11 @@ return (
 
         {/* Status bar */}
         <div className="px-3 py-2 border-t border-white/10 bg-black/20 text-[11px] text-white/45 flex items-center gap-3">
-          <span>{activeTab ? activeTab.path : "—"}</span>
-          <span className="opacity-60">{activeTab?.mime ?? ""}</span>
+          <span>{effectivePath || "—"}</span>
+<span className="opacity-60">{effectiveMime}</span>
           <span className="opacity-60">v{baseVersion ?? "?"}</span>
           {dirty ? <span className="text-blue-200/70">modified</span> : null}
+          {isVirtualCreatePreview ? <span className="text-blue-200/70">staged create</span> : null}
         </div>
       </main>
     </div>

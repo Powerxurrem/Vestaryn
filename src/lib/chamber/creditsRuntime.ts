@@ -1,3 +1,82 @@
+export async function chargeCreditsForUsage(args: {
+  supabase: any;
+  workspaceId: string;
+  periodStart: string;
+  repoId: string;
+  requestId: string;
+  amount: number;
+  kind: string; // ✅ ADD THIS
+  metadata?: any;
+}) {
+  const {
+    supabase,
+    workspaceId,
+    periodStart,
+    repoId,
+    requestId,
+    amount,
+    metadata,
+  } = args;
+
+  if (!workspaceId || !periodStart || !repoId || !requestId) {
+    console.log("[credits_charge] skipped: missing identifiers", {
+      workspaceId,
+      periodStart,
+      repoId,
+      requestId,
+    });
+    return { ok: false, skipped: true, reason: "missing_identifiers" };
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    console.log("[credits_charge] skipped: non-positive amount", { amount });
+    return { ok: false, skipped: true, reason: "non_positive_amount" };
+  }
+
+  const { data, error } = await supabase.rpc("credits_charge", {
+    _workspace_id: workspaceId,
+    _period_start: periodStart,
+    _repo_id: repoId,
+    _request_id: requestId,
+    _amount: amount,
+    _meta: metadata ?? {},
+  });
+
+  if (error) {
+    console.log("[credits_charge] rpc failed:", error.message, {
+      workspaceId,
+      periodStart,
+      repoId,
+      requestId,
+      amount,
+    });
+
+    return {
+      ok: false,
+      skipped: false,
+      error: error.message,
+    };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+
+  console.log("[credits_charge] ok", {
+    workspaceId,
+    periodStart,
+    repoId,
+    requestId,
+    amount,
+    duplicated: row?.duplicated ?? false,
+    remaining: row?.remaining ?? null,
+  });
+
+  return {
+    ok: Boolean(row?.ok),
+    duplicated: Boolean(row?.duplicated),
+    remaining: Number(row?.remaining ?? 0),
+  };
+}
+
 export async function resolveRuntimePolicyFromCredits(args: {
   supabase: any;
   repoId: string;
@@ -109,3 +188,4 @@ export async function resolveRuntimePolicyFromCredits(args: {
     errorResponse: null,
   };
 }
+

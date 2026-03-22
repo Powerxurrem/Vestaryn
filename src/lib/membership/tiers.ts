@@ -95,7 +95,7 @@ early_access: {
   model: "gpt-5-mini",
   modelClass: "mini",
   output: {
-    maxOutputTokens: 1200,
+    maxOutputTokens: 4200,
     verbosityCeiling: "medium",
     codeDetailCeiling: "full_files",
   },
@@ -108,7 +108,7 @@ early_access: {
   },
   budget: {
     period: "monthly",
-    creditsPerPeriod: 1_000_000,
+    creditsPerPeriod: 100_000,
     softReserveCredits: 10_000,
     graceMode: "clamp",
   },
