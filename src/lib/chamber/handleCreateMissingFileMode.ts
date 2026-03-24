@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import { generateNewFileContent } from "@/lib/chamber/generation";
-import { extractSingleMentionedPath } from "@/lib/chamber/intent";
+import {
+  resolveCreateMissingTargetPath,
+} from "@/lib/chamber/intent";
 import { inferTextMimeFromPath } from "@/lib/vault/utils";
 import { vault_read_text, resolveFileIdByPathOrName } from "@/lib/vault/tools";
 import { runTool } from "@/lib/vault/toolRuntime";
@@ -36,6 +38,21 @@ function textResponse(body: string) {
   });
 }
 
+function shouldForceCompactBootstrapHtml(content: string, requestedPath: string) {
+  const t = String(content ?? "").toLowerCase();
+
+  return (
+    requestedPath.toLowerCase() === "index.html" &&
+    (
+      t.includes("current step: scaffold") ||
+      t.includes("current step: setup") ||
+      t.includes("create html structure") ||
+      t.includes("bootstrap only the minimal structure needed") ||
+      t.includes("goal:")
+    )
+  );
+}
+
 function isHtmlSiblingStyleRequest(content: string, requestedPath: string) {
   return (
     /\.html?$/i.test(requestedPath) &&
@@ -61,6 +78,67 @@ function extractLocalAssetRefs(html: string): string[] {
   return Array.from(new Set(refs));
 }
 
+async function generateNewFileContentWithRetry(args: {
+  openai: OpenAI;
+  model: string;
+  userRequest: string;
+  path: string;
+  mime: string;
+  maxOutputTokens?: number;
+}) {
+  const { openai, model, userRequest, path, mime, maxOutputTokens } = args;
+
+  try {
+    return await generateNewFileContent({
+      openai,
+      model,
+      userRequest,
+      path,
+      mime,
+      maxOutputTokens,
+    });
+  } catch (e: any) {
+    const message = String(e?.message ?? "");
+
+    if (!/appears truncated/i.test(message)) {
+      throw e;
+    }
+
+    console.log("[create_missing] retrying after truncation", {
+      requestedPath: path,
+      message,
+    });
+
+    const retryRules = /\.html?$/i.test(path)
+      ? [
+          "Retry rules:",
+          "- Return the FULL complete file.",
+          "- Do not truncate.",
+          "- Return a complete HTML document.",
+          "- Include closing </body> and </html> tags when applicable.",
+          "- Keep the file compact but complete.",
+          "- Return only valid file contents.",
+        ].join("\n")
+      : [
+          "Retry rules:",
+          "- Return the FULL complete file.",
+          "- Do not truncate.",
+          "- Keep the file compact but complete.",
+          "- Close all required structures.",
+          "- Return only valid file contents.",
+        ].join("\n");
+
+    return await generateNewFileContent({
+      openai,
+      model,
+      userRequest: `${userRequest}\n\n${retryRules}`,
+      path,
+      mime,
+      maxOutputTokens: Math.max(maxOutputTokens ?? 3200, 5200),
+    });
+  }
+}
+
 export async function handleCreateMissingFileMode({
   openai,
   supabase,
@@ -69,7 +147,7 @@ export async function handleCreateMissingFileMode({
   content,
   model,
 }: CreateMissingFileDeps): Promise<Response | null> {
-  const requestedPath = extractSingleMentionedPath(content);
+  const requestedPath = resolveCreateMissingTargetPath(content);
 
   if (!requestedPath) {
     console.log("[create_missing] skipped: no single explicit path");
@@ -131,21 +209,36 @@ export async function handleCreateMissingFileMode({
           canonicalPath: "index.html",
         });
 
-        newContent = await generateNewFileContent({
+        const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
+          content,
+          requestedPath
+        );
+
+        const canonicalUserRequest =
+          `${content}\n\n` +
+          `Create this as a new sibling page using index.html as the canonical layout.\n` +
+          `Hard rules:\n` +
+          `- Reuse the same stylesheet reference pattern as index.html.\n` +
+          `- Preserve the same site identity, naming, and general tone as index.html.\n` +
+          `- Do not invent new local assets, logos, icons, SVGs, scripts, or image files.\n` +
+          `- Do not reference files that do not already exist, except the target page being created.\n` +
+          `- Keep the structure aligned with index.html.\n` +
+          `- Prefer simple compatible markup over introducing a brand new design system.\n` +
+          `- Output a complete working page for: ${requestedPath}\n` +
+          (
+            shouldForceCompactHtml
+              ? `- Keep the page SMALL and complete.\n` +
+                `- Prefer a minimal first version over a large elaborate page.\n` +
+                `- Use only essential sections.\n` +
+                `- Do not add filler sections, fake testimonials, fake forms, or extra marketing blocks unless explicitly requested.\n`
+              : ""
+          ) +
+          `\nCanonical file content:\n${String(canonicalFile?.content ?? "")}`;
+
+        newContent = await generateNewFileContentWithRetry({
           openai,
           model,
-          userRequest:
-            `${content}\n\n` +
-            `Create this as a new sibling page using index.html as the canonical layout.\n` +
-            `Hard rules:\n` +
-            `- Reuse the same stylesheet reference pattern as index.html.\n` +
-            `- Preserve the same site identity, naming, and general tone as index.html.\n` +
-            `- Do not invent new local assets, logos, icons, SVGs, scripts, or image files.\n` +
-            `- Do not reference files that do not already exist, except the target page being created.\n` +
-            `- Keep the structure aligned with index.html.\n` +
-            `- Prefer simple compatible markup over introducing a brand new design system.\n` +
-            `- Output a complete working page for: ${requestedPath}\n\n` +
-            `Canonical file content:\n${String(canonicalFile?.content ?? "")}`,
+          userRequest: canonicalUserRequest,
           path: requestedPath,
           mime,
           maxOutputTokens: 5200,
@@ -171,19 +264,53 @@ export async function handleCreateMissingFileMode({
           );
         }
       } else {
-        newContent = await generateNewFileContent({
+        const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
+          content,
+          requestedPath
+        );
+
+        const baseUserRequest =
+          shouldForceCompactHtml
+            ? `${content}\n\nAdditional generation rules:\n` +
+              `- Create a SMALL first version of the page.\n` +
+              `- Keep the HTML compact and complete.\n` +
+              `- Use only essential sections for the first scaffold.\n` +
+              `- Do not generate a long landing page.\n` +
+              `- Do not add unnecessary cards, extra marketing sections, fake testimonials, fake forms, or filler copy.\n` +
+              `- Prefer a minimal hero plus 1 to 2 short sections.\n` +
+              `- Return a complete valid HTML document with closing </body> and </html> tags.\n`
+            : content;
+
+        newContent = await generateNewFileContentWithRetry({
           openai,
           model,
-          userRequest: content,
+          userRequest: baseUserRequest,
           path: requestedPath,
           mime,
         });
       }
     } else {
-      newContent = await generateNewFileContent({
+    const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
+       content,
+      requestedPath
+    );
+
+      const baseUserRequest =
+        shouldForceCompactHtml
+          ? `${content}\n\nAdditional generation rules:\n` +
+            `- Create a SMALL first version of the page.\n` +
+            `- Keep the HTML compact and complete.\n` +
+            `- Use only essential sections for the first scaffold.\n` +
+            `- Do not generate a long landing page.\n` +
+            `- Do not add unnecessary cards, extra marketing sections, fake testimonials, fake forms, or filler copy.\n` +
+            `- Prefer a minimal hero plus 1 to 2 short sections.\n` +
+            `- Return a complete valid HTML document with closing </body> and </html> tags.\n`
+          : content;
+
+      newContent = await generateNewFileContentWithRetry({
         openai,
         model,
-        userRequest: content,
+        userRequest: baseUserRequest,
         path: requestedPath,
         mime,
       });

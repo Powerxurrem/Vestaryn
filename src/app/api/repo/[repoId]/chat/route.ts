@@ -61,6 +61,36 @@ const openai = new OpenAI({
 
 const MAINTENANCE_TRIGGER_MSGS = 160;
 
+async function generateNewFileContentSafe(args: {
+  openai: OpenAI;
+  model: string;
+  userRequest: string;
+  path: string;
+  mime: string;
+  maxOutputTokens?: number;
+}) {
+  try {
+    return await generateNewFileContent(args);
+  } catch (e: any) {
+    const message = String(e?.message ?? "");
+
+    if (!/appears truncated/i.test(message)) {
+      throw e;
+    }
+
+    return await generateNewFileContent({
+      ...args,
+      userRequest:
+        `${args.userRequest}\n\nRetry rules:\n` +
+        `- Return the FULL complete file.\n` +
+        `- Do not truncate.\n` +
+        `- Keep the file compact and complete.\n` +
+        `- Return only valid file contents.\n`,
+      maxOutputTokens: Math.max(args.maxOutputTokens ?? 3200, 5200),
+    });
+  }
+}
+
 function dirnameOf(path: string) {
   const s = String(path ?? "").trim();
   const idx = s.lastIndexOf("/");
@@ -1349,7 +1379,7 @@ if (
     !existingPaths.has(createPath) &&
     existingPaths.has(modifyPath)
   ) {
-    const newFileContent = await generateNewFileContent({
+    const newFileContent = await generateNewFileContentSafe({
       openai,
       model: runtimePolicy.model,
       userRequest: content,
@@ -1522,7 +1552,7 @@ if (isSharedNavbarRequest) {
     }
 
     if (canonicalFile) {
-      const navbarContent = await generateNewFileContent({
+      const navbarContent = await generateNewFileContentSafe({
         openai,
         model: runtimePolicy.model,
         userRequest:
@@ -1996,7 +2026,7 @@ console.log("[multi_file_orchestration] target split", {
       }
 
       try {
-        const newContent = await generateNewFileContent({
+        const newContent = await generateNewFileContentSafe({
           openai,
           model: runtimePolicy.model,
           userRequest:
@@ -3319,7 +3349,7 @@ if (
 requestHandledByOrchestration = true;
 
   try {
-    const newFileContent = await generateNewFileContent({
+    const newFileContent = await generateNewFileContentSafe({
       openai,
       model: runtimePolicy.model,
       userRequest: content,

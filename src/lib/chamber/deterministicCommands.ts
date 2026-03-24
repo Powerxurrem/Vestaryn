@@ -270,10 +270,14 @@ export async function tryHandleDeterministicCommands(args: {
     };
 
     const executePayload = {
-      goalId,
-      stepId: String(stepToExecute.id ?? ""),
-      instruction: buildGoalExecutionInstruction(stepToExecute, plan),
-    };
+  goalId,
+  stepId: String(stepToExecute.id ?? ""),
+  instruction: buildGoalExecutionInstruction(
+    stepToExecute,
+    plan,
+    plan?.sourceUserRequest
+  ),
+};
 
     const final = [
       `__GOAL_STATUS__:${JSON.stringify(statusPayload)}`,

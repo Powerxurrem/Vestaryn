@@ -1639,20 +1639,64 @@ flushSync(() => {
 
 accumulated = nextText; // keep accumulated in sync
 
-if (sawGoalInTurnRef.current) {
-  console.log("[goal_plan rawAccumulated length]", rawAccumulated.length);
-  console.log("[goal_plan rawAccumulated tail]", rawAccumulated.slice(-1200));
+if (sawGoalInTurnRef.current || containsGoalMarker(rawAccumulated)) {
+  console.log("[goal marker final parse] tail", rawAccumulated.slice(-1200));
 
   const plan = extractGoalPlan(rawAccumulated);
   if (plan) {
     console.log("[goal_plan parsed after stream]", plan);
     setGoalPlan(plan);
-  } else {
-    console.log("[goal_plan post-stream parse failed]");
+  }
+
+  const status = extractGoalStatus(rawAccumulated);
+  if (status) {
+    console.log("[goal_status parsed after stream]", status);
+    setGoalPlan((prev) => {
+      if (!prev) return prev;
+      return reconcileGoalPlanState(prev, status);
+    });
+  }
+
+  const done = extractGoalDone(rawAccumulated);
+  if (done) {
+    console.log("[goal_done parsed after stream]", done);
+    setGoalPlan((prev) => {
+      if (!prev) return prev;
+      return reconcileGoalPlanState(prev, {
+        ...done,
+        status: "completed",
+        currentStepId: null,
+      });
+    });
+  }
+
+  const execute = extractGoalExecute(rawAccumulated);
+  if (execute) {
+    console.log("[goal_execute parsed after stream]", execute);
+
+    const instruction = String(execute.instruction ?? "").trim();
+    const executeKey = `${execute.goalId}:${execute.stepId}:${instruction}`;
+
+    if (instruction && !seenGoalExecuteRef.current.has(executeKey)) {
+      seenGoalExecuteRef.current.add(executeKey);
+      dispatchGoalInstructionWhenIdle(instruction);
+    }
   }
 }
 
-    } // closes while
+        } // closes while
+
+    if (isControlCommand && containsGoalMarker(rawAccumulated)) {
+      const hiddenAssistantMsg: Message = {
+        id: makeId(),
+        role: "assistant",
+        content: rawAccumulated.trim(),
+        createdAt: Date.now(),
+      };
+
+      setMessages((prev) => [...prev, hiddenAssistantMsg]);
+    }
+
     setThinking(false);
     setState("stable");
     setActiveTurn((prev) =>

@@ -42,6 +42,55 @@ function isValidPathCandidate(value: string) {
   return true;
 }
 
+export function isCreateLinkedPageIntent(text: string) {
+  const raw = normText(text);
+
+  const wantsNewPage =
+    /\b(new file|separate file|separately|new page|add a .* page|create a .* page)\b/i.test(raw);
+
+  const wantsLinking =
+    /\b(link it|link to it|add.*link|add.*nav|navigation|navbar|menu)\b/i.test(raw);
+
+  const hasReferencePage =
+    /\bindex\.html\b/i.test(raw);
+
+  return wantsNewPage && wantsLinking && hasReferencePage;
+}
+
+export function resolveCreateMissingTargetPath(text: string) {
+  const raw = normText(text);
+  const explicit = extractSingleMentionedPath(raw);
+  const implicit = inferImplicitPagePath(raw);
+
+  const wantsNewFile =
+    /\b(new file|separate file|separately|create a new page|add a .* page|create a .* page)\b/i.test(raw);
+
+  // If the prompt clearly asks to create a new page, prefer the inferred page target
+  // over a referenced existing file like index.html.
+  if (wantsNewFile && implicit) {
+    return implicit;
+  }
+
+  return explicit || implicit || null;
+}
+
+export function inferImplicitPagePath(text: string) {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return null;
+  if (isInternalControlPrompt(t)) return null;
+
+  if (/\bportfolio page\b/.test(t)) return "portfolio.html";
+  if (/\bgallery page\b/.test(t)) return "gallery.html";
+  if (/\babout page\b/.test(t)) return "about.html";
+  if (/\bcontact page\b/.test(t)) return "contact.html";
+  if (/\bpricing page\b/.test(t)) return "pricing.html";
+  if (/\bservices page\b/.test(t)) return "services.html";
+  if (/\bfaq page\b/.test(t)) return "faq.html";
+
+  return null;
+}
+
 export function extractMentionedPaths(text: string) {
   const sanitized = sanitizeIntentParsingInput(text);
 
@@ -190,6 +239,9 @@ export function isRepositoryExecutionIntent(content: string) {
 }
 
 export function isCreateAndModifyIntent(text: string) {
+    if (isInternalGoalExecutionPrompt(text)) {
+      return false;
+    }
   const raw = String(text ?? "");
   const sanitized = sanitizeIntentParsingInput(raw);
   const paths = extractMentionedPaths(sanitized);
@@ -252,6 +304,9 @@ export function resolveCreateAndModifyPaths(text: string) {
 // ─────────────────────────────────────────────
 
 export function isExtractToModuleIntent(text: string) {
+    if (isInternalGoalExecutionPrompt(text)) {
+      return false;
+    }
   const t = text.toLowerCase();
 
   const hasExtractLanguage =
@@ -444,17 +499,26 @@ export function startsWithAny(text: string, prefixes: string[]) {
 
 export function isInternalGoalExecutionPrompt(content: string) {
   const text = normText(content);
-  return (
-    text.includes("Goal: ") &&
-    text.includes("Current step: ") &&
-    text.includes("Step description: ") &&
-    text.includes("Execute this step now by making the required repository changes")
-  );
+  const lower = text.toLowerCase();
+
+  const hasGoalCore =
+    lower.includes("goal: ") &&
+    lower.includes("current step: ") &&
+    lower.includes("step description: ");
+
+  const hasOldExecutionPhrase =
+    lower.includes("execute this step now by making the required repository changes");
+
+  const hasNewExecutionShape =
+    lower.includes("relevant files: ") &&
+    lower.includes("execution rules:") &&
+    lower.includes("focus only on completing this step.");
+
+  return hasGoalCore && (hasOldExecutionPhrase || hasNewExecutionShape);
 }
 
 export function isInternalControlPrompt(content: string) {
   const text = normText(content);
-
   return (
     startsWithAny(text, [
       "__GOAL_PLAN__",
@@ -474,24 +538,18 @@ export function isInternalControlPrompt(content: string) {
 export function buildGoalExecutionInstruction(
   step: any,
   plan: any,
-  originalUserRequest?: string | null
+  originalUserRequest: string
 ) {
   const stepFiles = Array.isArray(step?.files)
     ? step.files.map((x: any) => String(x)).filter(Boolean)
     : [];
 
-  const original = String(originalUserRequest ?? "").trim();
-  const goalTitle = String(plan?.title ?? "").trim();
-  const goalSummary = String(plan?.summary ?? "").trim();
-  const stepTitle = String(step?.title ?? "").trim();
-  const stepDescription = String(step?.description ?? "").trim();
-
   return [
-    original ? `Original user request: ${original}` : null,
-    `Goal: ${goalTitle}`,
-    goalSummary ? `Goal summary: ${goalSummary}` : null,
-    `Current step: ${stepTitle}`,
-    `Step description: ${stepDescription}`,
+    `Original user request: ${String(originalUserRequest ?? "").trim()}`,
+    `Goal: ${String(plan?.title ?? "").trim()}`,
+    `Goal summary: ${String(plan?.summary ?? "").trim()}`,
+    `Current step: ${String(step?.title ?? "").trim()}`,
+    `Step description: ${String(step?.description ?? "").trim()}`,
     `Relevant files: ${stepFiles.join(", ") || "none specified"}`,
     `Execution rules:`,
     `- Preserve the original user request, theme, and visual/style intent.`,
@@ -500,16 +558,16 @@ export function buildGoalExecutionInstruction(
     `- If the repo is empty, bootstrap only the minimal structure needed for this step.`,
     `- Use tools when needed.`,
     `- Respond with the normal Vestaryn contract.`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].join("\n");
 }
 
 export function isGoalPlanningUserIntent(content: string) {
-  const text = normText(content).toLowerCase();
+  const text = normText(content);
+  const lower = text.toLowerCase();
 
   if (!text) return false;
   if (isInternalControlPrompt(text)) return false;
+  if (isInternalGoalExecutionPrompt(text)) return false;
 
   const planningPatterns = [
     /\bgoal plan\b/,
@@ -531,7 +589,7 @@ export function isGoalPlanningUserIntent(content: string) {
     /\bimprove the current project\b/,
   ];
 
-  return planningPatterns.some((re) => re.test(text));
+  return planningPatterns.some((re) => re.test(lower));
 }
 
 export function extractGoalExecute(text: string) {

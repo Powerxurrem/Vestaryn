@@ -1,7 +1,7 @@
 import {
   extractMentionedPaths,
   extractSingleMentionedPath,
-  isCreateAndModifyIntent,
+  isCreateAndModifyIntent,isInternalGoalExecutionPrompt
 } from "@/lib/chamber/intent";
 
 export function isSourceTargetTransferIntent(text: string): boolean {
@@ -88,6 +88,10 @@ export function isImportRefactorIntent(text: string) {
     return false;
   }
 
+  if (isCreateAndModifyIntent(text)) {
+    return false;
+  }
+
   const lower = String(text || "").toLowerCase();
 
   const hasImportVerb =
@@ -161,6 +165,9 @@ export function isExtractHelpersToModuleIntent(text: string) {
 }
 
 export function isSplitFileIntent(text: string) {
+    if (isInternalGoalExecutionPrompt(text)) {
+      return false;
+    }
   const lower = String(text || "").toLowerCase();
   const pathCount = extractMentionedPaths(text || "").length;
 
