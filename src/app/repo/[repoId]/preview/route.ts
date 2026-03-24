@@ -12,43 +12,53 @@ function inferContentType(path: string) {
   return "text/plain; charset=utf-8";
 }
 
+function dirnameOf(path: string) {
+  const s = String(path ?? "").trim();
+  const idx = s.lastIndexOf("/");
+  return idx === -1 ? "" : s.slice(0, idx);
+}
+
 function rewritePreviewHtml(html: string, repoId: string, currentPath: string, rev: string) {
   const assetBase = `/api/repo/${repoId}/preview-file`;
   const pageBase = `/repo/${repoId}/preview`;
 
-  const normalize = (value: string) => String(value).replace(/^\/+/, "");
+  const normalize = (value: string) => String(value).trim();
+
+  const assetUrl = (rawPath: string) => {
+    return `${assetBase}?path=${encodeURIComponent(normalize(rawPath))}&base=${encodeURIComponent(currentPath)}&rev=${encodeURIComponent(rev)}`;
+  };
+
+  const pageUrl = (rawPath: string) => {
+    return `${pageBase}?path=${encodeURIComponent(normalize(rawPath))}&rev=${encodeURIComponent(rev)}`;
+  };
 
   return html
     .replace(
       /(<link[^>]+href=["'])([^"']+)(["'][^>]*>)/gi,
       (_m, a, href, b) => {
         if (/^(https?:|data:|#|\/\/)/i.test(href)) return `${a}${href}${b}`;
-        const normalized = normalize(href);
-        return `${a}${assetBase}?path=${encodeURIComponent(normalized)}&rev=${encodeURIComponent(rev)}${b}`;
+        return `${a}${assetUrl(href)}${b}`;
       }
     )
     .replace(
       /(<script[^>]+src=["'])([^"']+)(["'][^>]*><\/script>)/gi,
       (_m, a, src, b) => {
         if (/^(https?:|data:|#|\/\/)/i.test(src)) return `${a}${src}${b}`;
-        const normalized = normalize(src);
-        return `${a}${assetBase}?path=${encodeURIComponent(normalized)}&rev=${encodeURIComponent(rev)}${b}`;
+        return `${a}${assetUrl(src)}${b}`;
       }
     )
     .replace(
       /(<img[^>]+src=["'])([^"']+)(["'][^>]*>)/gi,
       (_m, a, src, b) => {
         if (/^(https?:|data:|#|\/\/)/i.test(src)) return `${a}${src}${b}`;
-        const normalized = normalize(src);
-        return `${a}${assetBase}?path=${encodeURIComponent(normalized)}&rev=${encodeURIComponent(rev)}${b}`;
+        return `${a}${assetUrl(src)}${b}`;
       }
     )
     .replace(
       /(<a[^>]+href=["'])([^"']+\.html)(["'][^>]*>)/gi,
       (_m, a, href, b) => {
         if (/^(https?:|#|\/\/)/i.test(href)) return `${a}${href}${b}`;
-        const normalized = normalize(href);
-        return `${a}${pageBase}?path=${encodeURIComponent(normalized)}&rev=${encodeURIComponent(rev)}${b}`;
+        return `${a}${pageUrl(href)}${b}`;
       }
     );
 }
@@ -75,14 +85,13 @@ try {
   }
 
   const candidatePaths: string[] = Array.from(
-    new Set(
-      [
-        requestedPath,
-        requestedPath === "index.html" ? "public/index.html" : null,
-        requestedPath === "index.html" ? "src/index.html" : null,
-      ].filter((v): v is string => Boolean(v))
-    )
-  );
+  new Set(
+    [
+      requestedPath,
+      requestedPath === "index.html" ? "src/index.html" : null,
+    ].filter((v): v is string => Boolean(v))
+  )
+);
 
   type PreviewFileRow = {
     id: string;
@@ -104,10 +113,9 @@ try {
   }
 
   const preferredRow =
-    rows.find((f: PreviewFileRow) => f.path === requestedPath) ??
-    rows.find((f: PreviewFileRow) => f.path === "public/index.html") ??
-    rows.find((f: PreviewFileRow) => f.path === "src/index.html") ??
-    rows[0];
+  rows.find((f) => f.path === requestedPath) ??
+  rows.find((f) => f.path === "src/index.html") ??
+  rows[0];
 
   const resolvedPath = String(preferredRow.path ?? requestedPath);
 

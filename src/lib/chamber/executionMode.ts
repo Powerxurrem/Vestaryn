@@ -8,6 +8,8 @@ import {
   isInternalControlPrompt,
   isRepositoryExecutionIntent,
   normText,
+  isInternalGoalExecutionPrompt,
+  isLayoutAlignmentIntent
 } from "@/lib/chamber/intent";
 
 function isVisualRefinementIntent(text: string) {
@@ -106,6 +108,24 @@ function isIncrementalIntent(text: string) {
   ]);
 }
 
+function isCrossFileAlignmentIntent(text: string) {
+  return hasAny(text, [
+    /\bcompare\b.*\b(files|pages|documents|website)\b/i,
+    /\bcompare\b.*\band\b.*\balign\b/i,
+    /\balign\b.*\b(layout|layouts|styling|style|structure)\b/i,
+    /\balign\b.*\bbetween files\b/i,
+    /\balign\b.*\bacross\b/i,
+    /\bmake\b.*\bconsistent\b.*\b(across|between)\b/i,
+    /\bkeep\b.*\bconsistent\b.*\b(across|between)\b/i,
+    /\bstandardi[sz]e\b.*\b(layout|styling|style|structure)\b/i,
+    /\bharmoni[sz]e\b.*\b(layout|styling|style|structure)\b/i,
+    /\bmake the pages match\b/i,
+    /\bmatch\b.*\b(layout|styling|style|structure)\b/i,
+    /\balign the layout accordingly between files\b/i,
+    /\bcompare the website documents\b/i,
+  ]);
+}
+
 export function filterExecutionPaths(paths: string[]) {
   return paths.filter((p) => {
     const s = String(p ?? "").trim();
@@ -125,9 +145,12 @@ export function resolveExecutionMode(content: string): ExecutionModeResolution {
   const text = normText(content);
   const lower = text.toLowerCase();
   const rawMentionedPaths = extractMentionedPaths(text);
-const mentionedPaths = isInternalControlPrompt(text)
-  ? []
-  : filterExecutionPaths(rawMentionedPaths);
+const isGoalExecution = isInternalGoalExecutionPrompt(text);
+
+const mentionedPaths =
+  isInternalControlPrompt(text) && !isGoalExecution
+    ? []
+    : filterExecutionPaths(rawMentionedPaths);
   const hasExplicitPaths = mentionedPaths.length > 0;
 
   const hasEditVerb =
@@ -137,6 +160,19 @@ const mentionedPaths = isInternalControlPrompt(text)
     /\b(gold|color|background|spacing|padding|margin|font|border|shadow|nav|navbar|header|footer|hero)\b/i.test(text);
 
   const hasCssPath = mentionedPaths.some((p) => /\.css$/i.test(p));
+
+if (isLayoutAlignmentIntent(text)) {
+  return {
+    mode: hasExplicitPaths ? "incremental" : "incremental",
+    confidence: hasExplicitPaths ? "high" : "medium",
+    reasons: [
+      "layout_alignment_intent",
+      ...(hasExplicitPaths ? ["explicit_paths"] : []),
+    ],
+    mentionedPaths,
+    hasExplicitPaths,
+  };
+}
 
   if (hasExplicitPaths && (hasEditVerb || hasVisualEditSignal)) {
     return {
@@ -160,6 +196,19 @@ const mentionedPaths = isInternalControlPrompt(text)
       hasExplicitPaths,
     };
   }
+
+if (isInternalGoalExecutionPrompt(text)) {
+  return {
+    mode: mentionedPaths.length >= 2 ? "incremental" : "surgical",
+    confidence: "high",
+    reasons: [
+      "internal_goal_execution_prompt",
+      ...(mentionedPaths.length >= 2 ? ["multi_file_goal_step"] : ["single_file_goal_step"]),
+    ],
+    mentionedPaths,
+    hasExplicitPaths,
+  };
+}
 
   if (isInternalControlPrompt(text)) {
     return {
@@ -229,6 +278,16 @@ if (isCreateMissingFileIntent(text)) {
       };
     }
 
+if (isCrossFileAlignmentIntent(text)) {
+  return {
+    mode: "incremental",
+    confidence: "high",
+    reasons: ["cross_file_alignment_intent"],
+    mentionedPaths,
+    hasExplicitPaths,
+  };
+}
+
 if (isExplainOnlyQuestion(text)) {
   return {
     mode: "explain",
@@ -257,6 +316,20 @@ if (isExplainOnlyQuestion(text)) {
         hasExplicitPaths,
       };
     }
+
+if (isCrossFileAlignmentIntent(text)) {
+  return {
+    mode: "incremental",
+    confidence: "high",
+    reasons: ["cross_file_alignment_intent"],
+    mentionedPaths,
+    hasExplicitPaths,
+  };
+}
+console.log("[cross_file_alignment_check]", {
+  text,
+  matched: isCrossFileAlignmentIntent(text),
+});
 
     if (hasExplicitPaths) {
       return {

@@ -50,6 +50,10 @@ RULES:
 - Do not emit __GOAL_PLAN__ for simple factual answers, direct code rewrites, or immediate execution requests unless the user is explicitly asking for a staged plan or multi-step approach.
 - goalId should be concise snake_case derived from the user goal, prefixed with "goal_".
 
+Repository safety rules:
+- Do not reference or link to files that do not already exist in the repo unless the user explicitly asked to create them.
+- Preserve existing site navigation structure unless the user explicitly requested navigation changes.
+- Do not invent placeholder pages such as projects.html, blog.html, privacy.html, or terms.html.
 RESPONSE PRIORITY ORDER
 
 1. If the user is asking for a plan or staged implementation strategy, emit __GOAL_PLAN__ first.
@@ -415,6 +419,11 @@ RULES:
 - If the requested target file already contains equivalent exported symbols, rewrite the source file to import and use those existing exports instead of re-declaring them locally.
 - Do not emit __GOAL_PLAN__ for simple factual answers, direct code rewrites, or immediate execution requests unless the user is explicitly asking for a staged plan or multi-step approach.
 - goalId should be concise snake_case derived from the user goal, prefixed with "goal_".
+
+Repository safety rules:
+- Do not reference or link to files that do not already exist in the repo unless the user explicitly asked to create them.
+- Preserve existing site navigation structure unless the user explicitly requested navigation changes.
+- Do not invent placeholder pages such as projects.html, blog.html, privacy.html, or terms.html.
 
 RESPONSE PRIORITY ORDER
 

@@ -6,7 +6,8 @@ import { SYSTEM_PROTECTOR_DEFAULT,SYSTEM_PROTECTOR_ARCH,} from "@/lib/chamber/pr
 import { normalizeForNoopCheck, sha256,confirmPhrase,confirmCreatePhrase,inferTextMimeFromPath,stripDuplicateTriplet,scrubVisibleToolPayload,ensureTriplet,
 } from "@/lib/vault/utils";
 import {extractMentionedPaths,extractSingleMentionedPath,isRepositoryExecutionIntent,
-isCreateAndModifyIntent,isExtractToModuleIntent,looksLikeStandaloneModule,isHighLevelBuildRequest, isInternalGoalExecutionPrompt,normText,isInternalControlPrompt, isGoalPlanningUserIntent,isNewGoalPlanIntent
+isCreateAndModifyIntent,isExtractToModuleIntent,looksLikeStandaloneModule,isHighLevelBuildRequest, isInternalGoalExecutionPrompt,normText,isInternalControlPrompt, isGoalPlanningUserIntent,isNewGoalPlanIntent,  isLayoutAlignmentIntent,
+  resolveCanonicalLayoutPath,
 } from "@/lib/chamber/intent";
 import {isSourceTargetTransferIntent,resolveSourceAndTargetPaths,
 isImportRefactorIntent,isSplitFileIntent,extractSplitTargets,deriveDefaultSplitTargets,extractRequestedSplitCount,  isSplitReadAllowed} from "@/lib/chamber/refactorIntent";
@@ -59,6 +60,102 @@ const openai = new OpenAI({
 });
 
 const MAINTENANCE_TRIGGER_MSGS = 160;
+
+function dirnameOf(path: string) {
+  const s = String(path ?? "").trim();
+  const idx = s.lastIndexOf("/");
+  return idx === -1 ? "" : s.slice(0, idx);
+}
+
+function joinWithinDir(dir: string, leaf: string) {
+  const cleanLeaf = String(leaf ?? "").trim().replace(/^\/+/, "");
+  if (!dir) return cleanLeaf;
+  return `${dir}/${cleanLeaf}`;
+}
+
+function resolveMentionedRepoPaths(
+  requestedPaths: string[],
+  files: Array<{ path?: string; name?: string }>
+) {
+  return requestedPaths.map((requested) => {
+    const raw = String(requested ?? "").trim();
+    if (!raw) return raw;
+
+    const exact = files.find((f) => String(f?.path ?? "").trim() === raw);
+    if (exact) return String(exact?.path ?? "").trim();
+
+    const byName = files.filter((f) => String(f?.name ?? "").trim() === raw);
+    if (byName.length === 1) {
+      return String(byName[0]?.path ?? "").trim();
+    }
+
+    return raw;
+  });
+}
+
+function extractLocalHtmlRefs(html: string): string[] {
+  const refs = Array.from(
+    String(html ?? "").matchAll(/(?:src|href)=["']([^"']+)["']/gi)
+  )
+    .map((m) => String(m[1] ?? "").trim())
+    .filter(Boolean)
+    .filter((v) => !/^(https?:|data:|#|mailto:|tel:|\/\/)/i.test(v))
+    .filter((v) => /\.html?$/i.test(v));
+
+  return Array.from(new Set(refs));
+}
+
+function resolveEditTarget(
+  mentionedPaths: string[],
+  content: string
+): { target: string | null; references: string[]; preserveMultiTarget: boolean } {
+  if (!mentionedPaths?.length) {
+    return { target: null, references: [], preserveMultiTarget: false };
+  }
+
+  const wantsSharedStyling =
+    /\b(same style|apply the same style|same theme|same look|match the style|apply .* same style)\b/i.test(content) ||
+    (
+      /\b(background|topbar|top bar|nav|navbar|header|gold|black|white|grey|gray|blue|red|green|burgundy|yellow|silver|color|theme|style)\b/i.test(content) &&
+      mentionedPaths.length >= 2
+    );
+
+  if (wantsSharedStyling) {
+    return {
+      target: null,
+      references: [],
+      preserveMultiTarget: true,
+    };
+  }
+
+  const inMatch = content.match(
+    /\bin\s+([a-zA-Z0-9_\-./]+\.(html|css|js|jsx|ts|tsx))\b/i
+  );
+
+  if (inMatch) {
+    const target = String(inMatch[1] ?? "").trim();
+    return {
+      target,
+      references: mentionedPaths.filter((p) => p !== target),
+      preserveMultiTarget: false,
+    };
+  }
+
+  if (mentionedPaths.length > 1) {
+    const target = mentionedPaths[mentionedPaths.length - 1];
+    return {
+      target,
+      references: mentionedPaths.slice(0, -1),
+      preserveMultiTarget: false,
+    };
+  }
+
+  return {
+    target: mentionedPaths[0],
+    references: [],
+    preserveMultiTarget: false,
+  };
+}
 
 // ─────────────────────────────────────────────────────────────
 // Route: POST /api/repo/[repoId]/chat
@@ -531,6 +628,144 @@ if (implicitStaticPageResponse) {
   return implicitStaticPageResponse;
 }
 
+const isRepoWideStyleRequest =
+  executionMode.mode === "bootstrap" &&
+  /\b(whole site|entire site|site-wide|global|across all pages|every page)\b/i.test(content) &&
+  /\b(style|theme|look|visual|premium|modern|color|palette|accent|background|blocks)\b/i.test(content);
+
+if (isRepoWideStyleRequest) {
+  console.log("[repo_wide_style_handler] triggered", {
+    repoId,
+    content,
+  });
+
+  const filesResp = await runTool(
+    supabase,
+    repoId,
+    user.id,
+    content,
+    "vault_list_files",
+    {}
+  );
+
+  const files =
+    filesResp &&
+    typeof filesResp === "object" &&
+    !("error" in filesResp) &&
+    Array.isArray((filesResp as any).files)
+      ? (filesResp as any).files
+      : [];
+
+  const cssFile =
+    files.find((f: any) =>
+      String(f?.path ?? "").toLowerCase().endsWith(".css")
+    ) ?? null;
+
+  const htmlFiles = files.filter((f: any) =>
+    String(f?.path ?? "").toLowerCase().endsWith(".html")
+  );
+
+  if (cssFile) {
+    console.log("[repo_wide_style_handler] rerouting to shared css file", {
+      repoId,
+      cssPath: cssFile.path,
+      htmlCount: htmlFiles.length,
+    });
+
+    const existingFile = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_read_text",
+      { path: cssFile.path }
+    );
+
+    if (
+      existingFile &&
+      typeof existingFile === "object" &&
+      !("error" in existingFile)
+    ) {
+      let rewritten: string;
+
+      try {
+        rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest:
+            `${content}\n\n` +
+            `Hard rules:\n` +
+            `- Apply the styling change site-wide through the shared stylesheet.\n` +
+            `- Do not rewrite unrelated HTML files unless absolutely required.\n` +
+            `- Prefer shared reusable CSS changes over per-page duplication.\n` +
+            `- Return the FULL complete stylesheet.\n`,
+          path: String((existingFile as any).path ?? cssFile.path),
+          mime: String((existingFile as any).mime ?? "text/css"),
+          currentContent: String((existingFile as any).content ?? ""),
+        });
+      } catch (e: any) {
+        const msg = String(e?.message ?? "");
+
+        if (!/appears truncated/i.test(msg)) {
+          throw e;
+        }
+
+        rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest:
+            `${content}\n\n` +
+            `Retry rules:\n` +
+            `- Return the FULL complete file.\n` +
+            `- Do not truncate.\n` +
+            `- Keep changes focused.\n` +
+            `- Do not invent new local assets, logos, SVGs, scripts, or image files.\n` +
+            `- Do not reference any local file unless it already exists in the repo.\n` +
+            `- Prefer structure over bloated inline styling.\n`,
+          path: String((existingFile as any).path ?? cssFile.path),
+          mime: String((existingFile as any).mime ?? "text/css"),
+          currentContent: String((existingFile as any).content ?? ""),
+          maxOutputTokens: 5200,
+        });
+      }
+
+      const proposal = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: (existingFile as any).id,
+          content: rewritten,
+        }
+      );
+
+      if (
+        proposal &&
+        typeof proposal === "object" &&
+        !("error" in proposal) &&
+        !(proposal as any).noop
+      ) {
+        const responseText =
+          "[Observation]\nA site-wide style change was staged through the shared stylesheet.\n\n" +
+          "[Assessment]\nThe request was rerouted to the shared CSS layer so the visual update applies consistently across pages.\n\n" +
+          "[Action]\nA staged change is ready. Confirm to apply.\n" +
+          `\n__PROPOSAL__:${JSON.stringify(proposal)}\n`;
+
+        return new Response(responseText, {
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-cache, no-transform",
+          },
+        });
+      }
+    }
+  }
+
+  console.log("[repo_wide_style_handler] no shared css target found");
+}
+
 if (shouldAllowPreStreamRepoOpsForMode(executionMode.mode)) {
   const preStreamResponse = await tryHandlePreStreamRepoOps({
     openai,
@@ -670,6 +905,45 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
       rawAssistantText = pass1.buffer ?? "";
 
       let initialHadTools = pendingTools.length > 0 || pass1.sawToolsThisPass;
+
+      const pass1RequestedPaths = extractMentionedPaths(content);
+      const hasExplicitMultiFileEditRequest =
+        pass1RequestedPaths.length >= 2 &&
+        (
+          executionMode.mode === "surgical" ||
+          executionMode.mode === "incremental" ||
+          executionMode.mode === "rewrite"
+        ) &&
+        !isImportRefactorIntent(content) &&
+        !isSplitFileIntent(content) &&
+        !isSourceTargetTransferIntent(content) &&
+        !isCreateAndModifyIntent(content);
+
+      if (hasExplicitMultiFileEditRequest) {
+        const pass1ToolNames = pendingTools.map((t) => String(t?.name ?? ""));
+        const onlyDirectReads =
+          pendingTools.length > 0 &&
+          pendingTools.every((t) => String(t?.name ?? "") === "vault_read_text");
+
+        if (onlyDirectReads) {
+          console.log("[pass1_tool_normalization] forcing vault_list_files for multi-file edit", {
+            repoId,
+            requestedPaths: pass1RequestedPaths,
+            originalTools: pass1ToolNames,
+          });
+
+          const originalCallId =
+            pendingTools[0]?.call_id ?? `normalize_${Date.now()}`;
+
+          pendingTools = [
+            {
+              call_id: originalCallId,
+              name: "vault_list_files",
+              arguments: "{}",
+            } as any,
+          ];
+        }
+      }
 
       console.log(
         "[pass1] hadTools=",
@@ -1044,7 +1318,10 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
 // ─────────────────────────────────────────────
 if (
   toolName === "vault_list_files" &&
-  isCreateAndModifyIntent(content) &&
+  !requestHandledByOrchestration &&
+  executionMode?.mode === "surgical" &&
+  !isCreateAndModifyIntent(content) &&
+  !isSourceTargetTransferIntent(content) &&
   out &&
   typeof out === "object" &&
   !("error" in out)
@@ -1159,10 +1436,13 @@ if (
 // Deterministic generic repo edit orchestration
 // Example: "make it look more premium"
 // ─────────────────────────────────────────────
+const requestedPaths = extractMentionedPaths(content);
+const hasExplicitMultiPathRequest = requestedPaths.length >= 2;
 const isEditExecutionMode =
   executionMode.mode === "incremental" ||
   executionMode.mode === "rewrite" ||
   executionMode.mode === "surgical";
+  
 
 if (
   toolName === "vault_list_files" &&
@@ -1177,8 +1457,188 @@ if (
   const files = Array.isArray((out as any).files) ? (out as any).files : [];
 
   const requestedPath = extractSingleMentionedPath(content);
+  const requestedPaths = extractMentionedPaths(content);
+  const explicitStyleChange =
+  /\b(background|topbar|top bar|header color|gold|black|contrast|theme|styles?\.css|color palette|restyle|same style|same theme)\b/i.test(
+    content
+  );
 
-  const editableFiles = files.filter((f: any) => {
+const isSharedNavbarRequest =
+  /\b(navbar|nav|header)\b/i.test(content) &&
+  /\b(new file|shared file|separate file|extract|component|partial|include|import)\b/i.test(content) &&
+  /\b(all created files|all pages|all html files|created files)\b/i.test(content);
+
+if (isSharedNavbarRequest) {
+  console.log("[shared_navbar_orchestration] triggered", {
+    repoId,
+    requestedPaths,
+    content,
+  });
+
+  const htmlFiles = files.filter((f: any) =>
+    String(f?.path ?? "").toLowerCase().endsWith(".html")
+  );
+
+  const candidateTargets = htmlFiles.filter((f: any) => {
+    const path = String(f?.path ?? "").trim();
+    return (
+      path === "index.html" ||
+      path === "about.html" ||
+      path === "contact.html" ||
+      path === "faq.html" ||
+      path === "pricing.html"
+    );
+  });
+
+  const targetPaths = candidateTargets.map((f: any) => String(f.path));
+  const navbarPath = "partials/navbar.html";
+
+  if (targetPaths.length >= 2) {
+    let canonicalFile: any | null = null;
+
+    const canonicalPath =
+      resolveCanonicalLayoutPath(targetPaths) ||
+      targetPaths.find((p: string) => /(^|\/)index\.html$/i.test(p)) ||
+      targetPaths[0] ||
+      null;
+
+    if (canonicalPath) {
+      const readCanonical = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_read_text",
+        { path: canonicalPath }
+      );
+
+      if (
+        readCanonical &&
+        typeof readCanonical === "object" &&
+        !("error" in readCanonical)
+      ) {
+        canonicalFile = readCanonical;
+      }
+    }
+
+    if (canonicalFile) {
+      const navbarContent = await generateNewFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest:
+          `${content}\n\n` +
+          `Create a shared reusable navbar partial for this site.\n` +
+          `Hard rules:\n` +
+          `- Output only the navbar partial markup.\n` +
+          `- Do not invent new assets.\n` +
+          `- Reuse the site identity from ${canonicalPath}.\n` +
+          `- Keep it simple and compatible with the current HTML files.\n`,
+        path: navbarPath,
+        mime: "text/html",
+        maxOutputTokens: 3200,
+      });
+
+      const navbarProposal = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_create",
+        {
+          path: navbarPath,
+          content: navbarContent,
+          mime: "text/html",
+        }
+      );
+
+      if (
+        navbarProposal &&
+        typeof navbarProposal === "object" &&
+        !("error" in navbarProposal) &&
+        !(navbarProposal as any).noop
+      ) {
+        pendingProposalOuts.push(navbarProposal);
+      }
+
+      for (const path of targetPaths) {
+        const existingFile = await runTool(
+          supabase,
+          repoId,
+          user.id,
+          content,
+          "vault_read_text",
+          { path }
+        );
+
+        if (
+          !existingFile ||
+          typeof existingFile !== "object" ||
+          "error" in existingFile
+        ) {
+          continue;
+        }
+
+        const rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest:
+            `${content}\n\n` +
+            `Rewrite this file so its navbar/header is replaced with a shared include/reference to ${navbarPath}.\n` +
+            `Hard rules:\n` +
+            `- Return the FULL complete file.\n` +
+            `- Preserve the rest of the page content.\n` +
+            `- Do not invent new assets.\n` +
+            `- Keep the change focused on shared navbar extraction.\n`,
+          path: String((existingFile as any).path ?? path),
+          mime: String((existingFile as any).mime ?? "text/html"),
+          currentContent: String((existingFile as any).content ?? ""),
+          maxOutputTokens: 5200,
+        });
+
+        const proposal = await runTool(
+          supabase,
+          repoId,
+          user.id,
+          content,
+          "vault_propose_write",
+          {
+            fileId: (existingFile as any).id,
+            content: rewritten,
+          }
+        );
+
+        if (
+          proposal &&
+          typeof proposal === "object" &&
+          !("error" in proposal) &&
+          !(proposal as any).noop
+        ) {
+          pendingProposalOuts.push(proposal);
+        }
+      }
+
+      if (pendingProposalOuts.length > 0) {
+        requestHandledByOrchestration = true;
+
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify({
+            ...(out as any),
+            handled: "shared_navbar_extraction",
+            navbarPath,
+            targetPaths,
+            canonicalPath,
+          }),
+        });
+
+        continue;
+      }
+    }
+  }
+}
+
+      const editableFiles = files.filter((f: any) => {
     const path = String(f?.path ?? "").toLowerCase();
     if (!path) return false;
     if (path.startsWith("memory/")) return false;
@@ -1192,6 +1652,551 @@ if (
       path.endsWith(".jsx")
     );
   });
+
+  if (requestedPaths.length >= 2) {
+    console.log("[multi_file_orchestration] triggered", {
+      repoId,
+      requestedPaths,
+    });
+
+    const resolvedRequestedPaths = resolveMentionedRepoPaths(requestedPaths, files);
+
+const canonicalPath =
+  resolveCanonicalLayoutPath(resolvedRequestedPaths) ||
+  resolvedRequestedPaths.find((p) => /(^|\/)index\.html$/i.test(p)) ||
+  resolvedRequestedPaths[0] ||
+  null;
+
+const canonicalDir = canonicalPath ? dirnameOf(canonicalPath) : "";
+
+const htmlTargetPaths = resolvedRequestedPaths
+  .filter((p) => /\.html?$/i.test(p) && p !== canonicalPath)
+  .map((p) => (p.includes("/") ? p : joinWithinDir(canonicalDir, p)));
+
+const cssTargetPaths = explicitStyleChange
+  ? resolvedRequestedPaths
+      .filter((p) => /\.css$/i.test(p))
+      .map((p) => (p.includes("/") ? p : joinWithinDir(canonicalDir, p)))
+  : [];
+
+const isVisualRequest =
+  /\b(look|design|style|theme|color|background|topbar|top bar|nav|navbar|gold|black|white|dark|light|grey|gray|blue|red|green|burgundy|yellow|silver|premium|modern|cleaner|nicer|prettier|polish|visual)\b/i.test(
+    content
+  );
+
+const multiHtmlRequest =
+  requestedPaths.length >= 2 &&
+  requestedPaths.every((p) => /\.html?$/i.test(String(p)));
+
+const cssFile =
+  files.find((f: any) =>
+    String(f?.path ?? "").toLowerCase().endsWith(".css")
+  ) ?? null;
+
+const existingFilePaths = new Set(
+  files.map((f: any) => String(f?.path ?? "").trim()).filter(Boolean)
+);
+
+const requestedHtmlPaths = resolvedRequestedPaths.filter((p) => /\.html?$/i.test(p));
+
+const missingRequestedHtmlPaths = requestedHtmlPaths.filter(
+  (p) => !existingFilePaths.has(p)
+);
+
+// 🔥 CSS-first override
+if (
+  explicitStyleChange &&
+  isVisualRequest &&
+  multiHtmlRequest &&
+  cssFile &&
+  missingRequestedHtmlPaths.length === 0
+) {
+  console.log("[multi_file_orchestration] rerouted to CSS", {
+    repoId,
+    requestedPaths,
+    cssTarget: cssFile.path,
+  });
+
+  const existingFile = await runTool(
+    supabase,
+    repoId,
+    user.id,
+    content,
+    "vault_read_text",
+    { path: cssFile.path }
+  );
+
+  if (
+    existingFile &&
+    typeof existingFile === "object" &&
+    !("error" in existingFile)
+  ) {
+    const resolvedPath = String((existingFile as any).path ?? cssFile.path);
+    const resolvedMime = String((existingFile as any).mime ?? "text/css");
+    const currentContent = String((existingFile as any).content ?? "");
+
+    let rewritten: string;
+
+    try {
+      rewritten = await generateRewrittenFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest: content,
+        path: resolvedPath,
+        mime: resolvedMime,
+        currentContent,
+      });
+    } catch (e: any) {
+      const msg = String(e?.message ?? "");
+
+      if (!/appears truncated/i.test(msg)) {
+        throw e;
+      }
+
+      rewritten = await generateRewrittenFileContent({
+        openai,
+        model: runtimePolicy.model,
+        userRequest:
+          `${content}\n\nRetry rules:\n` +
+          `- Return the FULL complete file.\n` +
+          `- Do not truncate.\n` +
+          `- Keep changes focused.\n` +
+          `- Prefer reusable styles (no inline duplication).\n`,
+        path: resolvedPath,
+        mime: resolvedMime,
+        currentContent,
+        maxOutputTokens: 5200,
+      });
+    }
+
+    const proposal = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_propose_write",
+      {
+        fileId: (existingFile as any).id,
+        content: rewritten,
+      }
+    );
+
+    if (
+      proposal &&
+      typeof proposal === "object" &&
+      !("error" in proposal)
+    ) {
+      pendingProposalOuts.push(proposal);
+      requestHandledByOrchestration = true;
+    }
+  }
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify({
+      ...(out as any),
+      handled: "css_reroute",
+      requestedPaths,
+      target: cssFile.path,
+    }),
+  });
+
+  continue;
+}
+
+    const editableTargets = [...htmlTargetPaths, ...cssTargetPaths].filter((p) => {
+      const lower = String(p ?? "").toLowerCase();
+      if (!lower) return false;
+      if (lower.startsWith("memory/")) return false;
+
+      return (
+        lower.endsWith(".html") ||
+        lower.endsWith(".css") ||
+        lower.endsWith(".ts") ||
+        lower.endsWith(".tsx") ||
+        lower.endsWith(".js") ||
+        lower.endsWith(".jsx")
+      );
+    });
+
+    if (editableTargets.length >= 1) {
+  const resolvedTargets: any[] = [];
+  const missingTargets: string[] = [];
+
+  for (const path of editableTargets) {
+    const existingFile = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_read_text",
+      { path }
+    );
+
+    if (
+      existingFile &&
+      typeof existingFile === "object" &&
+      !("error" in existingFile)
+    ) {
+      resolvedTargets.push(existingFile);
+    } else {
+      missingTargets.push(path);
+
+      console.log("[multi_file_orchestration] read skipped", {
+        path,
+        error:
+          existingFile &&
+          typeof existingFile === "object" &&
+          "error" in existingFile
+            ? (existingFile as any).error
+            : null,
+      });
+    }
+  }
+
+  let canonicalFile: any | null = null;
+
+  if (canonicalPath) {
+    const readCanonical = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_read_text",
+      { path: canonicalPath }
+    );
+
+    if (
+      readCanonical &&
+      typeof readCanonical === "object" &&
+      !("error" in readCanonical)
+    ) {
+      canonicalFile = readCanonical;
+    }
+  }
+
+const isAlignmentRequest =
+  isLayoutAlignmentIntent(content) ||
+  /\b(same styling|same style|same theme|match.*style|use the same styling)\b/i.test(
+    content
+  );
+
+const rewriteTargets = isAlignmentRequest
+  ? resolvedTargets.filter(
+      (file) => String((file as any).path ?? "") !== canonicalPath
+    )
+  : resolvedTargets;
+
+console.log("[multi_file_orchestration] target split", {
+  requestedPaths,
+  canonicalPath,
+  isAlignmentRequest,
+  resolvedPaths: resolvedTargets.map((f: any) => String(f?.path ?? "")),
+  rewritePaths: rewriteTargets.map((f: any) => String(f?.path ?? "")),
+  missingTargets,
+});
+
+  const multiFileFailures: Array<{ path: string; reason: string }> = [];
+  const multiFileNoopPaths: string[] = [];
+
+  // Rewrite existing targets
+  for (const file of rewriteTargets) {
+    const resolvedPath = String((file as any).path ?? "");
+    const resolvedMime = String((file as any).mime ?? "text/plain");
+    const currentContent = String((file as any).content ?? "");
+
+    try {
+      let rewritten: string;
+
+      try {
+        rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest: content,
+          path: resolvedPath,
+          mime: resolvedMime,
+          currentContent,
+        });
+      } catch (e: any) {
+        const msg = String(e?.message ?? "");
+
+        if (!/appears truncated/i.test(msg)) {
+          throw e;
+        }
+
+        console.log("[multi_file_orchestration] retrying after truncation", {
+          repoId,
+          path: resolvedPath,
+          reason: msg,
+        });
+
+        rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest:
+            `${content}\n\nRetry rules:\n` +
+            `- Return the FULL complete file.\n` +
+            `- Do not truncate.\n` +
+            `- Keep changes focused.\n` +
+            `- Prefer structure over bloated inline styling.\n`,
+          path: resolvedPath,
+          mime: resolvedMime,
+          currentContent,
+          maxOutputTokens: 5200,
+        });
+      }
+
+      const proposal = await runTool(
+        supabase,
+        repoId,
+        user.id,
+        content,
+        "vault_propose_write",
+        {
+          fileId: (file as any).id,
+          content: rewritten,
+        }
+      );
+
+     if (proposal && typeof proposal === "object" && !("error" in proposal)) {
+  if ((proposal as any).noop) {
+    multiFileNoopPaths.push(resolvedPath);
+  } else {
+    pendingProposalOuts.push(proposal);
+  }
+} else {
+  multiFileFailures.push({
+    path: resolvedPath,
+    reason:
+      proposal &&
+      typeof proposal === "object" &&
+      "error" in proposal
+        ? String((proposal as any).error)
+        : "proposal_invalid",
+  });
+}
+    } catch (e: any) {
+      multiFileFailures.push({
+        path: resolvedPath,
+        reason: String(e?.message ?? "unknown error"),
+      });
+    }
+  }
+
+  // Create missing HTML sibling pages from canonical layout
+  if (canonicalFile && missingTargets.length > 0) {
+    for (const missingPath of missingTargets) {
+      if (!/\.html?$/i.test(missingPath)) {
+        multiFileFailures.push({
+          path: missingPath,
+          reason: "missing target is not html and cannot be created by layout-alignment flow",
+        });
+        continue;
+      }
+
+      try {
+        const newContent = await generateNewFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest:
+            `${content}\n\n` +
+            `Create this as a new sibling page using ${canonicalPath} as the canonical layout.\n` +
+            `Hard rules:\n` +
+            `- Reuse the same stylesheet reference pattern as ${canonicalPath}.\n` +
+            `- Match the header structure, nav structure, main layout rhythm, and footer structure of ${canonicalPath}.\n` +
+            `- Preserve the same site identity, naming, and tone as ${canonicalPath}.\n` +
+            `- Do not invent new local assets, logos, icons, SVGs, scripts, helper files, privacy pages, terms pages, or image files.\n` +
+            `- Do not reference files that do not already exist, except the target page being created.\n` +
+            `- Do not introduce new JavaScript unless it already exists in ${canonicalPath}.\n` +
+            `- Keep class naming aligned with ${canonicalPath} instead of inventing a parallel structure.\n` +
+            `- Output a complete working page for: ${missingPath}\n\n` +
+            `Canonical file content:\n${String((canonicalFile as any)?.content ?? "")}`,
+          path: missingPath,
+          mime: inferTextMimeFromPath(missingPath),
+          maxOutputTokens: 5200,
+        });
+
+function extractLocalAssetRefs(html: string): string[] {
+  const refs = Array.from(
+    String(html ?? "").matchAll(/(?:src|href)=["']([^"']+)["']/gi)
+  )
+    .map((m) => String(m[1] ?? "").trim())
+    .filter(Boolean)
+    .filter((v) => !/^(https?:|data:|#|mailto:|tel:|\/\/)/i.test(v))
+    .map((v) => v.split("#")[0].split("?")[0].trim())
+    .filter(Boolean)
+    .filter((v) => !/\.html?$/i.test(v))
+    .filter((v) => !/\.css$/i.test(v));
+
+  return Array.from(new Set(refs));
+}
+
+function normalizeRepoRelativePath(path: string, basePath?: string | null) {
+  const raw = String(path ?? "").trim();
+  if (!raw) return raw;
+
+  const cleaned = raw.replace(/^\.\/+/, "").replace(/^\/+/, "");
+
+  if (!basePath || !cleaned) return cleaned;
+
+  const baseDir = dirnameOf(basePath);
+  if (!baseDir) return cleaned;
+
+  return joinWithinDir(baseDir, cleaned);
+}
+
+        const proposal = await runTool(
+          supabase,
+          repoId,
+          user.id,
+          content,
+          "vault_propose_create",
+          {
+            path: missingPath,
+            content: newContent,
+            mime: inferTextMimeFromPath(missingPath),
+          }
+        );
+
+        const repoFilePaths = new Set(
+          files.map((f: any) => String(f?.path ?? "").trim()).filter(Boolean)
+        );
+
+        const localAssetRefs = extractLocalAssetRefs(newContent);
+
+        const localHtmlRefs = extractLocalHtmlRefs(newContent);
+
+        const missingHtmlRefs = localHtmlRefs.filter((ref) => {
+          const normalized = normalizeRepoRelativePath(ref, missingPath);
+          return normalized !== missingPath && !repoFilePaths.has(normalized);
+        });
+
+        if (missingHtmlRefs.length > 0) {
+          console.log("[multi_file_orchestration] generated page referenced missing local html pages", {
+            missingPath,
+            missingHtmlRefs,
+          });
+
+          throw new Error(
+            `generated_html_references_missing_pages: ${missingHtmlRefs.join(", ")}`
+          );
+        }
+
+        const missingAssetRefs = localAssetRefs.filter((ref) => {
+          const normalized = normalizeRepoRelativePath(ref, missingPath);
+          return !repoFilePaths.has(normalized);
+        });
+
+        if (missingAssetRefs.length > 0) {
+          console.log("[multi_file_orchestration] generated page referenced missing local assets", {
+            missingPath,
+            missingAssetRefs,
+          });
+
+          throw new Error(
+            `generated_html_references_missing_assets: ${missingAssetRefs.join(", ")}`
+          );
+        }
+        
+        if (
+          proposal &&
+          typeof proposal === "object" &&
+          !("error" in proposal) &&
+          !(proposal as any).noop
+        ) {
+          pendingProposalOuts.push(proposal);
+        } else {
+          multiFileFailures.push({
+            path: missingPath,
+            reason:
+              proposal &&
+              typeof proposal === "object" &&
+              "error" in proposal
+                ? String((proposal as any).error)
+                : "create_proposal_noop_or_invalid",
+          });
+        }
+      } catch (e: any) {
+        multiFileFailures.push({
+          path: missingPath,
+          reason: String(e?.message ?? "unknown error"),
+        });
+      }
+    }
+  }
+
+if (
+  pendingProposalOuts.length === 0 &&
+  multiFileFailures.length === 0 &&
+  multiFileNoopPaths.length > 0
+) {
+  deterministicToolHandled = true;
+  fullText =
+    "[Observation]\nThe requested repository state is already satisfied.\n\n" +
+    "[Assessment]\nThe target files already match the requested layout/style alignment, so no staged change was needed.\n\n" +
+    "[Action]\nContinue with the next change or request a more specific adjustment.";
+
+  controller.enqueue(encoder.encode(fullText));
+
+  toolOutputs.push({
+    type: "function_call_output",
+    call_id: callId,
+    output: JSON.stringify({
+      ...(out as any),
+      handled: "multi_file_noop",
+      noopPaths: multiFileNoopPaths,
+      requestedPaths,
+      canonicalPath,
+    }),
+  });
+
+  continue;
+}
+
+  if (pendingProposalOuts.length > 0) {
+    requestHandledByOrchestration = true;
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify({
+        ...(out as any),
+        handled: "multi_file_rewrite_or_create",
+        requestedPaths,
+        resolvedRequestedPaths,
+        canonicalPath,
+        resolvedPaths: resolvedTargets.map((f: any) => String(f?.path ?? "")),
+        createdPaths: missingTargets,
+        failedPaths: multiFileFailures,
+      }),
+    });
+
+    continue;
+  }
+
+  console.log("[multi_file_orchestration] insufficient resolved targets", {
+    requestedPaths,
+    resolvedRequestedPaths,
+    editableTargets,
+    resolvedCount: resolvedTargets.length,
+    missingTargets,
+    canonicalPath,
+  });
+}
+
+    console.log("[generic_edit_orchestration] skipped because request mentions multiple paths", {
+      requestedPaths,
+    });
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
+
+    continue;
+  }
 
   let targetFile: any | null = null;
 
@@ -1262,7 +2267,14 @@ if (
         rewritten = await generateRewrittenFileContent({
           openai,
           model: runtimePolicy.model,
-          userRequest: content,
+          userRequest:
+            `${content}\n\n` +
+            `Hard rules:\n` +
+            `- Return the FULL complete file.\n` +
+            `- Keep changes focused on the requested alignment/update.\n` +
+            `- Do not invent new local assets, logos, SVGs, scripts, or image files.\n` +
+            `- Do not reference any local file unless it already exists in the repo.\n` +
+            `- Preserve the rest of the page unless the request explicitly requires structural changes.\n`,
           path: resolvedPath,
           mime: resolvedMime,
           currentContent,
@@ -2434,21 +3446,76 @@ if (
       continue;
     }
 
-    const requestedPaths = extractMentionedPaths(content);
+    let requestedPaths = extractMentionedPaths(content);
+    let rewriteReferences: string[] = [];
 
     if (requestedPaths.length >= 2 && !isImportRefactorIntent(content)) {
-      console.log("[rewrite_orchestration] skipped because multiple paths were requested", {
-        requestedPaths,
+  const resolved = resolveEditTarget(requestedPaths, content);
+
+  console.log("[smart_target_resolution]", {
+    requestedPaths,
+    target: resolved.target,
+    references: resolved.references,
+    preserveMultiTarget: (resolved as any).preserveMultiTarget,
+    readPath: readOut.path,
+  });
+
+  // 🧠 NEW: allow multi-file orchestration to take over
+  if ((resolved as any).preserveMultiTarget) {
+    console.log("[rewrite_orchestration] preserving multi-target request", {
+      requestedPaths,
+      readPath: readOut.path,
+    });
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
+
+    continue;
+  }
+
+  if (!resolved.target) {
+    console.log("[rewrite_orchestration] skipped because multiple paths were requested", {
+      requestedPaths,
+      readPath: readOut.path,
+    });
+
+    toolOutputs.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: JSON.stringify(out),
+    });
+
+    continue;
+  }
+
+  requestedPaths = [resolved.target];
+  rewriteReferences = resolved.references;
+
+      if (readOut.path && resolved.target !== readOut.path) {
+        console.log("[rewrite_orchestration] skipped because resolved target does not match read path", {
+          requestedPaths,
+          target: resolved.target,
+          references: rewriteReferences,
+          readPath: readOut.path,
+        });
+
+        toolOutputs.push({
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(out),
+        });
+
+        continue;
+      }
+
+      console.log("[rewrite_orchestration] downgraded multi-path request to single edit target", {
+        target: resolved.target,
+        references: rewriteReferences,
         readPath: readOut.path,
       });
-
-      toolOutputs.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: JSON.stringify(out),
-      });
-
-      continue;
     }
 
     if (
@@ -2559,7 +3626,10 @@ if (
         rewritten = await generateRewrittenFileContent({
           openai,
           model: runtimePolicy.model,
-          userRequest: content,
+          userRequest:
+            rewriteReferences.length > 0
+              ? `${content}\n\nReference files mentioned but not to be rewritten: ${rewriteReferences.join(", ")}`
+              : content,
           path: String(readOut.path ?? ""),
           mime: String(readOut.mime ?? "text/plain"),
           currentContent: String(readOut.content ?? ""),
@@ -2578,15 +3648,18 @@ if (
         });
 
         const retryPrompt = [
-          content,
-          "",
-          "Retry rules:",
-          "- Return the FULL complete file.",
-          "- Keep the edit compact and focused.",
-          "- Do not truncate.",
-          "- Do not leave partial sections.",
-          "- Prefer minimal safe edits over broad rewrites.",
-        ].join("\n");
+        content,
+        rewriteReferences.length > 0
+          ? `Reference files mentioned but not to be rewritten: ${rewriteReferences.join(", ")}`
+          : "",
+        "",
+        "Retry rules:",
+        "- Return the FULL complete file.",
+        "- Keep the edit compact and focused.",
+        "- Do not truncate.",
+        "- Do not leave partial sections.",
+        "- Prefer minimal safe edits over broad rewrites.",
+      ].filter(Boolean).join("\n");
 
         rewritten = await generateRewrittenFileContent({
           openai,

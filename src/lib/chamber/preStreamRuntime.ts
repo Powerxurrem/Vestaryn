@@ -49,9 +49,29 @@ export async function tryHandlePreStreamRepoOps(args: {
     verifyCmd: inferredVerifyCmd,
   });
 
-  const createModifyPaths = isCreateAndModifyIntent(content)
-    ? resolveCreateAndModifyPaths(content)
-    : null;
+    const createModifyIntent = isCreateAndModifyIntent(content);
+    const createModifyPaths = createModifyIntent
+      ? resolveCreateAndModifyPaths(content)
+      : null;
+
+    console.log("[intent] create_modify", {
+      hit: createModifyIntent,
+      resolved: createModifyPaths,
+      text: content,
+    });
+
+    if (
+      createModifyPaths &&
+      (!createModifyPaths.createPath ||
+        !createModifyPaths.modifyPath ||
+        createModifyPaths.createPath === createModifyPaths.modifyPath)
+    ) {
+      console.log("[create_modify_short_circuit] invalid resolved paths", {
+        resolved: createModifyPaths,
+        text: content,
+      });
+      return null;
+    }
 
   if (createModifyPaths) {
     try {
@@ -163,6 +183,18 @@ export async function tryHandlePreStreamRepoOps(args: {
           modifyPath,
         });
 
+        const modifyLooksBootstrapable =
+          /app\/page\.(tsx|ts|jsx|js)$/i.test(modifyPath) ||
+          /index\.html$/i.test(modifyPath) ||
+          /\.html?$/i.test(modifyPath);
+
+        if (!modifyLooksBootstrapable) {
+          console.log("[create_modify_short_circuit] refusing bootstrap for non-page modify target", {
+            createPath,
+            modifyPath,
+          });
+          return null;
+        }
         const newModifyContent = await generateNewFileContent({
           openai,
           model: runtimePolicy.model,

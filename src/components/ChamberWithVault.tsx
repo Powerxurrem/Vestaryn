@@ -105,9 +105,35 @@ useEffect(() => {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewHeight, setPreviewHeight] = useState(260);
   const [previewRevision, setPreviewRevision] = useState(0);
-  const [previewPath, setPreviewPath] = useState("index.html");
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
   const chamberOpen = chamberMode !== null;
   const [chatReloadToken, setChatReloadToken] = useState(0);
+
+const resolvePreferredPreviewPath = useCallback(
+  (paths: string[], preferred?: string | null) => {
+    const normalized = paths
+      .map((p) => String(p || "").trim())
+      .filter(Boolean);
+
+    if (preferred && normalized.includes(preferred)) {
+      return preferred;
+    }
+
+    if (normalized.includes("index.html")) {
+      return "index.html";
+    }
+
+    const nestedIndex = normalized.find((p) => /(^|\/)index\.html$/i.test(p));
+    if (nestedIndex) {
+      return nestedIndex;
+    }
+
+    const firstHtml = normalized.find((p) => /\.html?$/i.test(p));
+    return firstHtml ?? null;
+  },
+  []
+);
+
     const isPreviewablePath = useCallback((path: string) => {
     return /\.(html|css|js|mjs)$/i.test(path);
   }, []);
@@ -284,20 +310,17 @@ function onSplitterPointerDown(e: React.PointerEvent<HTMLDivElement>) {
 }
   
 useEffect(() => {
-  if (!previewPath) return;
+  const htmlPaths = tabs
+    .map((t) => t.path)
+    .filter((p): p is string => !!p && /\.html?$/i.test(p));
 
-  const validHtmlPaths = new Set(
-    tabs
-      .map((t) => t.path)
-      .filter((p): p is string => !!p && /\.html$/i.test(p))
-  );
+  if (htmlPaths.length === 0) return;
 
-  if (validHtmlPaths.size === 0) return;
-
-  if (!validHtmlPaths.has(previewPath)) {
-    setPreviewPath(validHtmlPaths.has("index.html") ? "index.html" : [...validHtmlPaths][0]);
+  const next = resolvePreferredPreviewPath(htmlPaths, previewPath);
+  if (next && next !== previewPath) {
+    setPreviewPath(next);
   }
-}, [previewPath, tabs]);
+}, [previewPath, tabs, resolvePreferredPreviewPath]);
 
  return (
   <VestarynFrame
@@ -360,10 +383,16 @@ onPreviewRefresh={() => {
           onClick={() => {
             const activeTab = tabs.find((t) => t.fileId === activeFileId);
 
-            const preferredPath =
-              activeTab?.path && /\.html$/i.test(activeTab.path)
-                ? activeTab.path
-                : "index.html";
+            const htmlPaths = tabs
+              .map((t) => t.path)
+              .filter((p): p is string => !!p && /\.html?$/i.test(p));
+
+            const preferredPath = resolvePreferredPreviewPath(
+              htmlPaths,
+              activeTab?.path && /\.html?$/i.test(activeTab.path) ? activeTab.path : null
+            );
+
+            if (!preferredPath) return;
 
             setPreviewPath(preferredPath);
             setPreviewOpen(true);
@@ -411,7 +440,7 @@ onPreviewRefresh={() => {
       />
     </div>
 
-    {previewOpen && (
+    {previewOpen && previewPath && (
       <div
         className="shrink-0 border-t border-white/10 bg-black/55"
         style={{ height: previewHeight }}

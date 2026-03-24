@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { stripCodeFences } from "@/lib/vault/utils";
+import { isLayoutAlignmentIntent } from "@/lib/chamber/intent";
 
 function looksTruncatedHtml(text: string) {
   const t = String(text ?? "").trim().toLowerCase();
@@ -477,6 +478,8 @@ export async function generateRewrittenFileContent(opts: {
   const isCssFile =
     /\.css$/i.test(path) || String(mime ?? "").includes("text/css");
 
+  const isLayoutAlignment = isLayoutAlignmentIntent(userRequest);
+
   const htmlCssCoordinationRules = isHtmlFile
     ? `
 HTML/CSS coordination rules:
@@ -489,6 +492,10 @@ HTML/CSS coordination rules:
 - Do not add external image placeholders, fake CDN assets, or dummy remote banners unless explicitly requested.
 - Do not add fake forms, fake newsletter sections, or fake contact flows unless explicitly requested.
 - Improve structure, hierarchy, sections, and reuse rather than adding bloat.
+- Preserve existing copy and section purpose unless the user explicitly asks to change them.
+- Do not reference local assets, images, icons, logos, SVGs, scripts, or files that were not explicitly requested or already known to exist.
+- Do not invent paths like assets/logo.svg, images/..., scripts/..., or icons/... unless you are also creating those files in the same proposal set.
+- If no local asset exists, prefer pure HTML/CSS structure without image dependencies.
 `.trim()
     : "";
 
@@ -515,6 +522,27 @@ HTML rewrite rules:
 - Preserve document structure unless the request clearly asks for structural changes.
 `.trim()
     : "";
+
+  const htmlAlignmentRules =
+    isHtmlFile && isLayoutAlignment
+      ? `
+HTML layout alignment rules:
+- This is a layout-alignment request, not a full rewrite.
+- Preserve all page-specific content, sections, and copy unless the request explicitly asks otherwise.
+- Do NOT regenerate the whole page.
+- Only align shared structural elements when needed, such as:
+  - header
+  - nav
+  - topbar
+  - footer
+  - top-level layout wrappers
+  - shared class structure
+- Keep unique body sections intact.
+- Do not replace existing sections with generic substitutes.
+- Do not rewrite text just to make pages feel stylistically similar.
+- Make the minimum structural edits needed to align the shared layout language.
+`.trim()
+      : "";
 
   const prompt = `
 You are rewriting a single repository file.

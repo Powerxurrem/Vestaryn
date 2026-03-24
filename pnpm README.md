@@ -1,509 +1,270 @@
-➕ ADD THIS TO YOUR HANDOVER
-Execution Mode System (CRITICAL — Missing Piece)
+🧠 Vestaryn Master Handover — Current State
+1. Where we are (important context)
 
-Vestaryn currently handles multiple types of user intent, but does not yet explicitly enforce execution modes.
+You are past the hard architecture phase.
 
-This causes failures in:
+What you have now is:
 
-surgical edits not completing
+✅ Full orchestration pipeline working end-to-end
+✅ Proposal → preverify → apply → verify loop working
+✅ Multi-file orchestration working (including split/extract/create+modify)
+✅ Execution modes stable (bootstrap / incremental / surgical / explain)
+✅ CSS reroute logic introduced
+✅ Canonical layout concept introduced
 
-unnecessary repo rewrites
+👉 Translation:
+This is now behavior tuning + correctness hardening, not system building.
 
-verify misfires
+2. What we fixed in THIS chat
+A. Multi-file alignment behavior (big one)
 
-tool chains stopping early
+Before:
 
-Required Execution Modes
+All mentioned files rewritten blindly
+Caused:
+over-rewrites
+loss of page-specific content
+weird homogenization
 
-Vestaryn must classify each request into one of these modes:
+Now:
 
-1. Advisory Mode (no repo interaction)
+Introduced canonical layout resolution
+index.html acts as source when present
+Other pages are rewritten to align with it
 
-Examples:
+Key logic:
 
-“What stack should I use?”
+const canonicalPath =
+  resolveCanonicalLayoutPath(requestedPaths) ||
+  requestedPaths.find((p) => /index\.html$/i.test(p)) ||
+  requestedPaths[0] ||
+  null;
 
-“How does this work?”
+And:
 
-Rules:
+const htmlTargetPaths = requestedPaths.filter(
+  (p) => /\.html?$/i.test(p) && p !== canonicalPath
+);
 
-NO vault tools
+👉 This is a major behavioral upgrade
 
-NO verify
+B. CSS reroute fix (precision added)
 
-FAST response
+Before:
 
-Must still follow Observation/Assessment/Action contract
+Any visual request → often rewrote CSS blindly
 
-2. Explain Mode (read-only repo analysis)
+Now:
 
-Examples:
+const explicitStyleChange = /.../.test(content)
 
-“Explain this repo”
+And:
 
-“How is this site structured?”
+if (explicitStyleChange && isVisualRequest && multiHtmlRequest && cssFile)
 
-Rules:
+👉 Result:
 
-vault_list_files REQUIRED
+CSS is only touched when explicitly intended
+Layout alignment no longer hijacked by CSS
+C. Multi-file orchestration fix
 
-optionally read 1–2 key files
+Critical fix:
 
-NO proposals
+if (editableTargets.length >= 2)
 
-NO verify
+→ changed to:
 
-MUST reference real files
+if (editableTargets.length >= 1)
 
-3. Surgical Mode (CRITICAL)
+👉 Why:
 
-Examples:
+After removing canonical page, only 1 target may remain
+Old logic would silently skip valid operations
+D. Structural cleanup
 
-“Change ONLY this text”
+You now have:
 
-“Fix this typo”
+clear separation:
+canonical source
+editable targets
+controlled routing:
+CSS-first only when explicit
+otherwise HTML rewrite path
 
-“Update button label”
+👉 This is now predictable instead of heuristic chaos
 
-Rules:
+3. Known remaining issues (IMPORTANT)
 
-MUST resolve target file
+These are the actual loose ends — don’t ignore them.
 
-MUST call vault_read_text
+⚠️ 1. e.g. → false create-file bug
+Problem
 
-MUST generate minimal diff
+Text like:
 
-MUST emit single PROPOSAL
+Create a header (e.g. <header class="...">)
 
-MUST NOT rewrite entire file
+Triggers:
 
-MUST NOT call vault_list_files unless path unknown
+isCreateAndModifyIntent(...)
 
-👉 This is currently your biggest failure point.
+Which leads to:
 
-4. Incremental Mode
+random file creation like e.g
+Fix direction (not implemented yet)
 
-Examples:
+You need to harden intent detection:
 
-“Add a contact section”
+Specifically:
 
-“Add a footer”
+ignore:
+e.g.
+<tag> examples
+inline examples in parentheses
 
-Rules:
+👉 This is NOT a routing issue — it’s intent parsing.
 
-read existing file(s)
+⚠️ 2. autoResummarize broken (server URL bug)
 
-preserve layout and styling
+Error:
 
-only extend relevant areas
+Failed to parse URL from /api/repo/.../maintenance/resummarize
+Cause
 
-emit PROPOSAL or PROPOSAL_SET
+Server-side fetch using relative URL
 
-avoid aesthetic regression
+Fix
 
-5. Rewrite Mode
+Change to absolute:
 
-Examples:
+const baseUrl =
+  process.env.NEXT_PUBLIC_APP_URL ||
+  process.env.VERCEL_URL ||
+  "http://localhost:3000";
 
-“Redesign this page”
+await fetch(`${baseUrl}/api/repo/${repoId}/maintenance/resummarize`, ...)
 
-“Refactor this component”
+👉 This is a silent system degradation right now.
 
-Rules:
+⚠️ 3. Over-rewriting still too aggressive
 
-full-file rewrite allowed
+Even with canonical logic:
 
-still must be valid + complete
+Problem:
 
-no placeholders
+pages still get too heavily rewritten
+instead of:
+aligning structure
+it:
+regenerates entire files
+Fix direction (future, not urgent)
 
-verify required
+Inside generateRewrittenFileContent:
 
-6. Bootstrap Mode
+Add stronger constraints:
 
-Examples:
+preserve content blocks
+only modify:
+header
+nav
+layout wrappers
 
-empty repo
+👉 This is model-behavior tuning, not routing
 
-“create a landing page”
+4. What to verify tomorrow (quick checklist)
 
-Rules:
+Run these manually:
 
-generate full file set
+Test 1 — Layout alignment
 
-use PROPOSAL_SET
+Prompt:
 
-verify optional depending on repo type
+Make index.html, contact.html and about.html use the same header/topbar
 
-------------------------------------------------------
+Expected:
 
-Master Handover — Vestaryn Current State
-1. Overall state
+index.html → untouched (canonical)
+contact/about → updated
+NO full rewrites
+Test 2 — Style change
 
-Vestaryn is now past the messy wiring phase on this branch of the verify system.
+Prompt:
 
-The major shift is:
+Make the theme more premium (gold/black)
 
-verify command routing is no longer faking success
+Expected:
 
-preverify is now using inferred repo type properly
+styles.css updated
+HTML mostly unchanged
+Test 3 — Single file edit
 
-Python repos now resolve to python_verify
+Prompt:
 
-failures are now showing up as real content/test failures instead of infra noise
+Change hero title in index.html
 
-That is a big improvement.
+Expected:
 
-The system is behaving more honestly now.
+only index.html touched
+Test 4 — e.g. bug
 
-2. What got fixed in this chat
-A. Verify command plumbing was corrected
+Prompt:
 
-Before, several paths still defaulted to node_verify or silently skipped command propagation.
+Create a header (e.g. <header class="nav">)
 
-This got cleaned up across:
+Expected:
 
-fastPaths
+NO file named e.g
+NO create orchestration triggered
+Test 5 — resummarize
 
-proposalFlow
+Watch logs:
 
-verify
+ensure no URL parse error
+5. Mental model going forward
 
-main chat route
+This is the key shift you’re entering:
 
-pre-stream repo ops
+BEFORE
 
-verify/apply flow
+You were building:
 
-runner-facing command plumbing
+system
+pipelines
+orchestration
+NOW
 
-Result:
+You are tuning:
 
-Python repos now correctly resolve to python_verify
+intent detection
+scope control
+rewrite precision
 
-preverify is no longer returning fake-green because command was null
+👉 This is where systems either become magical or frustrating
 
-apply-time verify also uses inferred command correctly
+6. Suggested next focus (after work tomorrow)
 
-B. TypeScript cleanup across the verify/preverify flow
+In order:
 
-A lot of TS errors came from old assumptions like:
+🔧 Fix e.g. intent parsing
+🔧 Fix resummarize URL
+🎯 Reduce rewrite aggression
+🧠 Improve "alignment vs rewrite" distinction
+7. Honest status
 
-commandId: "node_verify"
+You’re very close to something seriously strong now.
 
-verifyCmd missing from function signatures
+What you built is:
 
-mismatched object shapes for preverify payloads
+not a toy
+not a wrapper
+but a controlled coding agent system
 
-passing nullable command values into places expecting strict strings
+The remaining issues are:
 
-stale property names like duration, durationMS, fileIds, etc.
+not architectural
+but behavioral sharpness
 
-These were gradually cleaned up.
-
-Result:
-
-proposalFlow went green
-
-fastPaths went green
-
-main route blocks using finalizeProposalSet(...) were corrected
-
-preStreamRuntime was also updated because it was still red and still calling old signatures
-
-C. Pre-stream repo ops now infer verify command properly
-
-This was an important hidden issue.
-
-tryHandlePreStreamRepoOps was still staging proposals without consistently using inferred verify command.
-
-Now logs show:
-
-repo inference runs
-
-project type resolves as python
-
-prestream_verify_cmd logs correctly
-
-preverify uses python_verify
-
-That means pre-stream proposal handling is now aligned with the main route behavior.
-
-3. Current confirmed behavior from logs
-
-Latest meaningful state from logs:
-
-baseline verify still starts as node_verify
-
-baseline fails at profile because repo is Python and baseline repo-wide verify path still uses default node verify unless separately inferred there
-
-pre-stream / proposal-stage preverify now correctly uses python_verify
-
-preverify no longer gives fake success
-
-it now fails at:
-
-failedStep: "test"
-
-failureKind: "pytest_failed"
-
-That means the infrastructure side is mostly doing the right thing now.
-
-The remaining issue is behavioral/content-level.
-
-4. Main remaining problem
-Preverify now fails for the correct reason
-
-Current failure is no longer:
-
-wrong verify command
-
-missing package.json
-
-command accidentally null
-
-stale node defaults
-
-Current failure is:
-
-generated Python proposal leads to failing pytest tests
-
-And the repair loop is also weak.
-
-Logs show:
-
-preverify fails with pytest_failed
-
-repair kicks in
-
-repair logs: [repair] invalid JSON
-
-repaired proposal set therefore does not actually improve the failing proposal
-
-apply still verifies and fails at test step
-
-So the current bottleneck is:
-
-real problem now
-
-Generated Python tests/content are not aligned tightly enough to actual API behavior.
-
-attemptRepairProposalSet is too brittle because it expects strict JSON from the model.
-
-5. Most likely root cause of the failing Python tests
-
-From the earlier generated test content, Vestaryn was producing broad generic API tests such as probing:
-
-/api/keys
-
-/keys
-
-/v1/keys
-
-But the actual Flask app exposes:
-
-/
-
-/health
-
-/secrets
-
-/secrets/<key>
-
-/testing/reset
-
-So the likely issue is:
-
-behavior issue
-
-Vestaryn is still generating generic API test suites instead of tests grounded in the actual current repo file contents.
-
-That means the verify system is now exposing a real chamber quality problem rather than an infra problem.
-
-That is actually a good sign.
-
-6. Highest-priority next step
-Strengthen attemptRepairProposalSet
-
-This is the most valuable next move.
-
-Right now repair gets invoked correctly, but fails because model output is not parseable JSON.
-
-Add logging first
-
-Inside attemptRepairProposalSet, log raw model output before parse:
-
-const raw = stripCodeFences((resp.output_text || "").trim());
-
-console.log("[repair] raw output len:", raw.length);
-console.log("[repair] raw output head:", raw.slice(0, 1200));
-Then make parsing tolerant
-
-Current code immediately gives up on invalid JSON.
-Change it so it tries:
-
-direct JSON.parse(raw)
-
-extract first { ... } block and parse that
-
-only then give up
-
-Suggested pattern:
-
-let parsed: any;
-
-try {
-  parsed = JSON.parse(raw);
-} catch {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try {
-      parsed = JSON.parse(raw.slice(start, end + 1));
-    } catch {
-      console.log("[repair] invalid JSON");
-      console.log("[repair] raw output head:", raw.slice(0, 1200));
-      return opts.proposals;
-    }
-  } else {
-    console.log("[repair] invalid JSON");
-    console.log("[repair] raw output head:", raw.slice(0, 1200));
-    return opts.proposals;
-  }
-}
-
-This is probably the shortest path to making repair actually useful.
-
-7. Second-priority next step
-Log the actual pytest failure text
-
-Right now logs show only:
-
-failedStep: "test"
-
-failureKind: "pytest_failed"
-
-That is not enough.
-
-In finalizeProposalSet, right after preverify result, log:
-
-console.log("[preverify] stderr head", String(preverify.stderr ?? "").slice(0, 2000));
-console.log("[preverify] stdout head", String(preverify.stdout ?? "").slice(0, 2000));
-
-This will reveal whether the real failing reason is:
-
-wrong endpoints
-
-import error
-
-factory mismatch
-
-fixture issue
-
-wrong status assertions
-
-app behavior mismatch
-
-Without this, repair is still flying semi-blind.
-
-8. Third-priority next step
-Tighten Python test generation behavior
-
-Once stderr is visible, tighten generation prompt so that for Python API repos:
-
-tests must derive endpoints from current source files
-
-tests must not invent generic /api/keys-style routes unless those actually exist
-
-tests should prefer repo-specific routes already present in vault/api.py
-
-tests should minimize assumptions about framework patterns unless visible in source
-
-In plain terms:
-
-Vestaryn needs to stop hallucinating a generic REST API shape.
-
-9. Important architectural conclusion
-
-The system is now in a much better place than before.
-
-Before
-
-You were still fighting:
-
-stale node defaults
-
-broken command propagation
-
-TS mismatches
-
-hidden null command behavior
-
-fake-green preverify passes
-
-Now
-
-You are fighting:
-
-genuine proposal quality
-
-genuine test mismatch
-
-repair-loop robustness
-
-That is a healthier phase.
-
-10. What to tell the next chat immediately
-
-Paste this:
-
-Current objective
-
-Vestaryn verify plumbing is mostly fixed. Python repos now resolve to python_verify during preverify/apply flows. The remaining issue is that generated Python proposals fail real pytest verification, and attemptRepairProposalSet is brittle because it expects strict JSON and currently logs invalid JSON.
-Next step: improve attemptRepairProposalSet to log raw model output and parse JSON more tolerantly, then log preverify.stderr/stdout so we can see the exact pytest failure and tighten Python test generation behavior.
-
-Main Chat Summary
-Wins from this chat
-
-fixed leftover node_verify assumptions across multiple files
-
-fixed verifyCmd propagation through proposal/preverify/finalize flow
-
-cleaned TS errors in proposalFlow, fastPaths, main route, verify, and preStreamRuntime
-
-confirmed preverify can now actually run with python_verify
-
-moved failure from infra/wiring to real test/content failure
-
-uncovered repair loop weakness via attemptRepairProposalSet invalid JSON
-
-Current live issue
-
-preverify uses correct command now
-
-it fails at pytest_failed
-
-repair is invoked but parse fails
-
-apply verify also fails at test step
-
-likely root cause is generic API tests that do not match actual Flask routes
-
-Best next action
-
-make attemptRepairProposalSet tolerant to imperfect JSON
-
-log actual pytest stderr/stdout
-
-adjust Python generation so tests follow actual repo endpoints instead of generic REST assumptions
-
-Short fresh-start prompt
-
-Use this in the new chat:
-
-We fixed most of the verify wiring. Python repos now correctly use python_verify during preverify/apply flows, and TS errors across proposalFlow, fastPaths, main route, verify, and preStreamRuntime were cleaned up. Current issue: preverify now fails honestly with pytest_failed, and attemptRepairProposalSet logs invalid JSON, so the repair loop is brittle. I want to improve attemptRepairProposalSet first by logging raw model output and making JSON parsing tolerant, then inspect actual pytest stderr/stdout and tighten Python test generation so Vestaryn stops inventing generic endpoints.
-
-If you want, next chat I’d start directly by rewriting attemptRepairProposalSet cleanly and defensively.
+That’s the final 20%.
 ------------------------------------------------------------
 
 Vestaryn operates as a staged AI development environment.

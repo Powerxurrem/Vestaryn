@@ -1,11 +1,79 @@
 import {filterExecutionPaths} from "@/lib/chamber/executionMode";
 
+function stripCodeBlocks(text: string) {
+  return String(text ?? "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`[^`]*`/g, " ");
+}
+
+function stripExampleNoise(text: string) {
+  let s = String(text ?? "");
+
+  // Remove parenthetical examples containing e.g. / i.e.
+  s = s.replace(/\((?=[^)]*\b(?:e\.g\.|i\.e\.)\b)[^)]*\)/gi, " ");
+
+  // Remove short standalone e.g. / i.e. example tails up to punctuation/newline
+  s = s.replace(/\b(?:e\.g\.|i\.e\.)\b[^.\n;:!?]*/gi, " ");
+
+  // Remove HTML/tag examples so tags do not affect path/intent parsing
+  s = s.replace(/<[^>\n]+>/g, " ");
+
+  return s;
+}
+
+function sanitizeIntentParsingInput(text: string) {
+  return stripExampleNoise(stripCodeBlocks(text));
+}
+
+function isValidPathCandidate(value: string) {
+  const v = String(value ?? "").trim();
+
+  if (!v) return false;
+  if (/^(e\.g|i\.e)$/i.test(v)) return false;
+  if (v.length < 3) return false;
+  if (/^[<>()[\]{}"'`]+$/.test(v)) return false;
+
+  // Require a plausible extension
+  if (!/\.[A-Za-z0-9]{1,8}$/i.test(v)) return false;
+
+  // Block common prose fragments that happen to contain a dot
+  if (/^[A-Za-z]\.[A-Za-z]$/i.test(v)) return false;
+
+  return true;
+}
+
 export function extractMentionedPaths(text: string) {
+  const sanitized = sanitizeIntentParsingInput(text);
+
   return Array.from(
     new Set(
-      (text.match(/[\w./\-[\]]+\.[A-Za-z0-9]+/g) ?? []).map((s) => s.trim())
+      (sanitized.match(/\b(?:[\w-]+\/)*[\w.\-[\]]+\.[A-Za-z0-9]{1,8}\b/g) ?? [])
+        .map((s) => s.trim())
+        .filter(isValidPathCandidate)
     )
   );
+}
+
+export function isLayoutAlignmentIntent(text: string) {
+  return [
+    /\balign layouts?\b/i,
+    /\bmake .* (match|consistent)\b/i,
+    /\buse .* as (the )?same layout\b/i,
+    /\bstandardi[sz]e (the )?(layout|header|nav|footer)\b/i,
+    /\bmake .* look the same\b/i,
+    /\bmatch .* page\b/i,
+    /\bconsistent (layout|structure|header|footer|nav)\b/i,
+    /\bsame (layout|header|nav|footer)\b/i,
+  ].some((re) => re.test(text));
+}
+
+export function resolveCanonicalLayoutPath(paths: string[]) {
+  const normalized = paths.map((p) => String(p || "").trim());
+
+  if (normalized.includes("index.html")) return "index.html";
+
+  const htmls = normalized.filter((p) => /\.html?$/i.test(p));
+  return htmls[0] ?? null;
 }
 
 export function isVisualRefinementIntent(text: string) {
@@ -107,6 +175,7 @@ export function isRepositoryExecutionIntent(content: string) {
     /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(
       t
     ) || filterExecutionPaths(extractMentionedPaths(t)).length > 0
+    
 
   const explainOnlyLanguage =
     /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|what kind|which kind|which kinds|what are|how does|help me understand)\b/.test(
@@ -121,10 +190,35 @@ export function isRepositoryExecutionIntent(content: string) {
 }
 
 export function isCreateAndModifyIntent(text: string) {
-  return (
-    /create|add|implement/i.test(text || "") &&
-    /render|use|import|insert|mount/i.test(text || "")
+  const raw = String(text ?? "");
+  const sanitized = sanitizeIntentParsingInput(raw);
+  const paths = extractMentionedPaths(sanitized);
+
+  if (paths.length < 2) return false;
+
+  const hasCreateVerb =
+    /\b(create|add|implement|make)\b/i.test(sanitized);
+
+  const hasIntegrationVerb =
+    /\b(render|use|import|insert|mount)\b/i.test(sanitized);
+
+  if (!hasCreateVerb || !hasIntegrationVerb) return false;
+
+  // Require that at least one path looks like a likely "new/extracted component/module"
+  // and another path looks like an existing integration target.
+  const hasLikelyCreateTarget = paths.some((p) =>
+    /^(components|lib|utils|hooks|src\/components|src\/lib|src\/utils|src\/hooks)\//i.test(p) ||
+    /\.(tsx|ts|jsx|js|css|scss)$/i.test(p)
   );
+
+  const hasLikelyModifyTarget = paths.some((p) =>
+    /app\/page\.(tsx|ts|jsx|js)$/i.test(p) ||
+    /pages\/.+\.(tsx|ts|jsx|js)$/i.test(p) ||
+    /index\.html$/i.test(p) ||
+    /\.html?$/i.test(p)
+  );
+
+  return hasLikelyCreateTarget && hasLikelyModifyTarget;
 }
 
 export function resolveCreateAndModifyPaths(text: string) {
@@ -132,10 +226,16 @@ export function resolveCreateAndModifyPaths(text: string) {
   if (paths.length < 2) return null;
 
   const createPath =
-    paths.find((p) => !/app\/page\.tsx$/i.test(p)) ?? paths[0] ?? null;
+    paths.find((p) =>
+      /^(components|lib|utils|hooks|src\/components|src\/lib|src\/utils|src\/hooks)\//i.test(p)
+    ) ??
+    paths.find((p) => !/app\/page\.(tsx|ts|jsx|js)$/i.test(p) && !/\.html?$/i.test(p)) ??
+    paths[0] ??
+    null;
 
   const modifyPath =
-    paths.find((p) => /app\/page\.tsx$/i.test(p)) ??
+    paths.find((p) => /app\/page\.(tsx|ts|jsx|js)$/i.test(p)) ??
+    paths.find((p) => /\.html?$/i.test(p)) ??
     paths.find((p) => p !== createPath) ??
     null;
 

@@ -3,7 +3,7 @@ export default function CoreAnchor() {
     <div
       className="
         pointer-events-auto
-        h-12 w-12
+        h-12 w-10
         rounded-xl
         border border-white/15
         bg-black/50

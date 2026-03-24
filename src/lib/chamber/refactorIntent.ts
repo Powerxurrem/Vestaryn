@@ -32,18 +32,24 @@ export function resolveSourceAndTargetPaths(text: string) {
   let sourcePath: string | null = null;
 
   const rewriteMatch = text.match(
-    /rewrite\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i
-  );
-  if (rewriteMatch?.[1]) {
-    targetPath = rewriteMatch[1].trim();
+  /rewrite\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]{1,8})/i
+);
+if (rewriteMatch?.[1]) {
+  const candidate = rewriteMatch[1].trim();
+  if (paths.includes(candidate)) {
+    targetPath = candidate;
   }
+}
 
-  const fromMatch = text.match(
-    /from\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i
-  );
-  if (fromMatch?.[1]) {
-    sourcePath = fromMatch[1].trim();
+const fromMatch = text.match(
+  /from\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]{1,8})/i
+);
+if (fromMatch?.[1]) {
+  const candidate = fromMatch[1].trim();
+  if (paths.includes(candidate)) {
+    sourcePath = candidate;
   }
+}
 
   if (!sourcePath) {
     sourcePath =
@@ -54,10 +60,13 @@ export function resolveSourceAndTargetPaths(text: string) {
 
   if (!targetPath) {
     const intoMatch = text.match(
-      /into\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]+)/i
+      /into\s+([A-Za-z0-9_./\-[\]]+\.[A-Za-z0-9]{1,8})/i
     );
     if (intoMatch?.[1]) {
-      targetPath = intoMatch[1].trim();
+      const candidate = intoMatch[1].trim();
+      if (paths.includes(candidate)) {
+        targetPath = candidate;
+      }
     }
   }
 

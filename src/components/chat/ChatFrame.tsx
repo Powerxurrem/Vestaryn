@@ -2007,9 +2007,11 @@ if (shouldHideEmptyAssistantBubble) {
   lastPreverifyMsgId === msg.id && (
     <div
       className={`mt-3 rounded-lg border p-3 text-xs ${
-        lastPreverify.ok
-          ? "border-sky-400/25 bg-sky-500/10 text-sky-100/90"
-          : "border-amber-400/25 bg-amber-500/10 text-amber-100/90"
+        lastVerify.skipped
+          ? "border-amber-400/25 bg-amber-500/10 text-amber-100/90"
+          : lastVerify.ok
+          ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
+          : "border-rose-400/25 bg-rose-500/10 text-rose-100/90"
       }`}
     >
       <div className="flex items-center justify-between gap-3">
@@ -2018,10 +2020,10 @@ if (shouldHideEmptyAssistantBubble) {
             Pre-verify
           </div>
             <div className="mt-1 truncate">
-              {lastPreverify.ok ? "PASS" : "FAIL"} ·{" "}
-              {String(lastPreverify.command ?? "")}
-              {lastPreverify.baseline ? " · baseline repo issue" : ""}
-            </div>
+            {lastVerify.skipped
+              ? "SKIPPED · Static site preview only"
+              : `${lastVerify.ok ? "PASS" : "FAIL"} · ${String(lastVerify.command ?? "")}`}
+          </div>
         </div>
 
         <button
@@ -2037,14 +2039,26 @@ if (shouldHideEmptyAssistantBubble) {
       </div>
 
       <div className="mt-2 text-[11px] opacity-80 flex flex-wrap gap-x-3 gap-y-1">
-        <span>exit {Number(lastPreverify.exitCode ?? -1)}</span>
-        <span>{Number(lastPreverify.durationMs ?? 0)}ms</span>
-        {lastPreverify.failureKind ? (
-          <span>{String(lastPreverify.failureKind)}</span>
-        ) : null}
-        {lastPreverify.failedStep ? (
-          <span>({String(lastPreverify.failedStep)})</span>
-        ) : null}
+        {lastVerify.skipped ? (
+          <>
+            <span>{String(lastVerify.reason ?? "static site (no verify pipeline)")}</span>
+            {Array.isArray(lastVerify.fileIds) ? <span>{lastVerify.fileIds.length} file(s)</span> : null}
+          </>
+        ) : (
+          <>
+            <span>exit {Number(lastVerify.exitCode ?? -1)}</span>
+            <span>{Number(lastVerify.durationMs ?? 0)}ms</span>
+            {lastVerify.failureKind ? (
+              <span>{String(lastVerify.failureKind)}</span>
+            ) : null}
+            {lastVerify.failedStep ? (
+              <span>({String(lastVerify.failedStep)})</span>
+            ) : null}
+            {lastVerify.fingerprint ? (
+              <span>{String(lastVerify.fingerprint)}</span>
+            ) : null}
+          </>
+        )}
       </div>
 
           {!lastPreverify.ok ? (

@@ -12,6 +12,18 @@ function inferContentType(path: string) {
   return "text/plain; charset=utf-8";
 }
 
+function dirnameOf(path: string) {
+  const s = String(path ?? "").trim();
+  const idx = s.lastIndexOf("/");
+  return idx === -1 ? "" : s.slice(0, idx);
+}
+
+function joinWithinDir(dir: string, leaf: string) {
+  const cleanLeaf = String(leaf ?? "").trim().replace(/^\/+/, "");
+  if (!dir) return cleanLeaf;
+  return `${dir}/${cleanLeaf}`;
+}
+
 export async function GET(
   req: Request,
   context: { params: Promise<{ repoId: string }> }
@@ -20,6 +32,7 @@ export async function GET(
   const { searchParams } = new URL(req.url);
 
   const requestedPath = String(searchParams.get("path") || "").trim();
+  const basePath = String(searchParams.get("base") || "").trim();
 
   if (!requestedPath) {
     return new Response("Missing path", { status: 400 });
@@ -37,24 +50,34 @@ export async function GET(
     }
 
     const normalizedPath = requestedPath
-  .replace(/^\/+/, "")
-  .replace(/^\.\//, "");
+    .replace(/^\/+/, "")
+    .replace(/^\.\//, "");
 
-const candidatePaths: string[] = Array.from(
-  new Set(
-    [
-      requestedPath,
-      normalizedPath,
-      `/${normalizedPath}`,
-      !normalizedPath.startsWith("public/") ? `public/${normalizedPath}` : null,
-      !normalizedPath.startsWith("src/") ? `src/${normalizedPath}` : null,
-    ].filter((v): v is string => Boolean(v))
-  )
-);
+    const baseDir = basePath ? dirnameOf(basePath) : "";
+
+    const relativeCandidate =
+      baseDir && normalizedPath
+        ? joinWithinDir(baseDir, normalizedPath)
+        : null;
+
+    const candidatePaths: string[] = Array.from(
+      new Set(
+        [
+          requestedPath,
+          normalizedPath,
+          relativeCandidate,
+          `/${normalizedPath}`,
+          !normalizedPath.startsWith("public/") ? `public/${normalizedPath}` : null,
+          !normalizedPath.startsWith("src/") ? `src/${normalizedPath}` : null,
+        ].filter((v): v is string => Boolean(v))
+      )
+    );
 
 console.log("[preview_file_route] candidates", {
   repoId,
   requestedPath,
+  basePath,
+  baseDir,
   normalizedPath,
   candidatePaths,
 });
@@ -97,6 +120,7 @@ if (fileErr || rows.length === 0) {
 }
 
 const preferredRow =
+  rows.find((f) => relativeCandidate && f.path === relativeCandidate) ??
   rows.find((f) => f.path === requestedPath) ??
   rows.find((f) => f.path === normalizedPath) ??
   rows.find((f) => f.path === `/${normalizedPath}`) ??
