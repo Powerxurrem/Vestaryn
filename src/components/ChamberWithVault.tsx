@@ -103,9 +103,15 @@ useEffect(() => {
   const CHAMBER_WIDTH = 360; // px
   const [chamberMode, setChamberMode] = useState<ChamberMode | null>("vault");
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewHeight, setPreviewHeight] = useState(260);
-  const [previewRevision, setPreviewRevision] = useState(0);
-  const [previewPath, setPreviewPath] = useState<string | null>(null);
+const [previewHeight, setPreviewHeight] = useState(320);
+const [previewRevision, setPreviewRevision] = useState(0);
+const [previewPath, setPreviewPath] = useState<string | null>(null);
+
+const [isPreviewResizing, setIsPreviewResizing] = useState(false);
+const [blockPreviewInteraction, setBlockPreviewInteraction] = useState(false);
+
+const previewResizeActiveRef = useRef(false);
+const previewResizeRafRef = useRef<number | null>(null);
   const chamberOpen = chamberMode !== null;
   const [chatReloadToken, setChatReloadToken] = useState(0);
 
@@ -249,9 +255,6 @@ const markFileUpdated = useCallback(
     });
   }
 
-const [isPreviewResizing, setIsPreviewResizing] = useState(false);
-const previewResizeActiveRef = useRef(false);
-const previewResizeRafRef = useRef<number | null>(null);
 
 const onPreviewResizePointerDown = useCallback(
   (e: React.PointerEvent<HTMLDivElement>) => {
@@ -260,6 +263,7 @@ const onPreviewResizePointerDown = useCallback(
 
     previewResizeActiveRef.current = true;
     setIsPreviewResizing(true);
+    setBlockPreviewInteraction(true);
 
     document.body.style.cursor = "row-resize";
     document.body.style.userSelect = "none";
@@ -518,6 +522,19 @@ onPreviewRefresh={() => {
 
         <button
           type="button"
+          onClick={() =>
+            window.open(
+              `/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`,
+              "_blank"
+            )
+          }
+          className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
+        >
+          Open
+        </button>
+
+        <button
+          type="button"
           onClick={() => setPreviewOpen(false)}
           className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
         >
@@ -527,16 +544,48 @@ onPreviewRefresh={() => {
     </div>
 
     <div
-  className="min-h-0 flex-1 bg-black"
-  style={{ pointerEvents: "none" }}
->
+      className="relative min-h-0 flex-1 bg-black"
+      onPointerDownCapture={(e) => {
+        if (isPreviewResizing) return;
+
+        if (e.pointerType === "pen") {
+          e.preventDefault();
+          e.stopPropagation();
+          setBlockPreviewInteraction(true);
+          return;
+        }
+
+        setBlockPreviewInteraction(false);
+      }}
+      onPointerUpCapture={() => {
+        if (!isPreviewResizing) {
+          setBlockPreviewInteraction(false);
+        }
+      }}
+      onPointerCancelCapture={() => {
+        setBlockPreviewInteraction(false);
+      }}
+      onPointerLeave={() => {
+        if (!isPreviewResizing) {
+          setBlockPreviewInteraction(false);
+        }
+      }}
+    >
       <iframe
         key={`${previewPath}:${previewRevision}`}
         src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
         className="h-full w-full bg-white"
         sandbox="allow-scripts allow-same-origin"
         title="Repo preview"
+        style={{ pointerEvents: isPreviewResizing ? "none" : "auto" }}
       />
+
+      {(isPreviewResizing || blockPreviewInteraction) && (
+        <div
+          className="absolute inset-0 z-10"
+          style={{ touchAction: "none" }}
+        />
+      )}
     </div>
   </div>
 )}
