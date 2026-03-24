@@ -471,18 +471,38 @@ export function isInternalControlPrompt(content: string) {
     ]) || isInternalGoalExecutionPrompt(text)
   );
 }
-export function buildGoalExecutionInstruction(step: any, plan: any) {
+export function buildGoalExecutionInstruction(
+  step: any,
+  plan: any,
+  originalUserRequest?: string | null
+) {
   const stepFiles = Array.isArray(step?.files)
     ? step.files.map((x: any) => String(x)).filter(Boolean)
     : [];
 
+  const original = String(originalUserRequest ?? "").trim();
+  const goalTitle = String(plan?.title ?? "").trim();
+  const goalSummary = String(plan?.summary ?? "").trim();
+  const stepTitle = String(step?.title ?? "").trim();
+  const stepDescription = String(step?.description ?? "").trim();
+
   return [
-    `Goal: ${String(plan?.title ?? "").trim()}`,
-    `Current step: ${String(step?.title ?? "").trim()}`,
-    `Step description: ${String(step?.description ?? "").trim()}`,
+    original ? `Original user request: ${original}` : null,
+    `Goal: ${goalTitle}`,
+    goalSummary ? `Goal summary: ${goalSummary}` : null,
+    `Current step: ${stepTitle}`,
+    `Step description: ${stepDescription}`,
     `Relevant files: ${stepFiles.join(", ") || "none specified"}`,
-    `Execute this step now by making the required repository changes in the repo. If the repo is empty, bootstrap the minimal project structure needed for this step. Use tools when needed. Respond with the normal Vestaryn contract.`,
-  ].join("\n");
+    `Execution rules:`,
+    `- Preserve the original user request, theme, and visual/style intent.`,
+    `- Do not drift into a generic starter implementation if the original request is more specific.`,
+    `- Focus only on completing this step.`,
+    `- If the repo is empty, bootstrap only the minimal structure needed for this step.`,
+    `- Use tools when needed.`,
+    `- Respond with the normal Vestaryn contract.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function isGoalPlanningUserIntent(content: string) {

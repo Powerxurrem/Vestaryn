@@ -25,6 +25,7 @@
 .DS_Store
 *.pem
 package-lock.json
+pnpm README.md
 # debug
 npm-debug.log*
 yarn-debug.log*

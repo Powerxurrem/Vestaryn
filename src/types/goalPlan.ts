@@ -32,6 +32,7 @@ export type GoalPlan = {
   goalId: string;
   title: string;
   summary?: string;
+  sourceUserRequest?: string;
 
   status: GoalStatus;
 

@@ -284,7 +284,8 @@ export default function FileOverlay({
             </pre>
           ) : (
             <textarea
-              className="w-full max-h-[32vh] min-h-[200px] resize-none bg-black/40 border border-white/10 rounded-md p-3 text-xs text-white/90 font-mono outline-none focus:border-blue-400/40"
+              className="w-full min-w-0 max-h-[32vh] min-h-[200px] resize-none overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words bg-black/40 border border-white/10 rounded-md p-3 text-xs text-white/90 font-mono outline-none focus:border-blue-400/40"
+              style={{ overflowWrap: "anywhere" }}
               value={content}
               onChange={(e) => setContent(e.target.value)}
             />

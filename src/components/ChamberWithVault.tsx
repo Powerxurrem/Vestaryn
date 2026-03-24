@@ -26,6 +26,26 @@ export default function ChamberWithVault({
   repoId: string;
   repoName?: string | null;
 }) {
+  async function handleDownloadProject() {
+  try {
+    const res = await fetch(`/api/repo/${repoId}/export/project`, {
+      method: "GET",
+      headers: {
+        "x-vestaryn-tier": "early_access",
+      },
+    });
+
+    const data = await res.json().catch(() => null);
+
+    if (!res.ok || !data?.downloadUrl) {
+      throw new Error(data?.error || `Download failed (${res.status})`);
+    }
+
+    window.open(data.downloadUrl, "_blank", "noopener,noreferrer");
+  } catch (err) {
+    console.error("[handleDownloadProject] failed", err);
+  }
+}
   useEffect(() => {
     localStorage.setItem("vestaryn:lastRepoId", repoId);
   }, [repoId]);
@@ -111,6 +131,87 @@ const [isPreviewResizing, setIsPreviewResizing] = useState(false);
 const [blockPreviewInteraction, setBlockPreviewInteraction] = useState(false);
 
 const previewResizeActiveRef = useRef(false);
+
+const previewResizeStartYRef = useRef(0);
+const previewResizeStartHeightRef = useRef(0);
+
+const onPreviewResizePointerDown = useCallback(
+  (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    previewResizeActiveRef.current = true;
+    previewResizeStartYRef.current = e.clientY;
+    previewResizeStartHeightRef.current = previewHeight;
+
+    setIsPreviewResizing(true);
+    setBlockPreviewInteraction(true);
+
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    document.body.style.touchAction = "none";
+
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  },
+  [previewHeight]
+);
+
+useEffect(() => {
+  function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    if (!previewResizeActiveRef.current) return;
+
+    if (previewResizeRafRef.current != null) {
+      cancelAnimationFrame(previewResizeRafRef.current);
+    }
+
+    previewResizeRafRef.current = requestAnimationFrame(() => {
+      const minHeight = 120;
+      const maxHeight = Math.floor(window.innerHeight * 0.58);
+
+      const delta = previewResizeStartYRef.current - e.clientY;
+      if (Math.abs(delta) < 3) return;
+
+      const nextHeight = previewResizeStartHeightRef.current + delta;
+      setPreviewHeight(clamp(nextHeight, minHeight, maxHeight));
+    });
+  }
+
+  function stopPreviewResize() {
+    if (!previewResizeActiveRef.current) return;
+
+    previewResizeActiveRef.current = false;
+    setIsPreviewResizing(false);
+    setBlockPreviewInteraction(false);
+
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    document.body.style.touchAction = "";
+
+    if (previewResizeRafRef.current != null) {
+      cancelAnimationFrame(previewResizeRafRef.current);
+      previewResizeRafRef.current = null;
+    }
+  }
+
+  window.addEventListener("pointermove", onPointerMove, { passive: false });
+  window.addEventListener("pointerup", stopPreviewResize);
+  window.addEventListener("pointercancel", stopPreviewResize);
+
+  return () => {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", stopPreviewResize);
+    window.removeEventListener("pointercancel", stopPreviewResize);
+
+    if (previewResizeRafRef.current != null) {
+      cancelAnimationFrame(previewResizeRafRef.current);
+      previewResizeRafRef.current = null;
+    }
+  };
+}, []);
 const previewResizeRafRef = useRef<number | null>(null);
   const chamberOpen = chamberMode !== null;
   const [chatReloadToken, setChatReloadToken] = useState(0);
@@ -256,76 +357,6 @@ const markFileUpdated = useCallback(
   }
 
 
-const onPreviewResizePointerDown = useCallback(
-  (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    previewResizeActiveRef.current = true;
-    setIsPreviewResizing(true);
-    setBlockPreviewInteraction(true);
-
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    document.body.style.touchAction = "none";
-
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-  },
-  []
-);
-
-useEffect(() => {
-  function clamp(n: number, min: number, max: number) {
-    return Math.max(min, Math.min(max, n));
-  }
-
-  function onPointerMove(e: PointerEvent) {
-    if (!previewResizeActiveRef.current) return;
-
-    if (previewResizeRafRef.current != null) {
-      cancelAnimationFrame(previewResizeRafRef.current);
-    }
-
-    previewResizeRafRef.current = requestAnimationFrame(() => {
-      const minHeight = 180;
-      const maxHeight = Math.floor(window.innerHeight * 0.85);
-      const nextHeight = window.innerHeight - e.clientY;
-
-      setPreviewHeight(clamp(nextHeight, minHeight, maxHeight));
-    });
-  }
-
-  function stopResize() {
-    if (!previewResizeActiveRef.current) return;
-
-    previewResizeActiveRef.current = false;
-    setIsPreviewResizing(false);
-
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
-    document.body.style.touchAction = "";
-
-    if (previewResizeRafRef.current != null) {
-      cancelAnimationFrame(previewResizeRafRef.current);
-      previewResizeRafRef.current = null;
-    }
-  }
-
-  window.addEventListener("pointermove", onPointerMove, { passive: false });
-  window.addEventListener("pointerup", stopResize);
-  window.addEventListener("pointercancel", stopResize);
-
-  return () => {
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", stopResize);
-    window.removeEventListener("pointercancel", stopResize);
-
-    if (previewResizeRafRef.current != null) {
-      cancelAnimationFrame(previewResizeRafRef.current);
-      previewResizeRafRef.current = null;
-    }
-  };
-}, []);
 
 function onSplitterPointerDown(e: React.PointerEvent<HTMLDivElement>) {
   e.preventDefault();
@@ -450,12 +481,21 @@ onPreviewRefresh={() => {
             setPreviewOpen(true);
             setPreviewRevision((v) => v + 1);
           }}
-          className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white"
+          className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white mt-8  "
         >
           Preview
         </button>
       </div>
 
+<div className="absolute right-20 top-3 z-18 flex items-center gap-2">
+<button
+  type="button"
+  onClick={handleDownloadProject}
+  className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white mt-8 "
+>
+  Download Project
+</button>
+</div>
       <VaultEditorPane
         repoId={repoId}
         tabs={tabs}

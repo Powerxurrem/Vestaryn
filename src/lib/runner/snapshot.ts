@@ -383,8 +383,7 @@ function shouldIncludePath(p: string): boolean {
   const s = (p ?? "").replace(/\\/g, "/");
   if (!s || s.startsWith("/")) return false;
 
-  // ignore typical junk
-  const deny = [
+  const denyPrefixes = [
     ".git/",
     "node_modules/",
     "dist/",
@@ -392,10 +391,18 @@ function shouldIncludePath(p: string): boolean {
     ".next/",
     ".turbo/",
     ".vercel/",
-    ".DS_Store",
   ];
 
-  return !deny.some((x) => s.includes(x));
+  const denyExact = [
+    ".DS_Store",
+    "memory/chamber-state.md",
+    "memory/user-profile.md",
+  ];
+
+  if (denyPrefixes.some((x) => s.includes(x))) return false;
+  if (denyExact.includes(s)) return false;
+
+  return true;
 }
 
 function sanitizeRelPath(p: string): string {

@@ -64,21 +64,4 @@ export default function TierSwitcher() {
 
   if (!mounted || !show) return null;
 
-  return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="opacity-60">Tier</span>
-      <select
-        value={tier}
-        onChange={(e) => update(e.target.value as Tier)}
-        className="rounded-md border border-white/10 bg-white/5 px-2 py-1"
-        title="Dev-only membership tier simulator"
-      >
-        <option value="early_access">Early Access</option>
-        <option value="free">Free</option>
-        <option value="builder">Builder</option>
-        <option value="pro">Pro</option>
-        <option value="elite">Elite</option>
-      </select>
-    </div>
-  );
 }

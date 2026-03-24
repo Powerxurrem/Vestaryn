@@ -2,6 +2,77 @@
 import OpenAI from "openai";
 import { findLatestGoalPlan } from "@/lib/chamber/goalRuntime";
 
+function shouldIncludeStaticSiteJs(
+  originalRequest: string,
+  step: { title?: string; description?: string }
+) {
+  const t =
+    `${originalRequest || ""}\n${step?.title || ""}\n${step?.description || ""}`.toLowerCase();
+
+  return /\b(interactive|interactivity|animation|animated|carousel|slider|slideshow|filter|tabs|accordion|modal|popup|toggle|hamburger|form validation|submit|dynamic|script|javascript|menu toggle)\b/.test(
+    t
+  );
+}
+
+function looksLikeStaticSiteRequest(text: string) {
+  const t = String(text ?? "").toLowerCase();
+  return /\b(website|site|landing page|web page|static site)\b/.test(t);
+}
+
+function normalizeStaticSiteGoalStepFiles(
+  step: { title?: string; description?: string; files?: string[] },
+  originalRequest: string
+) {
+  const title = String(step?.title ?? "").toLowerCase();
+  const desc = String(step?.description ?? "").toLowerCase();
+  const text = `${title}\n${desc}`;
+
+  const wantsJs = shouldIncludeStaticSiteJs(originalRequest, step);
+
+  if (/setup files|setup|bootstrap|initial structure|create files/.test(text)) {
+    return wantsJs ? ["index.html", "styles.css", "app.js"] : ["index.html", "styles.css"];
+  }
+
+  if (/add content|content|gallery|about|contact|sections|copy/.test(text)) {
+    return wantsJs ? ["index.html", "app.js"] : ["index.html"];
+  }
+
+  if (/style|styling|theme|colors|layout|responsive/.test(text)) {
+    return ["styles.css"];
+  }
+
+  const raw = Array.isArray(step?.files)
+    ? step.files.map((x) => String(x).trim()).filter(Boolean)
+    : [];
+
+  if (!wantsJs) {
+    return raw.filter(
+      (f) => !/^(app|script|scripts)\.(js|ts|jsx|tsx)$/i.test(f)
+    );
+  }
+
+  return raw;
+}
+
+function normalizeGoalPlanForStaticSite(plan: any, originalRequest: string) {
+  if (!looksLikeStaticSiteRequest(originalRequest)) return plan;
+  if (!Array.isArray(plan?.steps)) return plan;
+
+  return {
+    ...plan,
+    estimatedTouchedFiles: Array.from(
+      new Set(
+        (Array.isArray(plan?.steps) ? plan.steps : [])
+          .flatMap((step: any) => normalizeStaticSiteGoalStepFiles(step, originalRequest))
+      )
+    ).slice(0, 4),
+    steps: plan.steps.map((step: any) => ({
+      ...step,
+      files: normalizeStaticSiteGoalStepFiles(step, originalRequest).slice(0, 2),
+    })),
+  };
+}
+
 export async function handlePlanningRequest(args: {
   openai: OpenAI;
   supabase: any;
@@ -80,6 +151,7 @@ Rules:
 - Use compact descriptions, not sentences with clauses.
 - Do not think step-by-step.
 - Emit JSON immediately.
+- For simple static websites, do not include JavaScript files unless the request clearly needs interactivity.
 `;
 
   try {
@@ -127,9 +199,11 @@ Rules:
     console.log("[goal_plan] raw", raw);
 
     let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e: any) {
+      try {
+        parsed = JSON.parse(raw);
+        parsed.sourceUserRequest = content;
+        parsed = normalizeGoalPlanForStaticSite(parsed, content);
+      } catch (e: any) {
       console.log("[goal_plan] invalid_json", {
         message: e?.message,
         raw,

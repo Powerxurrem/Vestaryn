@@ -296,16 +296,25 @@ ${opts.userRequest}
     const jsonText = extractJsonObject(raw);
     const parsed = JSON.parse(jsonText);
 
+    const fallback = fallbackWebsiteBootstrapBrief(opts.userRequest);
+
     return {
-      siteTitle: String(parsed?.siteTitle ?? "").trim() || "Landing Page",
-      heroTitle: String(parsed?.heroTitle ?? "").trim() || "Welcome",
-      heroSubtitle: String(parsed?.heroSubtitle ?? "").trim() || "A simple, polished website starter.",
-      ctaText: String(parsed?.ctaText ?? "").trim() || "Learn More",
-      secondaryCtaText: String(parsed?.secondaryCtaText ?? "").trim() || "",
-      styleMood: String(parsed?.styleMood ?? "").trim() || "clean modern",
-      paletteHint: String(parsed?.paletteHint ?? "").trim() || "",
-      includeAboutPage: Boolean(parsed?.includeAboutPage),
-      sections: Array.isArray(parsed?.sections) ? parsed.sections : [],
+      siteTitle: String(parsed?.siteTitle ?? "").trim() || fallback.siteTitle,
+      heroTitle: String(parsed?.heroTitle ?? "").trim() || fallback.heroTitle,
+      heroSubtitle: String(parsed?.heroSubtitle ?? "").trim() || fallback.heroSubtitle,
+      ctaText: String(parsed?.ctaText ?? "").trim() || fallback.ctaText,
+      secondaryCtaText:
+        String(parsed?.secondaryCtaText ?? "").trim() || fallback.secondaryCtaText || "",
+      styleMood: String(parsed?.styleMood ?? "").trim() || fallback.styleMood,
+      paletteHint: String(parsed?.paletteHint ?? "").trim() || fallback.paletteHint || "",
+      includeAboutPage:
+        typeof parsed?.includeAboutPage === "boolean"
+          ? parsed.includeAboutPage
+          : fallback.includeAboutPage,
+      sections:
+        Array.isArray(parsed?.sections) && parsed.sections.length > 0
+          ? parsed.sections
+          : fallback.sections,
     };
   } catch (e: any) {
     console.log("[website_brief parse failed]", {
@@ -318,14 +327,47 @@ ${opts.userRequest}
 }
 
 function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBrief {
-  const s = String(userRequest ?? "").toLowerCase();
+  const raw = String(userRequest ?? "").trim();
+  const s = raw.toLowerCase();
 
-  const isPokemon = s.includes("pokemon");
-  const isCoffee = s.includes("coffee");
-  const isPortfolio = s.includes("portfolio");
-  const includeAboutPage = isPortfolio || s.includes("about");
+  const includeAboutPage = s.includes("about");
 
-  if (isPokemon) {
+  const hasGold = /\bgold|golden|luxury|premium\b/.test(s);
+  const hasPictures = /\bpictures|images|photos|gallery\b/.test(s);
+
+  function titleCase(input: string) {
+    return input
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+  }
+
+  function extractTopic(text: string) {
+    const patterns = [
+      /website about ([a-z0-9\s-]+)/i,
+      /site about ([a-z0-9\s-]+)/i,
+      /page about ([a-z0-9\s-]+)/i,
+      /for ([a-z0-9\s-]+) website/i,
+      /about ([a-z0-9\s-]+)/i,
+    ];
+
+    for (const re of patterns) {
+      const m = text.match(re);
+      if (m?.[1]) {
+        return m[1]
+          .replace(/\b(with|and|that|which)\b.*$/i, "")
+          .trim();
+      }
+    }
+
+    return "";
+  }
+
+  const topic = extractTopic(raw);
+  const topicTitle = topic ? titleCase(topic) : "Landing Page";
+
+  if (s.includes("pokemon")) {
     return {
       siteTitle: "PokeHub",
       heroTitle: "Discover Your Favorite Pokémon",
@@ -351,7 +393,7 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
     };
   }
 
-  if (isCoffee) {
+  if (s.includes("coffee")) {
     return {
       siteTitle: "Morning Roast",
       heroTitle: "Coffee for Calm Mornings",
@@ -372,7 +414,7 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
     };
   }
 
-  if (isPortfolio) {
+  if (s.includes("portfolio")) {
     return {
       siteTitle: "Portfolio",
       heroTitle: "Designing Clear, Useful Experiences",
@@ -393,22 +435,48 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
     };
   }
 
+  // Request-aware generic fallback
+  const styleMood = hasGold ? "elegant warm" : "clean modern";
+  const paletteHint = hasGold ? "gold black cream" : "blue slate";
+  const heroTitle = topic ? `Welcome to ${topicTitle}` : "Welcome";
+  const heroSubtitle = topic
+    ? `A simple website focused on ${topic.toLowerCase()}${hasPictures ? " with a visual gallery feel" : ""}.`
+    : "A clean, simple website starter.";
+
+  const sectionTitle = topic
+    ? `About ${topicTitle}`
+    : "Getting Started";
+
+  const sectionBody = topic
+    ? `A focused introduction to ${topic.toLowerCase()} with clear sections and a simple layout.`
+    : "A reliable starter layout with room to customize.";
+
   return {
-    siteTitle: "Landing Page",
-    heroTitle: "Welcome",
-    heroSubtitle: "A clean, simple website starter.",
-    ctaText: "Learn More",
+    siteTitle: topicTitle || "Landing Page",
+    heroTitle,
+    heroSubtitle,
+    ctaText: hasPictures ? "View Gallery" : "Explore",
     secondaryCtaText: includeAboutPage ? "About" : "",
-    styleMood: "clean modern",
-    paletteHint: "blue slate",
+    styleMood,
+    paletteHint,
     includeAboutPage,
     sections: [
       {
-        type: "about",
-        title: "Built to Start Fast",
-        body: "A reliable starter layout with room to customize.",
+        type: "about" as const,
+        title: sectionTitle,
+        body: sectionBody,
       },
-    ],
+      ...(hasPictures
+        ? [
+            {
+              type: "features" as const,
+              title: "Gallery Highlights",
+              body: "A visual section for featured images and themed highlights.",
+              items: ["Featured image", "Highlighted section", "Visual showcase"],
+            },
+          ]
+        : []),
+    ].slice(0, 3),
   };
 }
 

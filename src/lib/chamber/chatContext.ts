@@ -34,9 +34,6 @@ export async function buildChatContext(args: {
 
   });
 
-  await ensureSacredMemoryFile(supabase, repoId, userId);
-  await ensureUserProfileFile(supabase, repoId, userId);
-
   let sacredText = "";
   try {
     const sacred = await vault_read_text(supabase, repoId, SACRED_PATH);

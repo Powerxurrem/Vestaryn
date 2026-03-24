@@ -1,75 +1,50 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-/**
- * @file ChatInput.tsx
- * @purpose Input control for ChatFrame (single-message submit).
- * @exports ChatInput
- *
- * @sections
- * - Props
- * - Local state
- * - Action: submit
- * - Render: input + send button
- *
- * @invariants
- * - Trims whitespace before sending.
- * - Clears local state before awaiting onSend (optimistic UI).
- * - Enter (without Shift) submits; Shift+Enter reserved for future multiline support.
- *
- * @touchpoints
- * - onSend(text) provided by ChatFrame
- *
- * @notes
- * - If streaming latency increases, consider disabling button while awaiting.
- * - Currently single-line input; can evolve to textarea without changing contract.
- */
-
-// ─────────────────────────────────────────────────────────────
-// Props
-// ─────────────────────────────────────────────────────────────
 type Props = {
   onSend: (text: string) => void | Promise<void>;
 };
 
-// ─────────────────────────────────────────────────────────────
-// Component
-// ─────────────────────────────────────────────────────────────
 export default function ChatInput({ onSend }: Props) {
-  // Local state
   const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // ─────────────────────────────────────────────────────────────
-  // Action: submit message
-  // ─────────────────────────────────────────────────────────────
   const submit = async () => {
     const text = value.trim();
     if (!text) return;
 
-    // Optimistic clear
     setValue("");
-
     await onSend(text);
   };
 
-  // ─────────────────────────────────────────────────────────────
-  // Render
-  // ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+
+    el.style.height = "0px";
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  }, [value]);
+
   return (
-    <div className="flex items-center gap-3 px-4 py-3 border border-blue-500/30">
-      <input
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-        placeholder="Type here..."
-        className="flex-1 bg-transparent text-blue-200/100 placeholder:text-blue-200/100 outline-none"
-      />
+    <div className="flex items-end gap-3 px-4 py-3 border border-blue-500/30">
+      <div className="min-w-0 flex-1">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          rows={1}
+          placeholder="Type here..."
+          className="w-full min-w-0 max-h-[220px] resize-none overflow-x-hidden overflow-y-auto rounded-md bg-transparent text-blue-200/100 placeholder:text-blue-200/100 outline-none whitespace-pre-wrap break-words"
+          style={{ overflowWrap: "anywhere" }}
+        />
+      </div>
 
       <button
         onClick={submit}

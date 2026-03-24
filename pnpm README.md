@@ -612,3 +612,267 @@ proposal validation
 apply execution
 verification
 status updates
+
+-------------
+Position / alignment
+Move something left or right inside a flex row
+justify-start
+justify-center
+justify-end
+justify-between
+gap-2
+gap-3
+gap-4
+ml-auto
+mr-auto
+
+Examples:
+
+<div className="flex items-center gap-2">
+
+puts items in a row.
+
+<div className="flex items-center gap-2 ml-auto">
+
+pushes that group to the right.
+
+<button className="ml-auto" />
+
+pushes just that button to the far right.
+
+Move something up or down inside a flex row
+items-start
+items-center
+items-end
+self-start
+self-center
+self-end
+
+Examples:
+
+<div className="flex items-start">
+
+aligns children to the top.
+
+<button className="self-end" />
+
+moves just that button to the bottom of the row.
+
+Spacing
+Padding = space inside the element
+px-2 px-3 px-4
+py-1 py-2 py-3
+p-2 p-3 p-4
+Margin = space outside the element
+mt-2 mb-2 ml-2 mr-2
+mx-2 my-2
+
+Examples:
+
+className="px-4 py-2"
+
+makes button bigger internally.
+
+className="mt-3"
+
+pushes it downward.
+
+Width / height
+w-full
+w-auto
+w-[120px]
+h-8
+h-10
+min-w-0
+min-h-0
+max-h-[220px]
+
+Examples:
+
+className="w-full"
+
+fills available width.
+
+className="w-[16px]"
+
+fixed width.
+
+min-w-0 is super important inside flex layouts when things overflow weirdly.
+
+Colors
+Text
+text-white
+text-white/70
+text-blue-200
+text-emerald-300
+text-red-300
+Background
+bg-black
+bg-black/40
+bg-white/5
+bg-blue-500/20
+bg-emerald-500/20
+Border
+border
+border-white/10
+border-blue-400/40
+border-red-400/40
+
+Examples:
+
+className="text-white/70 bg-black/40 border border-white/10"
+
+If you want a button to feel more active:
+
+className="bg-blue-500/20 border border-blue-400/40 text-white"
+Hover / active states
+hover:bg-white/5
+hover:text-white
+active:bg-white/10
+transition
+
+Example:
+
+className="hover:bg-white/5 hover:text-white active:bg-white/10 transition"
+
+That’s your standard “feels alive” combo.
+
+Rounded corners / borders / blur
+rounded-md
+rounded-lg
+rounded-xl
+border
+ring-1
+ring-white/10
+backdrop-blur
+backdrop-blur-md
+
+Examples:
+
+className="rounded-lg border border-white/10"
+className="rounded-xl bg-black/25 backdrop-blur-md ring-1 ring-white/10"
+
+That second one is very Vestaryn-looking.
+
+Absolute positioning for fine nudging
+
+If you want to place something more manually:
+
+relative
+absolute
+left-0
+right-0
+top-0
+bottom-0
+top-3
+right-3
+z-10
+z-20
+
+Example:
+
+<div className="relative">
+  <button className="absolute right-3 top-3 z-20" />
+</div>
+
+That pins the button to the top-right corner of its parent.
+
+Translate for tiny movement tweaks
+translate-x-1
+-translate-x-1/2
+translate-y-1
+-translate-y-1/2
+
+Useful for centering little bars/handles.
+
+Example:
+
+className="left-1/2 -translate-x-1/2"
+Show / hide / transparency
+hidden
+block
+inline-block
+opacity-50
+opacity-0
+hover:opacity-100
+
+Example:
+
+className="opacity-70 hover:opacity-100"
+Common button recipes
+Neutral button
+className="rounded-md border border-white/10 bg-black/40 px-3 py-2 text-white/70 hover:bg-white/5 hover:text-white transition"
+Active button
+className="rounded-md border border-blue-400/40 bg-blue-500/20 px-3 py-2 text-white"
+Danger-ish button
+className="rounded-md border border-red-400/40 bg-red-500/15 px-3 py-2 text-red-100 hover:bg-red-500/25 transition"
+Fast “what do I change?” cheat sheet
+
+If you want to...
+
+move button to the right
+
+Add:
+
+ml-auto
+move button group to the left
+
+Remove ml-auto, or use:
+
+justify-start
+center something horizontally
+
+Use:
+
+justify-center
+mx-auto
+text-center
+move something slightly downward
+
+Use:
+
+mt-1
+mt-2
+mt-3
+make button bigger
+
+Use:
+
+px-4 py-2
+make button smaller
+
+Use:
+
+px-2 py-1 text-xs
+make color stronger
+
+Change:
+
+text-white/70 -> text-white
+bg-white/5 -> bg-white/10
+border-white/10 -> border-white/20
+make element less wide in flex
+
+Use:
+
+w-auto shrink-0
+make text wrap instead of stretching layout
+
+Use:
+
+min-w-0 break-words
+Super practical Vestaryn patterns
+Right-aligned toolbar buttons
+<div className="flex items-center gap-2 ml-auto">
+Top-right floating controls
+<div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+Left sidebar + flexible content
+<div className="flex min-w-0">
+  <div className="w-[280px] shrink-0" />
+  <div className="min-w-0 flex-1" />
+</div>
+Header with left title and right actions
+<div className="flex items-center justify-between">
+  <div>Title</div>
+  <div className="flex items-center gap-2">Actions</div>
+</div>
