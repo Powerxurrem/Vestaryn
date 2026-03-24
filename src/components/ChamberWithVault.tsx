@@ -249,31 +249,79 @@ const markFileUpdated = useCallback(
     });
   }
 
-function onPreviewResizePointerDown(e: React.PointerEvent<HTMLDivElement>) {
-  e.preventDefault();
+const [isPreviewResizing, setIsPreviewResizing] = useState(false);
+const previewResizeActiveRef = useRef(false);
+const previewResizeRafRef = useRef<number | null>(null);
 
-  const startY = e.clientY;
-  const startHeight = previewHeight;
+const onPreviewResizePointerDown = useCallback(
+  (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
 
-  function onMove(ev: PointerEvent) {
-    const delta = startY - ev.clientY;
-    const next = Math.max(160, Math.min(window.innerHeight * 0.7, startHeight + delta));
-    setPreviewHeight(next);
+    previewResizeActiveRef.current = true;
+    setIsPreviewResizing(true);
+
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    document.body.style.touchAction = "none";
+
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  },
+  []
+);
+
+useEffect(() => {
+  function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
   }
 
-  function onUp() {
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onUp);
+  function onPointerMove(e: PointerEvent) {
+    if (!previewResizeActiveRef.current) return;
+
+    if (previewResizeRafRef.current != null) {
+      cancelAnimationFrame(previewResizeRafRef.current);
+    }
+
+    previewResizeRafRef.current = requestAnimationFrame(() => {
+      const minHeight = 180;
+      const maxHeight = Math.floor(window.innerHeight * 0.85);
+      const nextHeight = window.innerHeight - e.clientY;
+
+      setPreviewHeight(clamp(nextHeight, minHeight, maxHeight));
+    });
+  }
+
+  function stopResize() {
+    if (!previewResizeActiveRef.current) return;
+
+    previewResizeActiveRef.current = false;
+    setIsPreviewResizing(false);
+
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    document.body.style.touchAction = "";
+
+    if (previewResizeRafRef.current != null) {
+      cancelAnimationFrame(previewResizeRafRef.current);
+      previewResizeRafRef.current = null;
+    }
   }
 
-  document.body.style.cursor = "row-resize";
-  document.body.style.userSelect = "none";
+  window.addEventListener("pointermove", onPointerMove, { passive: false });
+  window.addEventListener("pointerup", stopResize);
+  window.addEventListener("pointercancel", stopResize);
 
-  window.addEventListener("pointermove", onMove);
-  window.addEventListener("pointerup", onUp);
-}
+  return () => {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", stopResize);
+    window.removeEventListener("pointercancel", stopResize);
+
+    if (previewResizeRafRef.current != null) {
+      cancelAnimationFrame(previewResizeRafRef.current);
+      previewResizeRafRef.current = null;
+    }
+  };
+}, []);
 
 function onSplitterPointerDown(e: React.PointerEvent<HTMLDivElement>) {
   e.preventDefault();
@@ -441,51 +489,57 @@ onPreviewRefresh={() => {
     </div>
 
     {previewOpen && previewPath && (
-      <div
-        className="shrink-0 border-t border-white/10 bg-black/55"
-        style={{ height: previewHeight }}
-      >
-        <div
-          onPointerDown={onPreviewResizePointerDown}
-          className="h-2 cursor-row-resize border-b border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
-          title="Drag to resize preview"
-        />
+  <div
+    className="shrink-0 overflow-hidden border-t border-white/10 bg-black/55 flex flex-col"
+    style={{ height: previewHeight }}
+  >
+    <div
+      onPointerDown={onPreviewResizePointerDown}
+      className="relative h-5 shrink-0 touch-none border-b border-white/10"
+      title="Drag to resize preview"
+    >
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/15" />
+      <div className="absolute inset-0 cursor-row-resize bg-transparent hover:bg-white/[0.03] active:bg-white/[0.06]" />
+    </div>
 
-        <div className="flex h-9 items-center justify-between border-b border-white/10 px-3 text-xs text-white/70">
-          <div className="truncate">
-            Preview · <span className="text-white/90">{previewPath}</span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPreviewRevision((v) => v + 1)}
-              className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
-            >
-              Refresh
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setPreviewOpen(false)}
-              className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-
-        <div className="h-[calc(100%-2.75rem)] bg-black">
-          <iframe
-            key={`${previewPath}:${previewRevision}`}
-            src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
-            className="h-full w-full bg-white"
-            sandbox="allow-scripts allow-same-origin"
-            title="Repo preview"
-          />
-        </div>
+    <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/10 px-3 text-xs text-white/70">
+      <div className="truncate">
+        Preview · <span className="text-white/90">{previewPath}</span>
       </div>
-    )}
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setPreviewRevision((v) => v + 1)}
+          className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
+        >
+          Refresh
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setPreviewOpen(false)}
+          className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+
+    <div
+      className="min-h-0 flex-1 bg-black"
+      style={{ pointerEvents: isPreviewResizing ? "none" : "auto" }}
+    >
+      <iframe
+        key={`${previewPath}:${previewRevision}`}
+        src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
+        className="h-full w-full bg-white"
+        sandbox="allow-scripts allow-same-origin"
+        title="Repo preview"
+      />
+    </div>
+  </div>
+)}
   </div>
 </div>
     </div>
