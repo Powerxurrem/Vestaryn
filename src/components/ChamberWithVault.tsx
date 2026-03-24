@@ -527,9 +527,9 @@ onPreviewRefresh={() => {
     </div>
 
     <div
-      className="min-h-0 flex-1 bg-black"
-      style={{ pointerEvents: isPreviewResizing ? "none" : "auto" }}
-    >
+  className="min-h-0 flex-1 bg-black"
+  style={{ pointerEvents: "none" }}
+>
       <iframe
         key={`${previewPath}:${previewRevision}`}
         src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
