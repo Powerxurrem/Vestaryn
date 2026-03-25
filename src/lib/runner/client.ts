@@ -46,6 +46,15 @@ export type RunnerResult = {
     exitCode?: number;
     reason?: string;
   }>;
+
+    artifactPreview?: {
+    type: "xlsx";
+    path: string;
+    sheets: Array<{
+      name: string;
+      rows: Array<Array<string | number | boolean | null>>;
+    }>;
+  };
 };
 
 export async function runnerRun(args: {
@@ -106,6 +115,7 @@ export async function runnerRun(args: {
     }
 
     const data: any = await res.json().catch(() => null);
+    console.log("[runner_client raw artifactPreview]", data?.artifactPreview);
     if (!data || typeof data !== "object") {
       return {
         ok: false,
@@ -135,6 +145,9 @@ export async function runnerRun(args: {
         ? data.failedStep
         : null;
 
+        console.log("[runner_client mapped artifactPreview]", {
+          raw: data?.artifactPreview,
+        });
     return {
       ok,
       exitCode,
@@ -174,6 +187,37 @@ export async function runnerRun(args: {
             reason: typeof step?.reason === "string" ? step.reason : undefined,
           }))
         : undefined,
+
+      artifactPreview:  
+    data.artifactPreview && typeof data.artifactPreview === "object"
+      ? {
+          type: data.artifactPreview.type,
+          path:
+            typeof data.artifactPreview.path === "string"
+              ? data.artifactPreview.path
+              : "",
+          sheets: Array.isArray(data.artifactPreview.sheets)
+            ? data.artifactPreview.sheets.map((sheet: any) => ({
+                name:
+                  typeof sheet?.name === "string" ? sheet.name : "Sheet",
+                rows: Array.isArray(sheet?.rows)
+                  ? sheet.rows.map((row: any) =>
+                      Array.isArray(row)
+                        ? row.map((cell: any) =>
+                            cell === null ||
+                            typeof cell === "string" ||
+                            typeof cell === "number" ||
+                            typeof cell === "boolean"
+                              ? cell
+                              : String(cell)
+                          )
+                        : []
+                    )
+                  : [],
+              }))
+          : [],
+        }
+      : undefined,
     };
   } finally {
     clearTimeout(t);

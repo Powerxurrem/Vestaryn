@@ -18,6 +18,40 @@ import {
 import { resolveVerifyCommand } from "@/lib/chamber/verifyRuntime";
 import { loadRepoInference } from "@/lib/chamber/repoContext";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
+import { isInternalGoalExecutionPrompt } from "@/lib/chamber/intent";
+
+function shouldAdvanceGoal(args: {
+  content: string;
+  appliedPaths: string[];
+  stepFiles?: string[];
+}) {
+  const { content, appliedPaths, stepFiles } = args;
+
+  if (!isInternalGoalExecutionPrompt(content)) {
+    return { ok: false, reason: "not_internal_execution" };
+  }
+
+  const normalize = (p: string) =>
+    p
+      .replace(/^src\//, "")
+      .replace(/^app\//, "")
+      .replace(/\\/g, "/")
+      .toLowerCase();
+
+  const normalizedApplied = appliedPaths.map(normalize);
+
+  const normalizedStepFiles = (stepFiles ?? appliedPaths).map(normalize);
+
+  const overlaps = normalizedApplied.some(p =>
+    normalizedStepFiles.includes(p)
+  );
+
+  if (!overlaps) {
+    return { ok: false, reason: "no_overlap" };
+  }
+
+  return { ok: true };
+}
 
 export async function handleApplySetCommand(args: {
   supabase: any;
@@ -46,6 +80,9 @@ export async function handleApplySetCommand(args: {
 
     const touchedFileIds: string[] = [];
     const appliedFiles: any[] = [];
+    const appliedPaths = appliedFiles
+      .map(f => f?.path)
+      .filter(Boolean);
 
     for (const proposal of proposals) {
       console.log("[apply_set item]", {
@@ -224,7 +261,7 @@ export async function handleApplySetCommand(args: {
         repoId,
         verifyCmd,
       });
-
+console.log("[applyRuntime finalVerifyPayload artifactPreview]", finalVerifyPayload?.artifactPreview);
       for (const fid of touchedFileIds) {
         await setRepoFileStatus(
           repoId,
@@ -408,6 +445,7 @@ export async function handleApplyCommand(args: {
     }
 
     const appliedPath = String(applied?.path ?? proposal?.path ?? "the file");
+    const appliedPaths = [appliedPath];
 
     const appliedAssistantText =
       `[Observation]\nWrite applied.\n\n` +
@@ -489,106 +527,111 @@ export async function handleApplyCommand(args: {
       }
     }
 
-    const didEngraving = proposal?.meta?.kind === "engraving";
-    const touchedFileIds = [String(proposal.fileId)].filter(Boolean);
+            const didEngraving = proposal?.meta?.kind === "engraving";
+            const touchedFileIds = [String(proposal.fileId)].filter(Boolean);
 
-    const applyPayload = {
-      ok: true,
-      repoId,
-      requestId,
-      changeId: typeof proposal?.meta?.changeId === "string" ? proposal.meta.changeId : null,
-      touchedFileIds,
-      appliedFile: {
-        fileId: applied?.fileId ?? String(proposal.fileId),
-        path: applied?.path ?? proposal?.path ?? null,
-        version: applied?.version ?? null,
-        mime: proposal?.mime ?? null,
-      },
-    };
+            const applyPayload = {
+              ok: true,
+              repoId,
+              requestId,
+              changeId: typeof proposal?.meta?.changeId === "string" ? proposal.meta.changeId : null,
+              touchedFileIds,
+              appliedFile: {
+                fileId: applied?.fileId ?? String(proposal.fileId),
+                path: applied?.path ?? proposal?.path ?? null,
+                version: applied?.version ?? null,
+                mime: proposal?.mime ?? null,
+              },
+            };
 
-    try {
-      await updateChamberStateDoc(supabase, repoId, {
-        activeEngineeringArea: "Applying staged repository changes.",
-        importantFiles: [String(applied?.path ?? proposal?.path ?? "repository file")].filter(Boolean),
-        recentChanges: [
-          `Applied staged change to ${String(applied?.path ?? proposal?.path ?? "a repository file")}.`,
-        ],
-        immediateNextSteps: [
-          "Auto verification is running.",
-          "Continue with the next engineering task.",
-        ],
-      });
-    } catch (e: any) {
-      console.log("[chamber-state] apply update skipped:", e?.message);
-    }
+            try {
+              await updateChamberStateDoc(supabase, repoId, {
+                activeEngineeringArea: "Applying staged repository changes.",
+                importantFiles: [String(applied?.path ?? proposal?.path ?? "repository file")].filter(Boolean),
+                recentChanges: [
+                  `Applied staged change to ${String(applied?.path ?? proposal?.path ?? "a repository file")}.`,
+                ],
+                immediateNextSteps: [
+                  "Auto verification is running.",
+                  "Continue with the next engineering task.",
+                ],
+              });
+            } catch (e: any) {
+              console.log("[chamber-state] apply update skipped:", e?.message);
+            }
 
-    const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles([
-      {
-        path: applied?.path ?? proposal?.path ?? null,
-        mime: proposal?.mime ?? null,
-      },
-    ]);
+            const suggestedPrompts = buildSuggestedPromptsFromAppliedFiles([
+              {
+                path: applied?.path ?? proposal?.path ?? null,
+                mime: proposal?.mime ?? null,
+              },
+            ]);
 
-    const { inference } = await loadRepoInference({
-      supabase,
-      repoId,
-    });
-
-    const verifyCmd =
-      inference?.projectType === "unknown" || inference?.projectType === "loose_files"
-        ? null
-        : resolveVerifyCommand(inference?.projectType ?? null);
-
-    console.log("[verify_cmd_resolved]", {
-      repoId,
-      projectType: inference?.projectType ?? null,
-      verifyCmd,
-      skipped: !verifyCmd,
-      reason: !verifyCmd ? "static site (no verify pipeline)" : null,
-    });
-
-    if (!verifyCmd) {
-      let goalAdvanceText = "";
-
-      await setRepoFileStatus(
-        repoId,
-        applied?.fileId ?? proposal.fileId,
-        "ok",
-        "verify_skipped",
-        "verify"
-      );
-
-      try {
-        const latestPlan = await findLatestGoalPlan(supabase, repoId);
-        const latestExecute = latestPlan
-          ? await findLatestGoalExecute(
+            const { inference } = await loadRepoInference({
               supabase,
               repoId,
-              String(latestPlan.goalId ?? "")
-            )
-          : null;
+            });
 
-        if (latestExecute?.goalId && latestExecute?.stepId) {
-          const advancement = await advanceGoalAfterStepSuccess({
-            supabase,
-            repoId,
-            userId,
-            goalId: String(latestExecute.goalId),
-            stepId: String(latestExecute.stepId),
-          });
+            const verifyCmd =
+              inference?.projectType === "unknown" || inference?.projectType === "loose_files"
+                ? null
+                : resolveVerifyCommand(inference?.projectType ?? null);
 
-          if (advancement?.content) {
-            goalAdvanceText = `\n${advancement.content}\n`;
+            console.log("[verify_cmd_resolved]", {
+              repoId,
+              projectType: inference?.projectType ?? null,
+              verifyCmd,
+              skipped: !verifyCmd,
+              reason: !verifyCmd ? "static site (no verify pipeline)" : null,
+            });
+
+            if (!verifyCmd) {
+              let goalAdvanceText = "";
+
+              await setRepoFileStatus(
+                repoId,
+                applied?.fileId ?? proposal.fileId,
+                "ok",
+                "verify_skipped",
+                "verify"
+              );
+
+              try {
+                const latestPlan = await findLatestGoalPlan(supabase, repoId);
+                const latestExecute = latestPlan
+                  ? await findLatestGoalExecute(
+                      supabase,
+                      repoId,
+                      String(latestPlan.goalId ?? "")
+                    )
+                  : null;
+
+                if (latestExecute?.goalId && latestExecute?.stepId) {
+                  const guard = shouldAdvanceGoal({
+          content,
+          appliedPaths,
+          stepFiles: latestExecute?.files,
+        });
+
+          if (!guard.ok) {
+            console.log("[goal_advance_after_apply skipped]", {
+              repoId,
+              reason: guard.reason,
+              appliedPaths,
+            });
+          } else {
+            const advancement = await advanceGoalAfterStepSuccess({
+              supabase,
+              repoId,
+              userId,
+              goalId: String(latestExecute.goalId),
+              stepId: String(latestExecute.stepId),
+            });
+
+            if (advancement?.content) {
+              goalAdvanceText = `\n${advancement.content}\n`;
+            }
           }
-
-          console.log("[goal_advance_after_apply]", {
-            repoId,
-            goalId: latestExecute.goalId,
-            stepId: latestExecute.stepId,
-            done: advancement?.done ?? null,
-            nextStepId: advancement?.nextStepId ?? null,
-            verifySkipped: true,
-          });
         }
       } catch (e: any) {
         console.log("[goal_advance_after_apply] failed:", e?.message);
@@ -638,7 +681,8 @@ export async function handleApplyCommand(args: {
         repoId,
         verifyCmd,
       });
-
+console.log("[applyRuntime finalVerifyPayload artifactPreview]", finalVerifyPayload?.artifactPreview);
+      
       await setRepoFileStatus(
         repoId,
         applied?.fileId ?? proposal.fileId,
@@ -717,23 +761,38 @@ export async function handleApplyCommand(args: {
         : null;
 
       if (latestExecute?.goalId && latestExecute?.stepId) {
-        const advancement = await advanceGoalAfterStepSuccess({
-          supabase,
-          repoId,
-          userId,
-          goalId: String(latestExecute.goalId),
-          stepId: String(latestExecute.stepId),
+        const guard = shouldAdvanceGoal({
+          content,
+          appliedPaths,
+          stepFiles: latestExecute?.files,
         });
 
-        if (advancement?.content) {
-          goalAdvanceText = `\n${advancement.content}\n`;
+        if (!guard.ok) {
+          console.log("[goal_advance_after_apply skipped]", {
+            repoId,
+            reason: guard.reason,
+            appliedPaths,
+          });
+        } else {
+          const advancement = await advanceGoalAfterStepSuccess({
+            supabase,
+            repoId,
+            userId,
+            goalId: String(latestExecute.goalId),
+            stepId: String(latestExecute.stepId),
+          });
+
+          if (advancement?.content) {
+            goalAdvanceText = `\n${advancement.content}\n`;
+          }
 
           console.log("[goal_advance_after_apply]", {
             repoId,
             goalId: latestExecute.goalId,
             stepId: latestExecute.stepId,
-            done: advancement.done,
-            nextStepId: advancement.nextStepId ?? null,
+            done: advancement?.done ?? null,
+            nextStepId: advancement?.nextStepId ?? null,
+            verifySkipped: true,
           });
         }
       }

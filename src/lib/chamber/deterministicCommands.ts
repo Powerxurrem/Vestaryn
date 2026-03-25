@@ -212,6 +212,25 @@ export async function tryHandleDeterministicCommands(args: {
 
     const goalId = String(plan.goalId ?? "");
     const latestStatus = await findLatestGoalStatus(supabase, repoId, goalId);
+    if (latestStatus?.status === "completed") {
+      return new Response(
+        "[Observation]\nGoal continuation stopped.\n\n[Assessment]\nThis goal is already completed.\n\n[Action]\nCreate a new goal plan if more work is needed.",
+        {
+          status: 400,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        }
+      );
+    }
+
+    if (latestStatus?.status === "cancelled") {
+      return new Response(
+        "[Observation]\nGoal continuation stopped.\n\n[Assessment]\nThis goal was cancelled.\n\n[Action]\nCreate or approve a new goal plan first.",
+        {
+          status: 400,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        }
+      );
+    }
     const steps = Array.isArray(plan.steps) ? plan.steps : [];
 
     const effectiveCurrentStepId =

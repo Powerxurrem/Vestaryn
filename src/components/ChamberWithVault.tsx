@@ -127,6 +127,21 @@ const [previewHeight, setPreviewHeight] = useState(320);
 const [previewRevision, setPreviewRevision] = useState(0);
 const [previewPath, setPreviewPath] = useState<string | null>(null);
 
+type ArtifactPreview = {
+  type: "xlsx";
+  path: string;
+  sheets: Array<{
+    name: string;
+    rows: Array<Array<string | number | boolean | null>>;
+  }>;
+  
+};
+
+type PreviewMode = "html" | "artifact_xlsx";
+
+const [previewMode, setPreviewMode] = useState<PreviewMode>("html");
+const [artifactPreview, setArtifactPreview] = useState<ArtifactPreview | null>(null);
+
 const [isPreviewResizing, setIsPreviewResizing] = useState(false);
 const [blockPreviewInteraction, setBlockPreviewInteraction] = useState(false);
 
@@ -423,6 +438,14 @@ useEffect(() => {
     openFileById={(id) => vaultRef.current?.openFileById(id)}
     onMessageStats={setMsgStats}
     onMaintenance={setMaintenance}
+    onArtifactPreview={(preview) => {
+  if (!preview) return;
+
+  setPreviewMode("artifact_xlsx");
+  setArtifactPreview(preview);
+  setPreviewPath(preview.path ?? "Workbook preview");
+  setPreviewOpen(true);
+}}
     
      
 onProposalPreview={(proposals) => {
@@ -477,6 +500,8 @@ onPreviewRefresh={() => {
 
             if (!preferredPath) return;
 
+            setPreviewMode("html");
+            setArtifactPreview(null);
             setPreviewPath(preferredPath);
             setPreviewOpen(true);
             setPreviewRevision((v) => v + 1);
@@ -532,7 +557,7 @@ onPreviewRefresh={() => {
       />
     </div>
 
-    {previewOpen && previewPath && (
+    {previewOpen && (previewPath || artifactPreview) && (
   <div
     className="shrink-0 overflow-hidden border-t border-white/10 bg-black/55 flex flex-col"
     style={{ height: previewHeight }}
@@ -554,21 +579,29 @@ onPreviewRefresh={() => {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => setPreviewRevision((v) => v + 1)}
-          className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
+          onClick={() => {
+            if (previewMode === "html") {
+              setPreviewRevision((v) => v + 1);
+            }
+          }}
+          disabled={previewMode !== "html"}
+          className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white disabled:opacity-40"
         >
           Refresh
         </button>
 
         <button
           type="button"
-          onClick={() =>
-            window.open(
-              `/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`,
-              "_blank"
-            )
-          }
-          className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white"
+          onClick={() => {
+            if (previewMode === "html" && previewPath) {
+              window.open(
+                `/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`,
+                "_blank"
+              );
+            }
+          }}
+          disabled={previewMode !== "html" || !previewPath}
+          className="rounded-md border border-white/10 px-2 py-1 hover:bg-white/5 hover:text-white disabled:opacity-40"
         >
           Open
         </button>
@@ -611,14 +644,81 @@ onPreviewRefresh={() => {
         }
       }}
     >
-      <iframe
-        key={`${previewPath}:${previewRevision}`}
-        src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
-        className="h-full w-full bg-white"
-        sandbox="allow-scripts allow-same-origin"
-        title="Repo preview"
-        style={{ pointerEvents: isPreviewResizing ? "none" : "auto" }}
-      />
+      {previewMode === "artifact_xlsx" && artifactPreview ? (
+        <div className="flex-1 overflow-auto p-3 text-sm text-white/80">
+          <div className="space-y-3">
+            {artifactPreview.sheets.slice(0, 5).map((sheet, idx) => (
+              <div
+                key={`${sheet.name}-${idx}`}
+                className="rounded-lg border border-white/10 bg-black/20 p-3"
+              >
+                <div className="mb-2 text-xs font-medium text-white/90">
+                  {sheet.name}
+                </div>
+
+                <div className="overflow-auto rounded-md border border-white/10">
+                  <table className="min-w-full border-collapse text-[11px] text-white/80">
+                    <tbody>
+                      {sheet.rows.slice(0, 20).map((row, rowIdx) => (
+                        <tr
+                          key={rowIdx}
+                          className={rowIdx === 0 ? "bg-white/5" : ""}
+                        >
+                          {row.map((cell, cellIdx) => (
+                            <td
+                              key={cellIdx}
+                              className="border-b border-r border-white/10 px-2 py-1 whitespace-nowrap"
+                            >
+                              {cell == null ? "" : String(cell)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : previewPath ? (
+        <div
+          className="relative min-h-0 flex-1 bg-black"
+          onPointerDownCapture={(e) => {
+            if (isPreviewResizing) return;
+            setBlockPreviewInteraction(true);
+          }}
+          onPointerUpCapture={() => {
+            if (!isPreviewResizing) {
+              setBlockPreviewInteraction(false);
+            }
+          }}
+          onPointerCancelCapture={() => {
+            setBlockPreviewInteraction(false);
+          }}
+          onPointerLeave={() => {
+            if (!isPreviewResizing) {
+              setBlockPreviewInteraction(false);
+            }
+          }}
+        >
+          <iframe
+            key={`${previewPath}:${previewRevision}`}
+            src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
+            className="h-full w-full bg-white"
+            sandbox="allow-scripts allow-same-origin"
+            title="Repo preview"
+            style={{ pointerEvents: isPreviewResizing ? "none" : "auto" }}
+          />
+
+          {(isPreviewResizing || blockPreviewInteraction) && (
+            <div
+              className="absolute inset-0 z-10"
+              style={{ touchAction: "none" }}
+            />
+          )}
+        </div>
+      ) : null}
 
       {(isPreviewResizing || blockPreviewInteraction) && (
         <div
@@ -647,6 +747,16 @@ function HiddenChamber(props: {
     { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
   >;
   maintenance?: any;
+  onArtifactPreview?: (
+  preview: {
+    type: "xlsx";
+    path: string;
+    sheets: Array<{
+      name: string;
+      rows: Array<Array<string | number | boolean | null>>;
+    }>;
+  } | null
+) => void;
   onResummarizeDone?: () => void;
 }) {
   const { repoId, mode, onToggleMode, fileStatusById, maintenance,onResummarizeDone, } = props;

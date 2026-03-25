@@ -110,7 +110,7 @@ export async function handleDirectVerifyCommand(args: {
       stdoutLen: (result.stdout ?? "").length,
       stderrLen: (result.stderr ?? "").length,
     });
-
+    
     const verifyPayload = {
       command: verifyCmd,
       ok: Boolean(result.ok),
@@ -124,7 +124,11 @@ export async function handleDirectVerifyCommand(args: {
       failedStep: result.failedStep ?? null,
       failureKind: result.failureKind ?? null,
       timedOut: Boolean(result.timedOut),
+      artifactPreview: result.artifactPreview ?? null,
     };
+
+      console.log("[verifyRuntime artifactPreview]", result.artifactPreview);
+      console.log("[verifyPayload artifactPreview]", verifyPayload.artifactPreview);
 
     try {
       await updateChamberStateDoc(supabase, repoId, {

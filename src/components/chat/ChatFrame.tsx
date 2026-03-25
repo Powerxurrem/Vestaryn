@@ -75,7 +75,16 @@ type Props = {
   onMessageStats?: (s: { total: number; user: number; assistant: number; system: number }) => void;
   onMaintenance?: (payload: any) => void;
   onPreviewRefresh?: () => void;
-
+  onArtifactPreview?: (
+    preview: {
+      type: "xlsx";
+      path: string;
+      sheets: Array<{
+        name: string;
+        rows: Array<Array<string | number | boolean | null>>;
+      }>;
+    } | null
+  ) => void;
   onProposalPreview?: (
     proposals:
       | Record<
@@ -90,6 +99,7 @@ type Props = {
         >
       | null
   ) => void;
+  
 };
 
 type ChamberState = "stable" | "analyzing" | "deep" | "archive";
@@ -105,6 +115,7 @@ export default function ChatFrame({
   onMaintenance,
   onProposalPreview,
   onPreviewRefresh,
+  onArtifactPreview,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1410,12 +1421,22 @@ for (let i = 0; i < lines.length; i++) {
     try {
       const verify = JSON.parse(jsonStr);
 
+    console.log("[artifactPreview trigger]", verify?.artifactPreview);
+
       patchActiveTurn(turnAnchorId, (prev) => ({
         ...prev,
         verify,
       }));
       setLastVerify(verify);
       setLastVerifyMsgId(turnAnchorId);
+            if (
+        verify?.ok &&
+        verify?.artifactPreview?.type === "xlsx" &&
+        Array.isArray(verify?.artifactPreview?.sheets) &&
+        verify.artifactPreview.sheets.length > 0
+      ) {
+        onArtifactPreview?.(verify.artifactPreview);
+      }
 
       console.log("[verify marker parsed in turn]", {
         assistantId,
@@ -2051,7 +2072,9 @@ if (shouldHideEmptyAssistantBubble) {
   lastPreverifyMsgId === msg.id && (
     <div
       className={`mt-3 rounded-lg border p-3 text-xs ${
-        lastVerify.skipped
+        !lastVerify
+          ? "border-white/10 bg-white/5 text-white/70"
+          : lastVerify.skipped
           ? "border-amber-400/25 bg-amber-500/10 text-amber-100/90"
           : lastVerify.ok
           ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
@@ -2063,8 +2086,10 @@ if (shouldHideEmptyAssistantBubble) {
           <div className="text-[10px] uppercase tracking-widest opacity-80">
             Pre-verify
           </div>
-            <div className="mt-1 truncate">
-            {lastVerify.skipped
+          <div className="mt-1 truncate">
+            {!lastVerify
+              ? "No verification result yet"
+              : lastVerify.skipped
               ? "SKIPPED · Static site preview only"
               : `${lastVerify.ok ? "PASS" : "FAIL"} · ${String(lastVerify.command ?? "")}`}
           </div>
@@ -2083,10 +2108,14 @@ if (shouldHideEmptyAssistantBubble) {
       </div>
 
       <div className="mt-2 text-[11px] opacity-80 flex flex-wrap gap-x-3 gap-y-1">
-        {lastVerify.skipped ? (
+        {!lastVerify ? (
+          <span>No verification details yet.</span>
+        ) : lastVerify.skipped ? (
           <>
             <span>{String(lastVerify.reason ?? "static site (no verify pipeline)")}</span>
-            {Array.isArray(lastVerify.fileIds) ? <span>{lastVerify.fileIds.length} file(s)</span> : null}
+            {Array.isArray(lastVerify.fileIds) ? (
+              <span>{lastVerify.fileIds.length} file(s)</span>
+            ) : null}
           </>
         ) : (
           <>

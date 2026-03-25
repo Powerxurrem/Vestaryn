@@ -7,7 +7,7 @@ import { normalizeForNoopCheck, sha256,confirmPhrase,confirmCreatePhrase,inferTe
 } from "@/lib/vault/utils";
 import {extractMentionedPaths,extractSingleMentionedPath,isRepositoryExecutionIntent,
 isCreateAndModifyIntent,isExtractToModuleIntent,looksLikeStandaloneModule,isHighLevelBuildRequest, isInternalGoalExecutionPrompt,normText,isInternalControlPrompt, isGoalPlanningUserIntent,isNewGoalPlanIntent,  isLayoutAlignmentIntent,
-  resolveCanonicalLayoutPath,
+  resolveCanonicalLayoutPath,isCreateLinkedPageIntent
 } from "@/lib/chamber/intent";
 import {isSourceTargetTransferIntent,resolveSourceAndTargetPaths,
 isImportRefactorIntent,isSplitFileIntent,extractSplitTargets,deriveDefaultSplitTargets,extractRequestedSplitCount,  isSplitReadAllowed} from "@/lib/chamber/refactorIntent";
@@ -1461,11 +1461,43 @@ if (
     continue;
   }
 }
+if (
+  toolName === "vault_list_files" &&
+  !requestHandledByOrchestration &&
+  isCreateLinkedPageIntent(content) &&
+  out &&
+  typeof out === "object" &&
+  !("error" in out)
+) {
+  const files = Array.isArray((out as any).files) ? (out as any).files : [];
+  const existingPaths = new Set(files.map((f: any) => String(f.path)));
+
+  const createPathMatch = content.match(/\b([a-zA-Z0-9_-]+\.html)\b/i);
+  const createPath = createPathMatch ? createPathMatch[1] : "portfolio.html";
+  const modifyPath = "index.html";
+
+  if (
+    createPath &&
+    !existingPaths.has(createPath) &&
+    existingPaths.has(modifyPath)
+  ) {
+    // 1. read canonical file
+    // 2. generate new sibling page
+    // 3. propose create
+    // 4. rewrite index.html to add nav/button link
+    // 5. propose write
+    // 6. push both into pendingProposalOuts
+    // 7. requestHandledByOrchestration = true
+    // 8. continue
+  }
+}
 
 // ─────────────────────────────────────────────
 // Deterministic generic repo edit orchestration
 // Example: "make it look more premium"
 // ─────────────────────────────────────────────
+
+
 const requestedPaths = extractMentionedPaths(content);
 const hasExplicitMultiPathRequest = requestedPaths.length >= 2;
 const isEditExecutionMode =
