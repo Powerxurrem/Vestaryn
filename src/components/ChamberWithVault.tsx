@@ -537,7 +537,7 @@ onPreviewRefresh={() => {
             setPreviewOpen(true);
             setPreviewRevision((v) => v + 1);
           }}
-          className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white mt-8  "
+          className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white mt-14  "
         >
           Preview
         </button>
@@ -547,7 +547,7 @@ onPreviewRefresh={() => {
 <button
   type="button"
   onClick={handleDownloadProject}
-  className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white mt-8 "
+  className="rounded-md border border-white/10 bg-black/50 px-2 py-1 text-xs text-white/70 backdrop-blur hover:bg-white/5 hover:text-white mt-14 "
 >
   Download Project
 </button>
@@ -648,7 +648,7 @@ onPreviewRefresh={() => {
     </div>
 
     <div
-      className="relative min-h-0 flex-1 bg-black"
+      className="relative min-h-0 flex-1 bg-black overflow-auto"
       onPointerDownCapture={(e) => {
         if (isPreviewResizing) return;
 
@@ -727,9 +727,9 @@ onPreviewRefresh={() => {
             ))}
           </div>
         </div>
-      ) : previewPath ? (
+            ) : previewPath ? (
         <div
-          className="relative min-h-0 flex-1 bg-black"
+          className="relative h-full min-h-0 flex-1 overflow-hidden bg-black"
           onPointerDownCapture={(e) => {
             if (isPreviewResizing) return;
             setBlockPreviewInteraction(true);
@@ -751,18 +751,18 @@ onPreviewRefresh={() => {
           <iframe
             key={`${previewPath}:${previewRevision}`}
             src={`/repo/${repoId}/preview?path=${encodeURIComponent(previewPath)}&rev=${previewRevision}`}
-            className="h-full w-full bg-white"
+            className="block h-full w-full border-0 bg-white"
             sandbox="allow-scripts allow-same-origin"
             title="Repo preview"
             style={{ pointerEvents: isPreviewResizing ? "none" : "auto" }}
           />
 
           {previewMode === "html" && (isPreviewResizing || blockPreviewInteraction) && (
-  <div
-    className="absolute inset-0 z-10"
-    style={{ touchAction: "none" }}
-  />
-)}
+            <div
+              className="absolute inset-0 z-10"
+              style={{ touchAction: "none" }}
+            />
+          )}
         </div>
       ) : null}
 

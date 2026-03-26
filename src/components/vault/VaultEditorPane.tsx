@@ -597,7 +597,7 @@ return (
             {canEdit && (
               mode === "read" ? (
                 <button
-                  className="px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
+                  className="px-2 py-2 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
                   onClick={() => setMode("edit")}
                   disabled={!activeTab || loading}
                 >

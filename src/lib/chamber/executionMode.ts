@@ -12,6 +12,56 @@ import {
   isLayoutAlignmentIntent
 } from "@/lib/chamber/intent";
 
+function isScriptBootstrapIntent(text: string) {
+  return hasAny(text, [
+    /\bcreate\b.*\bpython script\b/i,
+    /\bmake\b.*\bpython script\b/i,
+    /\bgenerate\b.*\bpython script\b/i,
+    /\bcreate\b.*\bscript\b.*\bthat\b.*\bcreates?\b.*\.xlsx\b/i,
+    /\bpython script\b.*\bcreates?\b.*\.xlsx\b/i,
+    /\bscript\b.*\bcreates?\b.*\.xlsx\b/i,
+  ]);
+}
+
+function isFollowupReferenceIntent(text: string) {
+  return hasAny(text, [
+    /\b(it|this|that|them|those|both|all of them)\b/i,
+    /\bthe story\b/i,
+    /\bthe file\b/i,
+    /\bthe files\b/i,
+    /\bthat one\b/i,
+    /\bthose two\b/i,
+  ]);
+}
+
+function isImplicitFollowupEditIntent(text: string) {
+  const hasEditVerb = hasAny(text, [
+    /\bchange\b/i,
+    /\bupdate\b/i,
+    /\bedit\b/i,
+    /\bmodify\b/i,
+    /\brewrite\b/i,
+    /\bshorten\b/i,
+    /\brefine\b/i,
+    /\bfix\b/i,
+    /\bmake\b/i,
+    /\breplace\b/i,
+  ]);
+
+  const hasReferentialTarget = isFollowupReferenceIntent(text);
+
+  const explainOnly = hasAny(text, [
+    /\bexplain\b/i,
+    /\bjust explain\b/i,
+    /\bwhat happened\b/i,
+    /\bwhy\b/i,
+    /\bhow\b/i,
+    /\bwhat is\b/i,
+  ]);
+
+  return hasEditVerb && hasReferentialTarget && !explainOnly;
+}
+
 function isVisualRefinementIntent(text: string) {
   return hasAny(text, [
     /\bmake (it|this) look\b/i,
@@ -137,7 +187,7 @@ export function filterExecutionPaths(paths: string[]) {
     if (/^[a-z]\.[a-z0-9_-]+$/i.test(s)) return false; // n.container-like junk
 
     // keep only known file-like extensions
-    return /\.(html|css|scss|sass|js|jsx|ts|tsx|mjs|cjs|json|md|sql|yml|yaml|txt)$/i.test(s);
+    return /\.(html|css|scss|sass|js|jsx|ts|tsx|mjs|cjs|json|md|sql|yml|yaml|txt|py|bas|vba|csv|xml)$/i.test(s);
   });
 }
 
@@ -172,6 +222,20 @@ if (isLayoutAlignmentIntent(text)) {
     mentionedPaths,
     hasExplicitPaths,
   };
+}
+
+function isImplicitFollowupEditIntent(text: string) {
+  return hasAny(text, [
+    /\bchange\b/i,
+    /\badjust\b/i,
+    /\bupdate\b/i,
+    /\bmodify\b/i,
+    /\bmake\b/i,
+    /\bcontinue\b/i,
+    /\byes continue\b/i,
+    /\buse the default\b/i,
+    /\btake the default\b/i,
+  ]);
 }
 
   if (hasExplicitPaths && (hasEditVerb || hasVisualEditSignal)) {
@@ -230,18 +294,19 @@ if (isInternalGoalExecutionPrompt(text)) {
     };
   }
 
-  if (
-  (
-    isWebsiteBootstrapIntent(text) ||
-    isHighLevelBuildRequest(text) ||
-    isBootstrapProjectIntent(text)
-  ) &&
-  !hasExplicitPaths
-) {
+    if (
+    (
+      isWebsiteBootstrapIntent(text) ||
+      isHighLevelBuildRequest(text) ||
+      isBootstrapProjectIntent(text) ||
+      isScriptBootstrapIntent(text)
+    ) &&
+    !hasExplicitPaths
+  ) {
     return {
       mode: "bootstrap",
       confidence: "high",
-      reasons: ["high_level_build_request_without_specific_paths"],
+      reasons: ["high_level_bootstrap_request_without_specific_paths"],
       mentionedPaths,
       hasExplicitPaths,
     };
@@ -350,6 +415,16 @@ console.log("[cross_file_alignment_check]", {
     };
   }
 
+  if (isImplicitFollowupEditIntent(text)) {
+    return {
+      mode: "incremental",
+      confidence: "medium",
+      reasons: ["implicit_followup_edit_intent"],
+      mentionedPaths,
+      hasExplicitPaths,
+    };
+  }
+
   if (hasExplicitPaths) {
     return {
       mode: "explain",
@@ -373,6 +448,22 @@ if (isVisualRefinementIntent(text)) {
   };
 }
   
+console.log("[path_extract_debug]", {
+  content,
+  rawMentionedPaths,
+  filteredMentionedPaths: mentionedPaths,
+});
+
+if (isImplicitFollowupEditIntent(text)) {
+  return {
+    mode: "incremental",
+    confidence: "medium",
+    reasons: ["implicit_followup_edit_intent"],
+    mentionedPaths,
+    hasExplicitPaths,
+  };
+}
+
   return {
     mode: "advisory",
     confidence: "medium",

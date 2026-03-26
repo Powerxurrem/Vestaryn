@@ -5,7 +5,7 @@ import {
   isCreateAndModifyIntent,
   resolveCreateAndModifyPaths,
   isExtractToModuleIntent,
-  resolveExtractToModulePaths,
+  resolveExtractToModulePaths,extractSingleMentionedPath
 } from "@/lib/chamber/intent";
 import { isImportRefactorIntent } from "@/lib/chamber/refactorIntent";
 import {
@@ -70,6 +70,91 @@ export async function tryHandlePreStreamRepoOps(args: {
         resolved: createModifyPaths,
         text: content,
       });
+
+        const singlePath = extractSingleMentionedPath(content);
+
+  const shouldDirectRewrite =
+    !!singlePath &&
+    !isCreateAndModifyIntent(content) &&
+    !isExtractToModuleIntent(content) &&
+    !isImportRefactorIntent(content);
+
+  if (shouldDirectRewrite) {
+    try {
+      const fileId = await resolveFileIdByPathOrName(supabase, repoId, singlePath);
+
+      if (fileId) {
+        const file = await vault_read_text(supabase, repoId, fileId);
+
+        const rewritten = await generateRewrittenFileContent({
+          openai,
+          model: runtimePolicy.model,
+          userRequest: content,
+          path: file.path,
+          mime: file.mime,
+          currentContent: file.content,
+        });
+
+        if (
+          normalizeForNoopCheck(String(file.content ?? "")) ===
+          normalizeForNoopCheck(String(rewritten ?? ""))
+        ) {
+          return new Response(
+            "[Observation]\nI inspected the target file.\n\n" +
+              "[Assessment]\nNo repository change was needed.\n\n" +
+              "[Action]\nContinue with the next change.",
+            {
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }
+          );
+        }
+
+        const proposal = await vault_propose_write(
+          supabase,
+          repoId,
+          file.id,
+          rewritten
+        );
+
+        const proposals = [proposal].filter(Boolean);
+
+        const visible =
+          "[Observation]\nRequired repository changes were staged.\n\n" +
+          "[Assessment]\nThe requested file operation completed and a proposal was prepared.\n\n" +
+          "[Action]\nA staged change is ready. Confirm to apply.";
+
+        if (shouldPreVerifyProposalSet(proposals)) {
+          const result = await finalizeProposalSet({
+            openai,
+            model: runtimePolicy.model,
+            repoId,
+            userRequest: content,
+            baselineVerifyPayload: baselineVerify.verifyPayload,
+            verifyCmd: inferredVerifyCmd,
+            proposals,
+          });
+
+          const finalProposalSet = result.repaired ? result.finalProposals : proposals;
+
+          return new Response(
+            `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
+            {
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }
+          );
+        }
+
+        return new Response(
+          `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`,
+          {
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          }
+        );
+      }
+    } catch (e: any) {
+      console.log("[single_file_rewrite_short_circuit] failed:", e?.message);
+    }
+  }
       return null;
     }
 

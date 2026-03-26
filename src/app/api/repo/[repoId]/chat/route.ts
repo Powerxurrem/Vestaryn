@@ -92,6 +92,19 @@ async function generateNewFileContentSafe(args: {
   }
 }
 
+function isImplicitPythonScriptBootstrapRequest(text: string) {
+  const t = String(text ?? "").toLowerCase();
+  return (
+    /\bpython script\b/.test(t) &&
+    (
+      /\.xlsx\b/.test(t) ||
+      /\bexcel\b/.test(t) ||
+      /\bworkbook\b/.test(t) ||
+      /\bspreadsheet\b/.test(t)
+    )
+  );
+}
+
 function dirnameOf(path: string) {
   const s = String(path ?? "").trim();
   const idx = s.lastIndexOf("/");
@@ -894,17 +907,86 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
     const toolArgsByCallId = new Map<string, string>();
     const toolNameByCallId = new Map<string, string>();
     
+   if (
+  !requestHandledByOrchestration &&
+  inference?.needsBootstrap &&
+  !executionMode.hasExplicitPaths &&
+  isImplicitPythonScriptBootstrapRequest(content)
+) {
+  const createPath = "scripts/generate_xlsx.py";
+  const mime = inferTextMimeFromPath(createPath);
+
+  const newContent = await generateNewFileContent({
+    openai,
+    model: runtimePolicy.model,
+    userRequest:
+      `${content}\n\n` +
+      `Create the file at ${createPath}.\n` +
+      `Return a complete runnable Python script.\n` +
+      `Use openpyxl.\n`,
+    path: createPath,
+    mime,
+    maxOutputTokens: 5200,
+  });
+
+  const proposal = await runTool(
+    supabase,
+    repoId,
+    user.id,
+    content,
+    "vault_propose_create",
+    {
+      path: createPath,
+      content: newContent,
+      mime,
+    }
+  );
+
+  if (proposal && typeof proposal === "object" && !("error" in proposal)) {
+    const visible =
+      "[Observation]\nRequired repository changes were staged.\n\n" +
+      "[Assessment]\nA new Python workbook generator was prepared for the empty repository.\n\n" +
+      "[Action]\nA staged change is ready. Confirm to apply.";
+
+    return new Response(
+      `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`,
+      {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+}
 
     try {
-      let resp = await openai.responses.create({
-        model: runtimePolicy.model,
-        instructions: resolvedInstructions,
-        input,
-        tools: TOOLS,
-        tool_choice: "auto",
-        stream: true,
-        max_output_tokens: runtimePolicy.output.maxOutputTokens,
-      });
+      let resp: any;
+        console.log("[responses.create pass1 start]", {
+          model: runtimePolicy.model,
+          inputLen: JSON.stringify(input).length,
+          instructionsLen: resolvedInstructions.length,
+        });
+        try {
+          resp = await openai.responses.create({
+            model: runtimePolicy.model,
+            instructions: resolvedInstructions,
+            input,
+            tools: TOOLS,
+            tool_choice: "auto",
+            stream: true,
+            max_output_tokens: runtimePolicy.output.maxOutputTokens,
+          });
+        } catch (err: any) {
+          console.log("[responses.create pass1 failed]", {
+            message: err?.message,
+            name: err?.name,
+            status: err?.status,
+            code: err?.code,
+            type: err?.type,
+            param: err?.param,
+            cause: err?.cause,
+          });
+          throw err;
+        }
 
       const pass1 = await streamResponse({
         respStream: resp,
@@ -1712,7 +1794,8 @@ if (isSharedNavbarRequest) {
       path.endsWith(".ts") ||
       path.endsWith(".tsx") ||
       path.endsWith(".js") ||
-      path.endsWith(".jsx")
+      path.endsWith(".jsx") ||
+      path.endsWith(".txt")
     );
   });
 
@@ -1868,20 +1951,21 @@ if (
   continue;
 }
 
-    const editableTargets = [...htmlTargetPaths, ...cssTargetPaths].filter((p) => {
-      const lower = String(p ?? "").toLowerCase();
-      if (!lower) return false;
-      if (lower.startsWith("memory/")) return false;
+    const editableTargets = resolvedRequestedPaths.filter((p) => {
+  const lower = String(p ?? "").toLowerCase();
+  if (!lower) return false;
+  if (lower.startsWith("memory/")) return false;
 
-      return (
-        lower.endsWith(".html") ||
-        lower.endsWith(".css") ||
-        lower.endsWith(".ts") ||
-        lower.endsWith(".tsx") ||
-        lower.endsWith(".js") ||
-        lower.endsWith(".jsx")
-      );
-    });
+  return (
+    lower.endsWith(".html") ||
+    lower.endsWith(".css") ||
+    lower.endsWith(".ts") ||
+    lower.endsWith(".tsx") ||
+    lower.endsWith(".js") ||
+    lower.endsWith(".jsx") ||
+    lower.endsWith(".txt")
+  );
+});
 
     if (editableTargets.length >= 1) {
   const resolvedTargets: any[] = [];

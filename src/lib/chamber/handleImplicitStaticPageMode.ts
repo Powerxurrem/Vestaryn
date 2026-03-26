@@ -18,26 +18,80 @@ type Deps = {
   inferredVerifyCmd: any;
 };
 
-function resolveImplicitStaticPageRequest(content: string) {
-  const t = String(content ?? "").toLowerCase();
+function labelFromPath(path: string) {
+  const base = String(path ?? "")
+    .split("/")
+    .pop()
+    ?.replace(/\.html?$/i, "") ?? "page";
 
-  if (/\babout page\b/.test(t)) {
-    return {
-      createPath: "about.html",
-      shouldLinkFromIndex: /\b(connect|connecting|link|navigation|nav)\b/.test(t),
-    };
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+function injectNavLinksIntoHtml(
+  current: string,
+  links: Array<{ href: string; label: string }>
+) {
+  let out = String(current ?? "");
+
+  if (!out.trim()) return out;
+
+  const navMatch = out.match(/<nav\b[^>]*>[\s\S]*?<\/nav>/i);
+  if (navMatch) {
+    let nav = navMatch[0];
+
+    for (const link of links) {
+      const hrefRe = new RegExp(`href=["']${link.href.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']`, "i");
+      if (hrefRe.test(nav)) continue;
+
+      nav = nav.replace(
+        /<\/nav>/i,
+        `  <a href="${link.href}">${link.label}</a>\n</nav>`
+      );
+    }
+
+    return out.replace(navMatch[0], nav);
   }
 
-  if (/\bcontact page\b/.test(t)) {
-    return {
-      createPath: "contact.html",
-      shouldLinkFromIndex: /\b(connect|connecting|link|navigation|nav)\b/.test(t),
-    };
+  const headerMatch = out.match(/<header\b[^>]*>/i);
+  if (headerMatch) {
+    const navHtml =
+      `\n  <nav>\n` +
+      `    <a href="index.html">Home</a>\n` +
+      links.map((l) => `    <a href="${l.href}">${l.label}</a>\n`).join("") +
+      `  </nav>\n`;
+
+    return out.replace(headerMatch[0], `${headerMatch[0]}${navHtml}`);
+  }
+
+  const bodyMatch = out.match(/<body\b[^>]*>/i);
+  if (bodyMatch) {
+    const navHtml =
+      `\n  <nav>\n` +
+      `    <a href="index.html">Home</a>\n` +
+      links.map((l) => `    <a href="${l.href}">${l.label}</a>\n`).join("") +
+      `  </nav>\n`;
+
+    return out.replace(bodyMatch[0], `${bodyMatch[0]}${navHtml}`);
+  }
+
+  return out;
+}
+
+function resolveImplicitStaticPageRequest(content: string) {
+  const t = String(content ?? "").toLowerCase();
+  const createPaths: string[] = [];
+
+  if (/\babout page\b/.test(t) || /\babout\b/.test(t)) {
+    createPaths.push("about.html");
+  }
+
+  if (/\bcontact page\b/.test(t) || /\bcontact\b/.test(t)) {
+    createPaths.push("contact.html");
   }
 
   return {
-    createPath: null,
-    shouldLinkFromIndex: false,
+    createPaths,
+    shouldLinkFromIndex: /\b(connect|connecting|link|navigation|nav)\b/.test(t),
   };
 }
 
@@ -57,10 +111,11 @@ export async function handleImplicitStaticPageMode({
     return null;
   }
 
-  const { createPath, shouldLinkFromIndex } =
+   const { createPaths, shouldLinkFromIndex } =
     resolveImplicitStaticPageRequest(content);
 
-  if (!createPath) return null;
+  if (createPaths.length === 0) return null;
+    const createPath = createPaths[0];
 
   console.log("[implicit_static_page] detected", {
     repoId,
@@ -96,71 +151,85 @@ export async function handleImplicitStaticPageMode({
 
   const proposals: any[] = [];
 
+   // ─────────────────────────────────────────────
+  // 1. Create new page(s)
   // ─────────────────────────────────────────────
-  // 1. Create new page
-  // ─────────────────────────────────────────────
-  let newPageContent: string;
+  for (const createPath of createPaths) {
+    const existingId = await resolveFileIdByPathOrName(
+      supabase,
+      repoId,
+      createPath
+    );
 
-const baseArgs = {
-  openai,
-  model,
-  path: createPath,
-  mime: inferTextMimeFromPath(createPath),
-};
-
-try {
-  newPageContent = await generateNewFileContent({
-    ...baseArgs,
-    userRequest: content,
-  });
-} catch (e: any) {
-  const msg = String(e?.message ?? "");
-
-  if (!/appears truncated/i.test(msg)) {
-    throw e;
-  }
-
-  console.log("[implicit_static_page] retrying after truncation", {
-    repoId,
-    createPath,
-    reason: msg,
-  });
-
-  newPageContent = await generateNewFileContent({
-    ...baseArgs,
-    userRequest:
-      `${content}\n\nRetry rules:\n` +
-      `- Return the FULL complete file.\n` +
-      `- Do not truncate.\n` +
-      `- Keep the page compact but complete.\n` +
-      `- Match the existing website style and navigation.\n` +
-      `- Return only valid file contents.\n`,
-    maxOutputTokens: 5200,
-  });
-}
-
-  const createProposal = await runTool(
-    supabase,
-    repoId,
-    userId,
-    content,
-    "vault_propose_create",
-    {
-      path: createPath,
-      content: newPageContent,
-      mime: inferTextMimeFromPath(createPath),
+    if (existingId) {
+      console.log("[implicit_static_page] skipped existing page", {
+        createPath,
+      });
+      continue;
     }
-  );
 
-  if (
-    createProposal &&
-    typeof createProposal === "object" &&
-    !("error" in createProposal)
-  ) {
-    proposals.push(createProposal);
+    let newPageContent: string;
+
+    const baseArgs = {
+      openai,
+      model,
+      path: createPath,
+      mime: inferTextMimeFromPath(createPath),
+    };
+
+    try {
+      newPageContent = await generateNewFileContent({
+        ...baseArgs,
+        userRequest: content,
+      });
+    } catch (e: any) {
+      const msg = String(e?.message ?? "");
+
+      if (!/appears truncated/i.test(msg)) {
+        throw e;
+      }
+
+      console.log("[implicit_static_page] retrying after truncation", {
+        repoId,
+        createPath,
+        reason: msg,
+      });
+
+      newPageContent = await generateNewFileContent({
+        ...baseArgs,
+        userRequest:
+          `${content}\n\nRetry rules:\n` +
+          `- Return the FULL complete file.\n` +
+          `- Do not truncate.\n` +
+          `- Keep the page compact but complete.\n` +
+          `- Match the existing website style and navigation.\n` +
+          `- Return only valid file contents.\n`,
+        maxOutputTokens: 5200,
+      });
+    }
+
+    const createProposal = await runTool(
+      supabase,
+      repoId,
+      userId,
+      content,
+      "vault_propose_create",
+      {
+        path: createPath,
+        content: newPageContent,
+        mime: inferTextMimeFromPath(createPath),
+      }
+    );
+
+    if (
+      createProposal &&
+      typeof createProposal === "object" &&
+      !("error" in createProposal)
+    ) {
+      proposals.push(createProposal);
+    }
   }
-
-  // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────
   // 2. Optionally link from index.html
   // ─────────────────────────────────────────────
   if (shouldLinkFromIndex) {
@@ -178,35 +247,39 @@ try {
       typeof indexFile === "object" &&
       !("error" in indexFile)
     ) {
-      const rewritten = await generateRewrittenFileContent({
-        openai,
-        model,
-        userRequest:
-          content +
-          "\n\nEnsure the new page is linked from navigation if appropriate.",
-        path: "index.html",
-        mime: "text/html",
-        currentContent: String((indexFile as any).content ?? ""),
-      });
+           const links = createPaths.map((p) => ({
+        href: p.split("/").pop() ?? p,
+        label: labelFromPath(p),
+      }));
 
-      const writeProposal = await runTool(
-        supabase,
-        repoId,
-        userId,
-        content,
-        "vault_propose_write",
-        {
-          fileId: (indexFile as any).id,
-          content: rewritten,
-        }
+      const rewritten = injectNavLinksIntoHtml(
+        String((indexFile as any).content ?? ""),
+        links
       );
 
       if (
-        writeProposal &&
-        typeof writeProposal === "object" &&
-        !("error" in writeProposal)
+        rewritten.trim() &&
+        rewritten !== String((indexFile as any).content ?? "")
       ) {
-        proposals.push(writeProposal);
+        const writeProposal = await runTool(
+          supabase,
+          repoId,
+          userId,
+          content,
+          "vault_propose_write",
+          {
+            fileId: (indexFile as any).id,
+            content: rewritten,
+          }
+        );
+
+        if (
+          writeProposal &&
+          typeof writeProposal === "object" &&
+          !("error" in writeProposal)
+        ) {
+          proposals.push(writeProposal);
+        }
       }
     }
   }
@@ -265,7 +338,7 @@ try {
       ? `\n__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
       : "") +
     "[Observation]\nA new page was prepared for the website.\n\n" +
-    `[Assessment]\nVestaryn created ${createPath}` +
+    `[Assessment]\nVestaryn created ${createPaths.join(", ")}` +
     (shouldLinkFromIndex ? " and connected it to the main page." : ".") +
     "\n\n" +
     "[Action]\nA staged change is ready. Confirm to apply.";
