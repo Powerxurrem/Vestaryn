@@ -257,6 +257,7 @@ export async function runAutoVerifyForRepo(opts: {
         failedStep: null,
         failureKind: null,
         timedOut: false,
+        
       },
       result: null,
     };
@@ -344,6 +345,12 @@ export async function runAutoVerifyForRepo(opts: {
     timeoutMs: 120_000,
   });
 
+console.log("[runAutoVerifyForRepo result artifactPreview]", {
+  hasArtifactPreview: !!result?.artifactPreview,
+  artifactType: result?.artifactPreview?.type ?? null,
+  sheetCount: result?.artifactPreview?.sheets?.length ?? 0,
+});
+
   await supabaseAdmin.from("repo_runs").insert({
     repo_id: repoId,
     change_id: null,
@@ -359,6 +366,11 @@ export async function runAutoVerifyForRepo(opts: {
     failure_kind: result.failureKind ?? null,
     timed_out: Boolean(result.timedOut),
   });
+
+console.log("[runAutoVerifyForRepo verifyPayload artifactPreview]", {
+  hasArtifactPreview: !!(result?.artifactPreview),
+  artifactPreview: result?.artifactPreview ?? null,
+});
 
   return {
     skipped: false,
@@ -378,6 +390,7 @@ export async function runAutoVerifyForRepo(opts: {
       failedStep: result.failedStep ?? null,
       failureKind: result.failureKind ?? null,
       timedOut: Boolean(result.timedOut),
+      artifactPreview: result.artifactPreview ?? null,
     },
     result,
   };

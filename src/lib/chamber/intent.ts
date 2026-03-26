@@ -182,7 +182,7 @@ export function isNamedFileExecutionRequest(text: string) {
   if (!hasPath) return false;
 
   return (
-    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|review|inspect|turn|transform|convert|evolve|polish|refine|premium|modernize|restyle/i.test(
+    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|change|adjust|review|inspect|turn|transform|convert|evolve|polish|refine|premium|modernize|restyle/i.test(
       text || ""
     ) || isVisualRefinementIntent(text || "")
   );
@@ -213,18 +213,25 @@ export function isRepositoryExecutionIntent(content: string) {
   // Explicit planning requests should not be treated as execution
   if (isGoalPlanningUserIntent(t)) return false;
 
+  const mentionedPaths = extractMentionedPaths(t);
+
+  const hasSingleFileEditLanguage =
+    mentionedPaths.length >= 1 &&
+    /\b(fix|edit|update|change|modify|adjust|rewrite|refactor|make)\b/.test(t);
+
+  if (hasSingleFileEditLanguage) return true;
+
   if (isVisualRefinementIntent(t)) return true;
 
   const hasStrongActionVerb =
-    /\b(create|build|implement|fix|update|edit|modify|change|rewrite|refactor|replace|delete|remove|add|repair|resolve)\b/.test(
+    /\b(create|build|implement|fix|update|edit|modify|change|rewrite|refactor|replace|delete|remove|add|repair|resolve|adjust)\b/.test(
       t
     );
 
   const hasExecutionTarget =
     /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(
       t
-    ) || filterExecutionPaths(extractMentionedPaths(t)).length > 0
-    
+    ) || mentionedPaths.length > 0;
 
   const explainOnlyLanguage =
     /\b(explain|just explain|dont need anything created|don't need anything created|no need to create|not create yet|just tell me|what kind|which kind|which kinds|what are|how does|help me understand)\b/.test(

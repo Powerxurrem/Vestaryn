@@ -466,7 +466,7 @@ if (
       path: currentPath,
       mime: currentMime,
       currentContent,
-      maxOutputTokens: 5000,
+      maxOutputTokens: 10000,
     });
   }
 

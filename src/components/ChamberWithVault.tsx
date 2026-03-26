@@ -133,8 +133,14 @@ type ArtifactPreview = {
   sheets: Array<{
     name: string;
     rows: Array<Array<string | number | boolean | null>>;
+    validations?: Array<{
+      range: string;
+      type: string | null;
+      formula1: string | null;
+      formula2: string | null;
+      allowBlank: boolean;
+    }>;
   }>;
-  
 };
 
 type PreviewMode = "html" | "artifact_xlsx";
@@ -420,6 +426,31 @@ useEffect(() => {
   }
 }, [previewPath, tabs, resolvePreferredPreviewPath]);
 
+function formatValidation(v: {
+  range: string;
+  type: string | null;
+  formula1: string | null;
+  formula2: string | null;
+  allowBlank: boolean;
+}) {
+  if (v.type === "list") {
+    if (typeof v.formula1 === "string" && v.formula1.startsWith('"')) {
+      return `dropdown: ${v.formula1.replace(/"/g, "")}`;
+    }
+    if (v.formula1) {
+      return `dropdown (${v.formula1})`;
+    }
+    return "dropdown";
+  }
+
+  if (v.type === "whole") return "whole number";
+  if (v.type === "decimal") return "decimal";
+  if (v.type === "date") return "date";
+  if (v.type === "textLength") return "text length";
+
+  return v.type || "validation";
+}
+
  return (
   <VestarynFrame
     repoId={repoId}
@@ -645,7 +676,7 @@ onPreviewRefresh={() => {
       }}
     >
       {previewMode === "artifact_xlsx" && artifactPreview ? (
-        <div className="flex-1 overflow-auto p-3 text-sm text-white/80">
+        <div className="h-full overflow-y-auto overflow-x-auto p-3 text-sm text-white/80">
           <div className="space-y-3">
             {artifactPreview.sheets.slice(0, 5).map((sheet, idx) => (
               <div
@@ -677,6 +708,21 @@ onPreviewRefresh={() => {
                     </tbody>
                   </table>
                 </div>
+
+                {Array.isArray(sheet.validations) && sheet.validations.length > 0 && (
+                  <div className="mt-3 text-xs text-white/70">
+                    <div className="mb-1 font-medium text-white/85">Validations</div>
+                    <div className="space-y-1">
+                      {sheet.validations.map((v, i) => (
+                        <div key={i}>
+                          <span className="text-white/50">{v.range}</span>
+                          {" → "}
+                          <span>{formatValidation(v)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -711,12 +757,12 @@ onPreviewRefresh={() => {
             style={{ pointerEvents: isPreviewResizing ? "none" : "auto" }}
           />
 
-          {(isPreviewResizing || blockPreviewInteraction) && (
-            <div
-              className="absolute inset-0 z-10"
-              style={{ touchAction: "none" }}
-            />
-          )}
+          {previewMode === "html" && (isPreviewResizing || blockPreviewInteraction) && (
+  <div
+    className="absolute inset-0 z-10"
+    style={{ touchAction: "none" }}
+  />
+)}
         </div>
       ) : null}
 
@@ -854,6 +900,8 @@ return (
           const rawCount = Number(maintenance.count ?? 0) || 0;
           const count = cap > 0 ? Math.min(rawCount, cap) : rawCount;
 
+
+          
           return (
             <>
               Chamber memory nearing limit

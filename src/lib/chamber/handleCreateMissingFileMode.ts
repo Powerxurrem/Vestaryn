@@ -134,7 +134,7 @@ async function generateNewFileContentWithRetry(args: {
       userRequest: `${userRequest}\n\n${retryRules}`,
       path,
       mime,
-      maxOutputTokens: Math.max(maxOutputTokens ?? 3200, 5200),
+      maxOutputTokens: Math.max(maxOutputTokens ?? 10000, 10000),
     });
   }
 }
@@ -241,7 +241,7 @@ export async function handleCreateMissingFileMode({
           userRequest: canonicalUserRequest,
           path: requestedPath,
           mime,
-          maxOutputTokens: 5200,
+          maxOutputTokens: 10000,
         });
 
         const localAssetRefs = extractLocalAssetRefs(newContent);

@@ -292,7 +292,7 @@ export async function tryHandleBootstrap(args: {
                 }),
                 path: targetPath,
                 mime,
-                maxOutputTokens: 5200,
+                maxOutputTokens: 10000,
               });
             }
 

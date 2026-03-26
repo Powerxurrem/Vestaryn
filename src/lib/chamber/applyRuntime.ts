@@ -261,7 +261,23 @@ export async function handleApplySetCommand(args: {
         repoId,
         verifyCmd,
       });
-console.log("[applyRuntime finalVerifyPayload artifactPreview]", finalVerifyPayload?.artifactPreview);
+
+console.log("[applyRuntime verifyPayload source]", {
+  hasArtifactPreview: Boolean(verifyPayload?.artifactPreview),
+  artifactType:
+    verifyPayload &&
+    verifyPayload.artifactPreview &&
+    verifyPayload.artifactPreview.type
+      ? verifyPayload.artifactPreview.type
+      : null,
+  sheetCount:
+    verifyPayload &&
+    verifyPayload.artifactPreview &&
+    Array.isArray(verifyPayload.artifactPreview.sheets)
+      ? verifyPayload.artifactPreview.sheets.length
+      : 0,
+});
+      
       for (const fid of touchedFileIds) {
         await setRepoFileStatus(
           repoId,
@@ -276,7 +292,11 @@ console.log("[applyRuntime finalVerifyPayload artifactPreview]", finalVerifyPayl
         base: verifyPayload,
         fileIds: touchedFileIds,
       });
-
+console.log("[applyRuntime finalVerifyPayload built]", {
+  hasArtifactPreview: !!finalVerifyPayload?.artifactPreview,
+  artifactType: finalVerifyPayload?.artifactPreview?.type ?? null,
+  sheetCount: finalVerifyPayload?.artifactPreview?.sheets?.length ?? 0,
+});
       console.log("[apply_set verify result]", {
         ok: finalVerifyPayload?.ok,
         failedStep: finalVerifyPayload?.failedStep ?? null,
@@ -681,7 +701,22 @@ export async function handleApplyCommand(args: {
         repoId,
         verifyCmd,
       });
-console.log("[applyRuntime finalVerifyPayload artifactPreview]", finalVerifyPayload?.artifactPreview);
+
+      console.log("[applyRuntime verifyPayload source]", {
+  hasArtifactPreview: Boolean(verifyPayload?.artifactPreview),
+  artifactType:
+    verifyPayload &&
+    verifyPayload.artifactPreview &&
+    verifyPayload.artifactPreview.type
+      ? verifyPayload.artifactPreview.type
+      : null,
+  sheetCount:
+    verifyPayload &&
+    verifyPayload.artifactPreview &&
+    Array.isArray(verifyPayload.artifactPreview.sheets)
+      ? verifyPayload.artifactPreview.sheets.length
+      : 0,
+});
       
       await setRepoFileStatus(
         repoId,

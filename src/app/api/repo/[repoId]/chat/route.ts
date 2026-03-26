@@ -51,6 +51,7 @@ import { handleImplicitStaticPageMode } from "@/lib/chamber/handleImplicitStatic
  */
 
 export const runtime = "nodejs";
+export const maxDuration = 180;
 
 // ─────────────────────────────────────────────────────────────
 // OpenAI client
@@ -86,7 +87,7 @@ async function generateNewFileContentSafe(args: {
         `- Do not truncate.\n` +
         `- Keep the file compact and complete.\n` +
         `- Return only valid file contents.\n`,
-      maxOutputTokens: Math.max(args.maxOutputTokens ?? 3200, 5200),
+      maxOutputTokens: Math.max(args.maxOutputTokens ?? 10000, 10000),
     });
   }
 }
@@ -755,7 +756,7 @@ if (isRepoWideStyleRequest) {
           path: String((existingFile as any).path ?? cssFile.path),
           mime: String((existingFile as any).mime ?? "text/css"),
           currentContent: String((existingFile as any).content ?? ""),
-          maxOutputTokens: 5200,
+          maxOutputTokens: 10000,
         });
       }
 
@@ -1597,7 +1598,7 @@ if (isSharedNavbarRequest) {
           `- Keep it simple and compatible with the current HTML files.\n`,
         path: navbarPath,
         mime: "text/html",
-        maxOutputTokens: 3200,
+        maxOutputTokens: 10000,
       });
 
       const navbarProposal = await runTool(
@@ -1654,7 +1655,7 @@ if (isSharedNavbarRequest) {
           path: String((existingFile as any).path ?? path),
           mime: String((existingFile as any).mime ?? "text/html"),
           currentContent: String((existingFile as any).content ?? ""),
-          maxOutputTokens: 5200,
+          maxOutputTokens: 10000,
         });
 
         const proposal = await runTool(
@@ -1827,7 +1828,7 @@ if (
         path: resolvedPath,
         mime: resolvedMime,
         currentContent,
-        maxOutputTokens: 5200,
+        maxOutputTokens: 10000,
       });
     }
 
@@ -2005,7 +2006,7 @@ console.log("[multi_file_orchestration] target split", {
           path: resolvedPath,
           mime: resolvedMime,
           currentContent,
-          maxOutputTokens: 5200,
+          maxOutputTokens: 10000,
         });
       }
 
@@ -2076,7 +2077,7 @@ console.log("[multi_file_orchestration] target split", {
             `Canonical file content:\n${String((canonicalFile as any)?.content ?? "")}`,
           path: missingPath,
           mime: inferTextMimeFromPath(missingPath),
-          maxOutputTokens: 5200,
+          maxOutputTokens: 10000,
         });
 
 function extractLocalAssetRefs(html: string): string[] {
@@ -2366,7 +2367,7 @@ if (
           path: resolvedPath,
           mime: resolvedMime,
           currentContent,
-          maxOutputTokens: 5200,
+          maxOutputTokens: 10000,
         });
       }
 
@@ -3730,7 +3731,7 @@ if (
           path: String(readOut.path ?? ""),
           mime: String(readOut.mime ?? "text/plain"),
           currentContent: String(readOut.content ?? ""),
-          maxOutputTokens: 5200,
+          maxOutputTokens: 10000,
         });
       }
 

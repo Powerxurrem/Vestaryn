@@ -10,6 +10,29 @@ function looksTruncatedHtml(text: string) {
   return false;
 }
 
+function looksTruncatedPython(text: string) {
+  const t = String(text ?? "").trim();
+  if (!t) return true;
+
+  const openParen = (t.match(/\(/g) ?? []).length;
+  const closeParen = (t.match(/\)/g) ?? []).length;
+  const openBracket = (t.match(/\[/g) ?? []).length;
+  const closeBracket = (t.match(/\]/g) ?? []).length;
+  const openBrace = (t.match(/\{/g) ?? []).length;
+  const closeBrace = (t.match(/\}/g) ?? []).length;
+
+  const tripleSingle = (t.match(/'''/g) ?? []).length;
+  const tripleDouble = (t.match(/"""/g) ?? []).length;
+
+  return (
+    openParen !== closeParen ||
+    openBracket !== closeBracket ||
+    openBrace !== closeBrace ||
+    tripleSingle % 2 !== 0 ||
+    tripleDouble % 2 !== 0
+  );
+}
+
 function looksTruncatedCss(text: string) {
   const t = String(text ?? "").trim();
   if (!t) return true;
@@ -43,6 +66,7 @@ function detectTruncation(path: string, text: string) {
 
   if (p.endsWith(".html")) return looksTruncatedHtml(text);
   if (p.endsWith(".css")) return looksTruncatedCss(text);
+  if (p.endsWith(".py")) return looksTruncatedPython(text);
   if (p.endsWith(".js") || p.endsWith(".jsx") || p.endsWith(".ts") || p.endsWith(".tsx")) {
     return looksTruncatedJsLike(text);
   }
@@ -509,7 +533,7 @@ ${opts.userRequest}
   const resp = await opts.openai.responses.create({
   model: opts.model,
   input: prompt,
-  max_output_tokens: opts.maxOutputTokens ?? 3200,
+  max_output_tokens: opts.maxOutputTokens ?? 10000,
 });
 
 const text = (resp.output_text || "").trim();
@@ -652,7 +676,7 @@ FILE
   const resp = await opts.openai.responses.create({
     model: opts.model,
     input: prompt,
-    max_output_tokens: opts.maxOutputTokens ?? 3200,
+    max_output_tokens: opts.maxOutputTokens ?? 10000,
   });
 
   const text = (resp.output_text || "").trim();
