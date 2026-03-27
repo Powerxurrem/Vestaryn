@@ -206,7 +206,7 @@ const mentionedPaths =
   const hasExplicitPaths = mentionedPaths.length > 0;
 
   const hasEditVerb =
-  /\b(improve|change|update|edit|modify|make|adjust|refine|restyle|tweak|input|insert|write|replace|rewrite|fix)\b/i.test(text);
+  /\b(improve|change|update|edit|modify|make|adjust|refine|restyle|tweak|input|insert|write|replace|rewrite|fix|correct|repair|clean up|cleanup)\b/i.test(text);
 
   const hasVisualEditSignal =
     /\b(gold|color|background|spacing|padding|margin|font|border|shadow|nav|navbar|header|footer|hero)\b/i.test(text);
@@ -370,20 +370,6 @@ if (isExplainOnlyQuestion(text)) {
       };
     }
 
-if (isCrossFileAlignmentIntent(text)) {
-  return {
-    mode: "incremental",
-    confidence: "high",
-    reasons: ["cross_file_alignment_intent"],
-    mentionedPaths,
-    hasExplicitPaths,
-  };
-}
-console.log("[cross_file_alignment_check]", {
-  text,
-  matched: isCrossFileAlignmentIntent(text),
-});
-
     if (hasExplicitPaths) {
       return {
         mode: "surgical",
@@ -426,7 +412,17 @@ console.log("[cross_file_alignment_check]", {
     };
   }
 
-  if (mentionedPaths.length > 0) {
+    if (mentionedPaths.length > 0) {
+    if (isExplainOnlyQuestion(text)) {
+      return {
+        mode: "explain",
+        confidence: "high",
+        reasons: ["explicit_explain_only_language"],
+        mentionedPaths,
+        hasExplicitPaths,
+      };
+    }
+
     if (isConcreteEditRequest(text)) {
       return {
         mode: mentionedPaths.length === 1 ? "surgical" : "incremental",
@@ -438,11 +434,11 @@ console.log("[cross_file_alignment_check]", {
     }
 
     return {
-      mode: "explain",
-      confidence: "low",
-      reasons: ["paths_present_without_clear_execution_signal"],
+      mode: mentionedPaths.length === 1 ? "surgical" : "incremental",
+      confidence: "medium",
+      reasons: ["path_present_default_to_execution"],
       mentionedPaths,
-      hasExplicitPaths,
+      hasExplicitPaths: true,
     };
   }
 
