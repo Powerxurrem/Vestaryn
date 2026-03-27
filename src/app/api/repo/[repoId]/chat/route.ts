@@ -43,6 +43,12 @@ import {  resolveExecutionMode,shouldAllowBootstrapForMode,shouldAllowPreStreamR
 import { handleSurgicalMode } from "@/lib/chamber/handleSurgicalMode";
 import { handleCreateMissingFileMode } from "@/lib/chamber/handleCreateMissingFileMode";
 import { handleImplicitStaticPageMode } from "@/lib/chamber/handleImplicitStaticPageMode";
+import {
+  resolveImplicitFollowupTarget,
+  type RecentFileRef,
+} from "@/lib/chamber/followupContinuity";
+import { collectRecentTouchedFilesFromMessages } from "@/lib/chamber/followupContinuityMessages";
+import { extractRepoPathMentions } from "@/lib/chamber/pathMentions";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -103,6 +109,10 @@ function isImplicitPythonScriptBootstrapRequest(text: string) {
       /\bspreadsheet\b/.test(t)
     )
   );
+}
+
+function stripPathInsertCommandPrefix(input: string): string {
+  return String(input ?? "").replace(/^\/path\s+/i, "").trim();
 }
 
 function dirnameOf(path: string) {
@@ -233,13 +243,14 @@ if (!content?.trim()) return new Response("Missing content", { status: 400 });
 
 const text = normText(content);
 
-const executionMode = resolveExecutionMode(text);
+// Stage 1: raw mode from user text only
+const rawExecutionMode = resolveExecutionMode(text);
 
-console.log("[execution_mode]", {
-  mode: executionMode.mode,
-  confidence: executionMode.confidence,
-  reasons: executionMode.reasons,
-  mentionedPaths: executionMode.mentionedPaths,
+console.log("[execution_mode.raw]", {
+  mode: rawExecutionMode.mode,
+  confidence: rawExecutionMode.confidence,
+  reasons: rawExecutionMode.reasons,
+  mentionedPaths: rawExecutionMode.mentionedPaths,
 });
 
 const explicitGoalPlanRequest =
@@ -340,13 +351,13 @@ let baselineVerify = {
   },
 } as any;
 
-if (shouldRunBaselineVerifyForMode(executionMode.mode)) {
+if (shouldRunBaselineVerifyForMode(rawExecutionMode.mode)) {
   baselineVerify = await runAutoVerifyForRepo({ repoId });
 
   console.log("[baseline_verify]", {
     ok: baselineVerify.verifyPayload.ok,
     failedStep: baselineVerify.verifyPayload.failedStep,
-    mode: executionMode.mode,
+    mode: rawExecutionMode.mode,
   });
 
   if (!baselineVerify.verifyPayload.ok) {
@@ -354,7 +365,7 @@ if (shouldRunBaselineVerifyForMode(executionMode.mode)) {
   }
 } else {
   console.log("[baseline_verify] skipped", {
-    mode: executionMode.mode,
+    mode: rawExecutionMode.mode,
   });
 }
 
@@ -438,6 +449,88 @@ const {
   membershipBlock,
 } = chatCtx;
 
+function getEffectiveMentionedPaths() {
+  return effectiveMentionedPaths;
+}
+
+function getEffectiveSinglePath() {
+  if (effectiveMentionedPaths.length === 1) {
+    return effectiveMentionedPaths[0];
+  }
+  return extractSingleMentionedPath(content);
+}
+
+const recentFilesFromMessages = collectRecentTouchedFilesFromMessages(
+  cleanedHistory.map((m: any) => ({
+    role: m.role,
+    content: m.content,
+    created_at: m.created_at ?? null,
+  }))
+);
+
+const continuityRecentFiles: RecentFileRef[] = [
+  ...recentFilesFromMessages,
+];
+
+const explicitMentionedPaths = rawExecutionMode.mentionedPaths ?? [];
+
+const inferredFilePaths = Array.isArray((inference as any)?.filePaths)
+  ? ((inference as any).filePaths as string[])
+  : [];
+
+const repoPathMentions = extractRepoPathMentions({
+  content: text,
+  repoPaths: inferredFilePaths,
+});
+
+const mergedMentionedPaths = Array.from(
+  new Set([...explicitMentionedPaths, ...repoPathMentions])
+);
+
+const continuity = resolveImplicitFollowupTarget({
+  content: text,
+  mentionedPaths: mergedMentionedPaths,
+  recentFiles: continuityRecentFiles,
+});
+
+const effectiveMentionedPaths =
+  continuity.matched && continuity.targetPath
+    ? [continuity.targetPath]
+    : mergedMentionedPaths;
+
+const executionMode =
+  continuity.matched &&
+  (continuity.confidence === "high" || continuity.confidence === "medium")
+    ? {
+        ...rawExecutionMode,
+        mode: "surgical" as const,
+        confidence: continuity.confidence,
+        reasons: [
+          ...(rawExecutionMode.reasons ?? []),
+          `implicit_followup:${continuity.reason}`,
+        ],
+        mentionedPaths: effectiveMentionedPaths,
+        hasExplicitPaths: effectiveMentionedPaths.length > 0,
+      }
+    : rawExecutionMode;
+
+const continuityTargetPath =
+  continuity.matched && continuity.targetPath
+    ? continuity.targetPath
+    : null;
+
+console.log("[followup_continuity]", {
+  content: text,
+  rawMentionedPaths: rawExecutionMode.mentionedPaths ?? [],
+  repoPathMentions,
+  mergedMentionedPaths,
+  continuity,
+  effectiveMentionedPaths,
+  finalMode: executionMode.mode,
+  finalConfidence: executionMode.confidence,
+  reasons: executionMode.reasons,
+});
+
 const inferredVerifyCmd =
   inference?.projectType === "unknown" || inference?.projectType === "loose_files"
     ? null
@@ -468,10 +561,13 @@ console.log("[credits]", {
 });
 
 const shouldRunCreateMissingMode =
-  executionMode.mode === "bootstrap" ||
-  executionMode.mode === "incremental" ||
-  executionMode.mode === "surgical" ||
-  executionMode.mode === "rewrite";
+  !continuityTargetPath &&
+  (
+    executionMode.mode === "bootstrap" ||
+    executionMode.mode === "incremental" ||
+    executionMode.mode === "surgical" ||
+    executionMode.mode === "rewrite"
+  );
 
 if (shouldRunCreateMissingMode) {
   console.log("[execution_mode] create-missing-file handler active", {
@@ -1019,7 +1115,7 @@ if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.mess
 
       let initialHadTools = pendingTools.length > 0 || pass1.sawToolsThisPass;
 
-      const pass1RequestedPaths = extractMentionedPaths(content);
+      const pass1RequestedPaths = getEffectiveMentionedPaths();
       const hasExplicitMultiFileEditRequest =
         pass1RequestedPaths.length >= 2 &&
         (
@@ -1601,8 +1697,8 @@ if (
 ) {
   const files = Array.isArray((out as any).files) ? (out as any).files : [];
 
-  const requestedPath = extractSingleMentionedPath(content);
-  const requestedPaths = extractMentionedPaths(content);
+  const requestedPath = getEffectiveSinglePath();
+  const requestedPaths = getEffectiveMentionedPaths();
   const explicitStyleChange =
   /\b(background|topbar|top bar|header color|gold|black|contrast|theme|styles?\.css|color palette|restyle|same style|same theme)\b/i.test(
     content
@@ -2347,10 +2443,15 @@ if (
 
   let targetFile: any | null = null;
 
-  if (requestedPath) {
-    targetFile =
-      editableFiles.find((f: any) => String(f.path) === requestedPath) ?? null;
-  }
+if (continuityTargetPath) {
+  targetFile =
+    editableFiles.find((f: any) => String(f.path) === continuityTargetPath) ?? null;
+}
+
+if (!targetFile && requestedPath) {
+  targetFile =
+    editableFiles.find((f: any) => String(f.path) === requestedPath) ?? null;
+}
 
   if (!targetFile) {
     const cssFile =
@@ -3572,8 +3673,22 @@ if (
     content: string;
   };
 
+const isConcreteModificationIntent =
+  /\b(change|edit|update|modify|fix|add|remove|rename|make|restyle|polish|adjust)\b/i.test(content);
+
+const continuityPinnedThisRead =
+  !!continuityTargetPath &&
+  String(readOut.path ?? "").trim() === String(continuityTargetPath).trim();
+
+console.log("[rewrite_orchestration.context]", {
+  readPath: readOut.path ?? null,
+  continuityTargetPath,
+  continuityPinnedThisRead,
+  isConcreteModificationIntent,
+});
+
   if (typeof readOut.id === "string" && typeof readOut.content === "string") {
-    const requestedPath = extractSingleMentionedPath(content);
+    const requestedPath = getEffectiveSinglePath();
 
     if (requestedPath && readOut.path && requestedPath !== readOut.path) {
       console.log(
@@ -3593,7 +3708,7 @@ if (
       continue;
     }
 
-    let requestedPaths = extractMentionedPaths(content);
+    let requestedPaths = getEffectiveMentionedPaths();
     let rewriteReferences: string[] = [];
 
     if (requestedPaths.length >= 2 && !isImportRefactorIntent(content)) {
@@ -3692,8 +3807,9 @@ if (
     // Guard: avoid multi-file rewrite on vague incremental requests
     // ─────────────────────────────────────────────
     const isVagueIncremental =
-      executionMode.mode === "incremental" &&
-      requestedPaths.length === 0;
+  executionMode.mode === "incremental" &&
+  requestedPaths.length === 0 &&
+  !continuityPinnedThisRead;
 
     if (isVagueIncremental) {
       const primaryTargets = ["index.html", "app/page.tsx"];

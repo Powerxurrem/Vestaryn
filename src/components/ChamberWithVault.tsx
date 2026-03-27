@@ -65,6 +65,17 @@ export default function ChamberWithVault({
   // near top of file
   const [maintenance, setMaintenance] = useState<any>(null);
   const [fileStatusById, setFileStatusById] = useState<Record<string, FileStatus>>({});
+
+  type FileIssue = {
+  line: number;
+  column?: number | null;
+  message: string;
+  severity: "error" | "warn";
+  source: string;
+};
+
+const [issuesByFileId, setIssuesByFileId] = useState<Record<string, FileIssue[]>>({});
+  
   type ProposalPreview = {
     fileId: string;
     content: string;
@@ -465,12 +476,21 @@ function formatValidation(v: {
     reloadToken={chatReloadToken}
     onFileUpdated={markFileUpdated}
     onFileStatus={onFileStatus}
+    onFileIssues={(fileId, issues) => {
+    setIssuesByFileId((prev) => ({
+      ...prev,
+      [fileId]: issues,
+    }));
+  }}
+
     refreshFiles={() => vaultRef.current?.refresh()}
     openFileById={(id) => vaultRef.current?.openFileById(id)}
     onMessageStats={setMsgStats}
     onMaintenance={setMaintenance}
     onArtifactPreview={(preview) => {
+      
   if (!preview) return;
+  
 
   setPreviewMode("artifact_xlsx");
   setArtifactPreview(preview);

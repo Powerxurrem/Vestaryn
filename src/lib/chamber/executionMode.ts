@@ -9,7 +9,8 @@ import {
   isRepositoryExecutionIntent,
   normText,
   isInternalGoalExecutionPrompt,
-  isLayoutAlignmentIntent
+  isLayoutAlignmentIntent,
+  isConcreteEditRequest
 } from "@/lib/chamber/intent";
 
 function isScriptBootstrapIntent(text: string) {
@@ -33,6 +34,7 @@ function isFollowupReferenceIntent(text: string) {
     /\bthose two\b/i,
   ]);
 }
+
 
 function isImplicitFollowupEditIntent(text: string) {
   const hasEditVerb = hasAny(text, [
@@ -204,7 +206,7 @@ const mentionedPaths =
   const hasExplicitPaths = mentionedPaths.length > 0;
 
   const hasEditVerb =
-  /\b(improve|change|update|edit|modify|make|adjust|refine|restyle|tweak)\b/i.test(text);
+  /\b(improve|change|update|edit|modify|make|adjust|refine|restyle|tweak|input|insert|write|replace|rewrite|fix)\b/i.test(text);
 
   const hasVisualEditSignal =
     /\b(gold|color|background|spacing|padding|margin|font|border|shadow|nav|navbar|header|footer|hero)\b/i.test(text);
@@ -222,20 +224,6 @@ if (isLayoutAlignmentIntent(text)) {
     mentionedPaths,
     hasExplicitPaths,
   };
-}
-
-function isImplicitFollowupEditIntent(text: string) {
-  return hasAny(text, [
-    /\bchange\b/i,
-    /\badjust\b/i,
-    /\bupdate\b/i,
-    /\bmodify\b/i,
-    /\bmake\b/i,
-    /\bcontinue\b/i,
-    /\byes continue\b/i,
-    /\buse the default\b/i,
-    /\btake the default\b/i,
-  ]);
 }
 
   if (hasExplicitPaths && (hasEditVerb || hasVisualEditSignal)) {
@@ -415,7 +403,7 @@ console.log("[cross_file_alignment_check]", {
     };
   }
 
-  if (isImplicitFollowupEditIntent(text)) {
+   if (isImplicitFollowupEditIntent(text)) {
     return {
       mode: "incremental",
       confidence: "medium",
@@ -425,7 +413,30 @@ console.log("[cross_file_alignment_check]", {
     };
   }
 
-  if (hasExplicitPaths) {
+  if (isVisualRefinementIntent(text)) {
+    return {
+      mode: hasExplicitPaths ? "surgical" : "incremental",
+      confidence: "medium",
+      reasons: [
+        "visual_refinement_intent",
+        ...(hasExplicitPaths ? ["explicit_path"] : []),
+      ],
+      mentionedPaths,
+      hasExplicitPaths,
+    };
+  }
+
+  if (mentionedPaths.length > 0) {
+    if (isConcreteEditRequest(text)) {
+      return {
+        mode: mentionedPaths.length === 1 ? "surgical" : "incremental",
+        confidence: "medium",
+        reasons: ["explicit_path_with_edit_intent"],
+        mentionedPaths,
+        hasExplicitPaths: true,
+      };
+    }
+
     return {
       mode: "explain",
       confidence: "low",
@@ -435,34 +446,11 @@ console.log("[cross_file_alignment_check]", {
     };
   }
 
-if (isVisualRefinementIntent(text)) {
-  return {
-    mode: hasExplicitPaths ? "surgical" : "incremental",
-    confidence: "medium",
-    reasons: [
-      "visual_refinement_intent",
-      ...(hasExplicitPaths ? ["explicit_path"] : []),
-    ],
-    mentionedPaths,
-    hasExplicitPaths,
-  };
-}
-  
-console.log("[path_extract_debug]", {
-  content,
-  rawMentionedPaths,
-  filteredMentionedPaths: mentionedPaths,
-});
-
-if (isImplicitFollowupEditIntent(text)) {
-  return {
-    mode: "incremental",
-    confidence: "medium",
-    reasons: ["implicit_followup_edit_intent"],
-    mentionedPaths,
-    hasExplicitPaths,
-  };
-}
+  console.log("[path_extract_debug]", {
+    content,
+    rawMentionedPaths,
+    filteredMentionedPaths: mentionedPaths,
+  });
 
   return {
     mode: "advisory",

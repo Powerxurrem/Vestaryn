@@ -48,17 +48,6 @@ type ActiveAssistantTurn = {
   } | null;
 };
 
-type ChatFrameProps = {
-  repoId: string;
-  onFileUpdated?: (fileId: string) => void;
-  onFileStatus?: (fileId: string, status: "ok" | "error", reason?: string) => void;
-
-  refreshFiles?: () => void | Promise<void>;
-  openFileById?: (fileId: string) => void;
-  onMaintenance?: (payload: any) => void;
-  onPreviewRefresh?: () => void;
-};
-
 type Props = {
   repoId: string;
   reloadToken?: number;
@@ -69,12 +58,23 @@ type Props = {
     status: "ok" | "warn" | "error" | "pending",
     reason?: string
   ) => void;
-
+  onFileErrorLines?: (fileId: string, lines: number[]) => void;
+  onFileIssues?: (
+    fileId: string,
+    issues: Array<{
+      line: number;
+      column?: number | null;
+      message: string;
+      severity: "error" | "warn";
+      source: string;
+    }>
+  ) => void;
   refreshFiles?: () => void | Promise<void>;
   openFileById?: (fileId: string) => void;
   onMessageStats?: (s: { total: number; user: number; assistant: number; system: number }) => void;
   onMaintenance?: (payload: any) => void;
   onPreviewRefresh?: () => void;
+
   onArtifactPreview?: (
     preview: {
       type: "xlsx";
@@ -85,6 +85,7 @@ type Props = {
       }>;
     } | null
   ) => void;
+
   onProposalPreview?: (
     proposals:
       | Record<
@@ -99,7 +100,6 @@ type Props = {
         >
       | null
   ) => void;
-  
 };
 
 type ChamberState = "stable" | "analyzing" | "deep" | "archive";
@@ -109,6 +109,8 @@ export default function ChatFrame({
   reloadToken,
   onFileUpdated,
   onFileStatus,
+  onFileErrorLines,
+  onFileIssues,
   refreshFiles,
   openFileById,
   onMessageStats,
@@ -545,6 +547,100 @@ function isContractComplete(t: string) {
   );
 }
 
+function extractErrorLinesFromVerifyText(text: string): number[] {
+  const out = new Set<number>();
+  const s = String(text ?? "");
+
+  const patterns = [
+    /:(\d+):\d+\b/g,        // file.ts:27:5
+    /:(\d+)\b/g,            // file.ts:27
+    /\bline\s+(\d+)\b/gi,   // line 27
+  ];
+
+  for (const rx of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = rx.exec(s))) {
+      const n = Number(match[1]);
+      if (Number.isFinite(n) && n >= 1) {
+        out.add(n - 1); // zero-based for UI render loops
+      }
+    }
+  }
+
+  return Array.from(out).sort((a, b) => a - b);
+}
+
+function extractVerifyIssues(text: string): Array<{
+  path: string | null;
+  line: number | null;
+  column: number | null;
+  message: string;
+  severity: "error" | "warn";
+  source: "tsc" | "eslint" | "python" | "runtime" | "unknown";
+}> {
+  const issues: Array<{
+    path: string | null;
+    line: number | null;
+    column: number | null;
+    message: string;
+    severity: "error" | "warn";
+    source: "tsc" | "eslint" | "python" | "runtime" | "unknown";
+  }> = [];
+
+  const s = String(text ?? "");
+
+  const patterns = [
+    {
+      source: "tsc" as const,
+      re: /([^\s:]+\.[a-z]+):(\d+):(\d+)\s*-\s*(error|warning)[^:]*:\s*(.+)/gi,
+    },
+    {
+      source: "python" as const,
+      re: /File\s+"([^"]+)",\s+line\s+(\d+)(?:,\s+in\s+[^\n]+)?[\s\S]*?\n([A-Za-z]+Error|SyntaxError|IndentationError):\s*(.+)/g,
+    },
+    {
+      source: "runtime" as const,
+      re: /([^\s:]+\.[a-z]+):(\d+):(\d+)\s+(.+)/gi,
+    },
+  ];
+
+  for (const pattern of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = pattern.re.exec(s))) {
+      if (pattern.source === "tsc") {
+        issues.push({
+          path: m[1] ?? null,
+          line: Number(m[2]) - 1,
+          column: Number(m[3]) - 1,
+          severity: m[4]?.toLowerCase() === "warning" ? "warn" : "error",
+          source: pattern.source,
+          message: String(m[5] ?? "").trim(),
+        });
+      } else if (pattern.source === "python") {
+        issues.push({
+          path: m[1] ?? null,
+          line: Number(m[2]) - 1,
+          column: null,
+          severity: "error",
+          source: pattern.source,
+          message: `${String(m[3] ?? "").trim()}: ${String(m[4] ?? "").trim()}`,
+        });
+      } else {
+        issues.push({
+          path: m[1] ?? null,
+          line: Number(m[2]) - 1,
+          column: Number(m[3]) - 1,
+          severity: "error",
+          source: pattern.source,
+          message: String(m[4] ?? "").trim(),
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
 function isVerifiablePath(path?: string | null) {
   const p = String(path ?? "").toLowerCase();
 
@@ -555,12 +651,18 @@ function isVerifiablePath(path?: string | null) {
     p.endsWith(".jsx") ||
     p.endsWith(".mjs") ||
     p.endsWith(".cjs") ||
-    p.endsWith(".json") ||
+    p.endsWith(".py") ||
+    p.endsWith(".html") ||
     p.endsWith(".css") ||
     p.endsWith(".scss") ||
-    p.endsWith(".sql") ||
+    p.endsWith(".sass") ||
+    p.endsWith(".json") ||
     p.endsWith(".yml") ||
-    p.endsWith(".yaml")
+    p.endsWith(".yaml") ||
+    p.endsWith(".sql") ||
+    p.endsWith(".xml") ||
+    p.endsWith(".bas") ||
+    p.endsWith(".vba")
   );
 }
  
@@ -1454,30 +1556,74 @@ for (let i = 0; i < lines.length; i++) {
           ? [lastProposal.fileId]
           : [];
 
+const verifyText = [
+  String(verify?.error ?? ""),
+  String(verify?.stderr ?? ""),
+  String(verify?.stdout ?? ""),
+].filter(Boolean).join("\n");
+
+const extractedIssues = extractVerifyIssues(verifyText);
+
+console.log("[verify issues]", {
+  ids,
+  extractedIssues,
+  verifyTextHead: verifyText.slice(0, 300),
+});
+
+const extractedErrorLines = extractErrorLinesFromVerifyText(verifyText);
+
+console.log("[verify error lines]", {
+  ids,
+  extractedErrorLines,
+  verifyTextHead: verifyText.slice(0, 300),
+});
+
       console.log("VERIFY payload", verify);
 
+      
       if (typeof onFileStatus === "function") {
-        if (verify?.skipped) {
-          for (const fid of ids) {
-            onFileStatus(fid, "ok", "verify skipped");
-          }
-        } else if (verify?.pending) {
-          for (const fid of ids) {
-            onFileStatus(fid, "pending", "Verifying…");
-          }
-        } else {
-          const ok = Boolean(verify?.ok);
-          const reason =
-            (verify?.failureKind ? String(verify.failureKind) : "") ||
-            (verify?.error ? String(verify.error) : "") ||
-            (verify?.stderr ? String(verify.stderr).slice(0, 200) : "") ||
-            (verify?.stdout ? String(verify.stdout).slice(0, 200) : "");
+  if (verify?.skipped) {
+    for (const fid of ids) {
+      onFileStatus(fid, "ok", "verify skipped");
+      onFileErrorLines?.(fid, []);
+      onFileIssues?.(fid, []);
+    }
+  } else if (verify?.pending) {
+    for (const fid of ids) {
+      onFileStatus(fid, "pending", "Verifying…");
+      onFileErrorLines?.(fid, []);
+      onFileIssues?.(fid, []);
+    }
+  } else {
+    const ok = Boolean(verify?.ok);
+    const reason =
+      (verify?.failureKind ? String(verify.failureKind) : "") ||
+      (verify?.error ? String(verify.error) : "") ||
+      (verify?.stderr ? String(verify.stderr).slice(0, 200) : "") ||
+      (verify?.stdout ? String(verify.stdout).slice(0, 200) : "");
 
-          for (const fid of ids) {
-            onFileStatus(fid, ok ? "ok" : "error", ok ? undefined : reason);
-          }
-        }
-      }
+    for (const fid of ids) {
+      const fileIssues = ok
+        ? []
+        : extractedIssues
+            .filter((issue) => issue.line != null)
+            .map((issue) => ({
+              line: issue.line as number,
+              column: issue.column,
+              message: issue.message,
+              severity: issue.severity,
+              source: issue.source,
+            }));
+
+      onFileStatus(fid, ok ? "ok" : "error", ok ? undefined : reason);
+      onFileErrorLines?.(
+        fid,
+        ok ? [] : fileIssues.map((x) => x.line)
+      );
+      onFileIssues?.(fid, fileIssues);
+    }
+  }
+}
     } catch (e) {
       console.log("[verify parse failed]", e);
     }
@@ -2408,7 +2554,7 @@ console.log("[proposal render gate]", {
 
           <div className="flex items-center gap-2 p-3">
             <div className="flex-1">
-              <ChatInput onSend={handleSend} />
+              <ChatInput onSend={handleSend} repoId={repoId} />
               
             </div>
           </div>

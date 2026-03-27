@@ -42,6 +42,31 @@ function isValidPathCandidate(value: string) {
   return true;
 }
 
+export function isConcreteEditRequest(text: string): boolean {
+  const t = String(text ?? "").toLowerCase();
+
+  return (
+    /\bfix\b/.test(t) ||
+    /\bcorrect\b/.test(t) ||
+    /\brepair\b/.test(t) ||
+    /\bupdate\b/.test(t) ||
+    /\bchange\b/.test(t) ||
+    /\bmodify\b/.test(t) ||
+    /\bedit\b/.test(t) ||
+    /\bclean up\b/.test(t) ||
+    /\brefactor\b/.test(t) ||
+    /\brewrite\b/.test(t) ||
+    /\breplace\b/.test(t) ||
+    /\bwrite\b/.test(t) ||
+    /\binsert\b/.test(t) ||
+    /\binput\b/.test(t) ||
+    /\badd\b/.test(t) ||
+    /\bput\b/.test(t) ||
+    /\bthere (is|are)\b.*\b(break|breaks|issue|issues|error|errors|problem|problems)\b/.test(t) ||
+    /\bplease\b.*\b(correct|fix|repair|update|change|modify|edit|rewrite|replace|write|insert|input|add|put)\b/.test(t)
+  );
+}
+
 export function isCreateLinkedPageIntent(text: string) {
   const raw = normText(text);
 
@@ -182,7 +207,7 @@ export function isNamedFileExecutionRequest(text: string) {
   if (!hasPath) return false;
 
   return (
-    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|change|adjust|review|inspect|turn|transform|convert|evolve|polish|refine|premium|modernize|restyle/i.test(
+    /check|correct|fix|debug|resolve|repair|rewrite|improve|refactor|clean up|cleanup|harden|modify|edit|update|change|adjust|review|inspect|turn|transform|convert|evolve|polish|refine|premium|modernize|restyle|write|insert|input|add|put|replace/i.test(
       text || ""
     ) || isVisualRefinementIntent(text || "")
   );
@@ -215,18 +240,29 @@ export function isRepositoryExecutionIntent(content: string) {
 
   const mentionedPaths = extractMentionedPaths(t);
 
-  const hasSingleFileEditLanguage =
-    mentionedPaths.length >= 1 &&
-    /\b(fix|edit|update|change|modify|adjust|rewrite|refactor|make)\b/.test(t);
+  const hasConcreteEditVerb =
+  /\b(fix|edit|update|change|modify|adjust|rewrite|refactor|replace|correct|repair)\b/.test(t);
 
-  if (hasSingleFileEditLanguage) return true;
+const hasCodeLikeMention = mentionedPaths.some(isCodeLikeRepoPath);
+const hasContentLikeMention = mentionedPaths.some(isContentLikeRepoPath);
+
+if (hasCodeLikeMention && hasConcreteEditVerb) {
+  return true;
+}
+
+if (
+  hasContentLikeMention &&
+  /\b(write|rewrite|replace|update|change|edit|modify|input|insert|add)\b/.test(t)
+) {
+  return true;
+}
 
   if (isVisualRefinementIntent(t)) return true;
 
   const hasStrongActionVerb =
-    /\b(create|build|implement|fix|update|edit|modify|change|rewrite|refactor|replace|delete|remove|add|repair|resolve|adjust)\b/.test(
-      t
-    );
+  /\b(create|build|implement|fix|update|edit|modify|change|rewrite|refactor|replace|delete|remove|add|repair|resolve|adjust|write|insert|input|put)\b/.test(
+    t
+  );
 
   const hasExecutionTarget =
     /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(
@@ -278,6 +314,41 @@ export function isCreateAndModifyIntent(text: string) {
   );
 
   return hasLikelyCreateTarget && hasLikelyModifyTarget;
+}
+
+export function isCodeLikeRepoPath(path: string) {
+  const p = String(path ?? "").toLowerCase().trim();
+
+  return (
+    p.endsWith(".ts") ||
+    p.endsWith(".tsx") ||
+    p.endsWith(".js") ||
+    p.endsWith(".jsx") ||
+    p.endsWith(".mjs") ||
+    p.endsWith(".cjs") ||
+    p.endsWith(".py") ||
+    p.endsWith(".html") ||
+    p.endsWith(".css") ||
+    p.endsWith(".scss") ||
+    p.endsWith(".sass") ||
+    p.endsWith(".json") ||
+    p.endsWith(".yml") ||
+    p.endsWith(".yaml") ||
+    p.endsWith(".sql") ||
+    p.endsWith(".xml") ||
+    p.endsWith(".bas") ||
+    p.endsWith(".vba")
+  );
+}
+
+export function isContentLikeRepoPath(path: string) {
+  const p = String(path ?? "").toLowerCase().trim();
+
+  return (
+    p.endsWith(".txt") ||
+    p.endsWith(".md") ||
+    p.endsWith(".csv")
+  );
 }
 
 export function resolveCreateAndModifyPaths(text: string) {

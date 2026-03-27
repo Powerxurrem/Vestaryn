@@ -181,43 +181,53 @@ function openFileById(fileId: string) {
   // Data ops: create file (empty v1)
   // ─────────────────────────────────────────────────────────────
   async function createFile() {
-    if (!validRepoId) {
+  if (!validRepoId) {
     setError(`invalid repoId: ${repoId}`);
     return;
-}
-    setCreating(true);
-    setError(null);
+  }
 
-    try {
-      const name = createName.trim();
-      if (!name) throw new Error("File name required");
+  setCreating(true);
+  setError(null);
 
-      const r = await fetch(`/api/repos/${repoId}/files/create`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          content: "", // v1: empty
-        }),
+  try {
+    const name = createName.trim();
+    if (!name) throw new Error("File name required");
+
+    const r = await fetch(`/api/repos/${repoId}/files/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        content: "",
+      }),
+    });
+
+    const j = await r.json();
+    if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
+
+    const createdFile: RepoFile | null = j?.file ?? null;
+
+    setCreateOpen(false);
+
+    if (createdFile) {
+      setFiles((prev) => {
+        const exists = prev.some((f) => f.id === createdFile.id);
+        if (exists) return prev;
+        return [createdFile, ...prev];
       });
 
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
-
-      setCreateOpen(false);
-      await refresh();
-
-      // Optional: auto-open the newly created file if API returns it
-      if (j?.file) {
-        setSelectedId(j.file.id);
-        onOpenFile(j.file);
-      }
-    } catch (e: any) {
-      setError(e?.message ?? "Create failed");
-    } finally {
-      setCreating(false);
+      setSelectedId(createdFile.id);
+      onOpenFile(createdFile);
     }
+
+    // still do a background refresh so server is source of truth
+    void refresh();
+  } catch (e: any) {
+    setError(e?.message ?? "Create failed");
+  } finally {
+    setCreating(false);
   }
+}
 
   // ─────────────────────────────────────────────────────────────
   // Data ops: upload one file
@@ -312,6 +322,15 @@ async function exportFile(f: RepoFile) {
     return;
 }
     setError(null);
+
+    setFiles((prev) => prev.filter((x) => x.id !== f.id));
+    setMenu({ open: false, x: 0, y: 0, file: null });
+
+    if (selectedId === f.id) {
+      setSelectedId(null);
+    }
+
+    void refresh();
 
     try {
       const r = await fetch(`/api/repos/${repoId}/files/${f.id}`, {
@@ -424,7 +443,9 @@ async function exportFile(f: RepoFile) {
         {/* Actions */}
         <div className="mt-2 flex gap-2">
           <button
+            className="px-3 py-2 rounded-md bg-white/10 hover:bg-white/15 text-sm text-white disabled:opacity-50"
             disabled={uploading || !validRepoId}
+            onClick={() => fileInputRef.current?.click()}
           >
             {uploading ? "Uploading..." : "Upload"}
           </button>

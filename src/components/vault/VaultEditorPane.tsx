@@ -40,14 +40,15 @@ export default function VaultEditorPane({
   onClose,
   sidebar,
   fileStatusById,
+  errorLinesByFileId = {},
   proposalPreviewByFileId = {},
-  onFileStatus,    
+  onFileStatus,
   rightChamber,
   rightChamberWidth,
   rightChamberOpen,
   fileReloadTokenById,
-  
 }: {
+
   repoId: string;
   tabs: OpenTab[];
   activeFileId: string | null;
@@ -56,6 +57,7 @@ export default function VaultEditorPane({
   sidebar: ReactNode;
   fileReloadTokenById?: Record<string, number>;
    proposalPreviewByFileId?: Record<
+   
     string,
     {
       fileId: string;
@@ -78,6 +80,7 @@ export default function VaultEditorPane({
     rightChamber?: ReactNode;
     rightChamberWidth?: number;
     rightChamberOpen?: boolean;
+    errorLinesByFileId?: Record<string, number[]>;
 }) {
   const activeTab = useMemo(
     () => tabs.find((t) => t.fileId === activeFileId) ?? null,
@@ -107,7 +110,10 @@ const effectiveMime =
   activeTab?.mime ?? inferPreviewMimeFromPath(fallbackProposal?.path ?? "");
 const effectiveOp = fallbackProposal?.op ?? null;
 const isVirtualCreatePreview = !activeTab && !!fallbackProposal;
-
+const activeErrorLines = useMemo(
+  () => new Set(errorLinesByFileId?.[effectiveFileId ?? ""] ?? []),
+  [errorLinesByFileId, effectiveFileId]
+);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -235,6 +241,9 @@ const displayContent =
     ? activeProposal!.content
     : content;
 
+const previewDisplayContent =
+  mode === "read" ? normalizeLeadingPreviewNewline(displayContent) : displayContent;
+
 const changedLines = useMemo(() => {
   const changed = new Set<number>();
 
@@ -266,19 +275,62 @@ function splitLinesStable(text: string) {
   }
   return lines;
 }
+
+function normalizeLeadingPreviewNewline(text: string) {
+  const raw = String(text ?? "").replace(/\r/g, "");
+
+  if (raw.startsWith("\n") && !raw.startsWith("\n\n")) {
+    return raw.slice(1);
+  }
+
+  return raw;
+}
+
+function splitPreviewLines(text: string) {
+  const raw = String(text ?? "").replace(/\r/g, "");
+
+  if (raw.startsWith("\n") && !raw.startsWith("\n\n")) {
+    return splitLinesStable(raw.slice(1));
+  }
+
+  return splitLinesStable(raw);
+}
+
 const inlineDiff =
   isInlineDiffPreview && activeProposal
-    ? buildSimpleInlineDiff(content, activeProposal.content)
+    ? buildSimpleInlineDiff(
+        normalizeLeadingPreviewNewline(content),
+        normalizeLeadingPreviewNewline(activeProposal.content)
+      )
     : [];
 
-useEffect(() => {
-  if (!editorScrollRef.current) return;
-  if (!hasProposalForActiveFile) return;
-  if (mode !== "read") return;
-  if (loading) return;
-  if (!displayContent) return;
-  if (changedLines.size === 0) return;
+  useEffect(() => {
+    if (!editorScrollRef.current) return;
+    if (!hasProposalForActiveFile) return;
+    if (mode !== "read") return;
+    if (loading) return;
+    if (!displayContent) return;
+    if (changedLines.size === 0) return;
+  useEffect(() => {
+    if (!editorScrollRef.current) return;
+    if (activeErrorLines.size === 0) return;
+    if (loading) return;
 
+    const firstError = Math.min(...Array.from(activeErrorLines));
+    if (!Number.isFinite(firstError)) return;
+
+    const id = window.setTimeout(() => {
+      const lineHeight = 20;
+      const targetTop = Math.max(0, firstError * lineHeight - 40);
+
+      editorScrollRef.current?.scrollTo({
+        top: targetTop,
+        behavior: "smooth",
+      });
+    }, 30);
+
+  return () => window.clearTimeout(id);
+}, [activeErrorLines, loading, activeFileId]);
   const firstChanged = Math.min(...Array.from(changedLines));
   if (!Number.isFinite(firstChanged)) return;
 
@@ -292,16 +344,16 @@ useEffect(() => {
     });
   }, 30);
 
-  return () => window.clearTimeout(id);
-}, [
-  hasProposalForActiveFile,
-  activeFileId,
-  activeProposal,
-  mode,
-  loading,
-  displayContent,
-  changedLines,
-]);
+    return () => window.clearTimeout(id);
+  }, [
+    hasProposalForActiveFile,
+    activeFileId,
+    activeProposal,
+    mode,
+    loading,
+    displayContent,
+    changedLines,
+  ]);
 
 function computeChangedLineSet(oldText: string, newText: string) {
   const oldLines = oldText.split("\n");
@@ -401,7 +453,8 @@ const containerRef = useRef<HTMLDivElement | null>(null);
 const draggingRef = useRef(false);
 const editorScrollRef = useRef<HTMLDivElement | null>(null);
 const storageKey = `vestaryn:ideSplit:explorerW:${repoId ?? "default"}`;
-
+const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+const lineNumberScrollRef = useRef<HTMLDivElement | null>(null);
 const [explorerW, setExplorerW] = useState(280);
 
 useEffect(() => {
@@ -442,13 +495,31 @@ const maxExplorer = rect.width - minEditor;
 
 const clamped = Math.max(minExplorer, Math.min(maxExplorer, Math.round(x)));
 setExplorerW(clamped);
-  setExplorerW(clamped);
 }
 
 function onDividerPointerUp() {
   draggingRef.current = false;
   document.body.style.cursor = "";
   document.body.style.userSelect = "";
+}
+
+function lineNumberCell(n: number, isError = false) {
+  return (
+    <div
+      key={`ln-${n}`}
+      className={[
+        "h-5 leading-5 pr-3 text-right select-none tabular-nums",
+        isError ? "text-rose-300" : "text-white/25",
+      ].join(" ")}
+    >
+      {n}
+    </div>
+  );
+}
+
+function syncEditorScroll() {
+  if (!editorTextareaRef.current || !lineNumberScrollRef.current) return;
+  lineNumberScrollRef.current.scrollTop = editorTextareaRef.current.scrollTop;
 }
 
 return (
@@ -508,7 +579,9 @@ return (
 {/* Editor column */}
 <main className="flex-1 min-w-0 flex flex-col">
         {/* Tabs row */}
-        <div className="flex items-center gap-1 px-2 py-2 border-b border-white/10 bg-black/10 overflow-x-auto">
+        <div className="flex items-center gap-2 px-2 py-2 border-b border-white/10 bg-black/10">
+  <div className="min-w-0 flex-1 overflow-x-auto">
+    <div className="flex items-center gap-1 w-max">
           {tabs.length === 0 ? (
             <div className="text-xs text-white/30 px-2">No file open</div>
           ) : (
@@ -519,6 +592,7 @@ return (
               const isRecent = st?.ts && Date.now() - st.ts < 15000;
               const status = st?.status ?? null;
               const reason = st?.reason ?? "";
+              
 
               return (
                 <div
@@ -591,13 +665,14 @@ return (
               );
             })
           )}
-
+    </div>
+  </div>
           {/* Right-side actions */}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="shrink-0 flex items-center gap-2 relative z-100">
             {canEdit && (
               mode === "read" ? (
                 <button
-                  className="px-2 py-2 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
+                  className="shrink-0 inline-flex h-8 items-center justify-center rounded-md border border-white/10 bg-white/5 px-3 text-xs text-white/70 hover:bg-white/10"
                   onClick={() => setMode("edit")}
                   disabled={!activeTab || loading}
                 >
@@ -606,14 +681,14 @@ return (
               ) : (
                 <>
                   <button
-                    className="px-2 py-1 text-xs rounded-md bg-blue-500/20 border border-blue-400/40 hover:bg-blue-500/30 text-white"
+                    className="inline-flex h-8 items-center justify-center px-3 text-xs rounded-md bg-blue-500/20 border border-blue-400/40 hover:bg-blue-500/30 text-white"
                     onClick={save}
                     disabled={!dirty || saving}
                   >
                     {saving ? "Saving…" : "Save"}
                   </button>
                   <button
-                    className="px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
+                    className="inline-flex h-8 items-center justify-center px-3 text-xs rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
                     onClick={() => {
                       setContent(original);
                       setMode("read");
@@ -643,53 +718,98 @@ return (
   ) : error ? (
     <div className="p-4 text-sm text-rose-300">{error}</div>
   ) : mode === "read" ? (
-<div className="p-4 text-xs text-white/80 font-mono whitespace-pre-wrap break-words">
+<div className="p-4 text-xs text-white/80 font-mono">
   {isVirtualCreatePreview ? (
     <div className="mb-3 rounded-md border border-blue-400/25 bg-blue-500/10 px-3 py-2 text-[11px] text-blue-100/80">
       Previewing staged new file: <span className="font-mono">{effectivePath}</span>
     </div>
   ) : null}
-  {isInlineDiffPreview ? (
-    inlineDiff.map((line, i) => (
-      <div
-        key={i}
-        className={
-          line.kind === "add"
-            ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
-            : line.kind === "remove"
-            ? "bg-rose-500/10 border-l-2 border-rose-400 px-2 -mx-2 text-rose-100/80 line-through"
-            : ""
-        }
-      >
-        {line.kind === "add" ? "+ " : line.kind === "remove" ? "- " : "  "}
-        {line.text || " "}
-      </div>
-    ))
-  ) : (
-    displayContent.split("\n").map((line, i) => {
-      const isChanged = changedLines.has(i);
 
-      return (
-        <div
-          key={i}
-          className={
-            isChanged
-              ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
-              : ""
-          }
-        >
-          {line || " "}
-        </div>
-      );
-    })
+  {isInlineDiffPreview ? (
+    <div className="flex items-start">
+      <div className="shrink-0 border-r border-white/8 mr-3">
+        {inlineDiff.map((_, i) => lineNumberCell(i + 1, activeErrorLines.has(i)))}
+      </div>
+
+      <div className="min-w-0 flex-1 overflow-x-auto">
+        {inlineDiff.map((line, i) => (
+          <div
+            key={i}
+            className={[
+              "h-5 leading-5 whitespace-pre",
+              line.kind === "add"
+                ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
+                : line.kind === "remove"
+                ? "bg-rose-500/10 border-l-2 border-rose-400 px-2 -mx-2 text-rose-100/80 line-through"
+                : "",
+              activeErrorLines.has(i) ? "bg-rose-500/10" : "",
+            ].join(" ")}
+          >
+            {line.kind === "add" ? "+ " : line.kind === "remove" ? "- " : "  "}
+            {line.text || " "}
+          </div>
+        ))}
+      </div>
+    </div>
+  ) : (
+    <div className="flex items-start">
+      <div className="shrink-0 border-r border-white/8 mr-3">
+        {splitPreviewLines(previewDisplayContent).map((_, i) => lineNumberCell(i + 1, activeErrorLines.has(i)))}
+      </div>
+
+      <div className="min-w-0 flex-1 overflow-x-auto">
+        {splitPreviewLines(previewDisplayContent).map((line, i) => {
+          const isChanged = changedLines.has(i);
+
+          return (
+            <div
+              key={i}
+              className={[
+                "h-5 leading-5 whitespace-pre",
+                isChanged
+                  ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
+                  : "",
+                activeErrorLines.has(i)
+                  ? "bg-rose-500/10 border-l-2 border-rose-400 px-2 -mx-2"
+                  : "",
+              ].join(" ")}
+            >
+              {line || " "}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   )}
 </div>
   ) : (
-    <textarea
-      className="w-full h-full resize-none bg-black/40 p-4 text-xs text-white/90 font-mono outline-none"
-      value={content}
-      onChange={(e) => setContent(e.target.value)}
-    />
+    <div className="flex h-full min-h-0 bg-black/40 font-mono text-xs text-white/90">
+  <div
+    ref={lineNumberScrollRef}
+    className="shrink-0 border-r border-white/8 pl-4 pr-3 py-4 text-right text-white/25 select-none tabular-nums overflow-hidden"
+  >
+    {content.split("\n").map((_, i) => (
+      <div
+        key={i}
+        className={[
+          "h-5 leading-5",
+          activeErrorLines.has(i) ? "text-rose-300" : "",
+        ].join(" ")}
+      >
+        {i + 1}
+      </div>
+    ))}
+  </div>
+
+  <textarea
+    ref={editorTextareaRef}
+    className="flex-1 h-full resize-none overflow-auto bg-transparent px-4 py-4 text-xs text-white/90 font-mono leading-5 outline-none"
+    value={content}
+    onChange={(e) => setContent(e.target.value)}
+    onScroll={syncEditorScroll}
+    spellCheck={false}
+  />
+</div>
   )}
 </div>
 

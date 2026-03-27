@@ -14,6 +14,34 @@ export type VerifyCommand =
   | "node_test"
   | "python_verify";
 
+export function isVerifyableRepoPath(path: string) {
+  const p = String(path ?? "").toLowerCase().trim();
+
+  if (!p) return false;
+  if (p.startsWith("memory/")) return false;
+
+  return (
+    p.endsWith(".ts") ||
+    p.endsWith(".tsx") ||
+    p.endsWith(".js") ||
+    p.endsWith(".jsx") ||
+    p.endsWith(".mjs") ||
+    p.endsWith(".cjs") ||
+    p.endsWith(".py") ||
+    p.endsWith(".html") ||
+    p.endsWith(".css") ||
+    p.endsWith(".scss") ||
+    p.endsWith(".sass") ||
+    p.endsWith(".json") ||
+    p.endsWith(".yml") ||
+    p.endsWith(".yaml") ||
+    p.endsWith(".sql") ||
+    p.endsWith(".xml") ||
+    p.endsWith(".bas") ||
+    p.endsWith(".vba")
+  );
+}
+  
 export function isBaselinePreverifyFailure(
   baseline: {
     failedStep?: string | null;
@@ -137,18 +165,7 @@ export async function runPreVerifyForProposalSet(opts: {
 export function shouldPreVerifyProposalSet(
   proposals: Array<{ path?: string | null; mime?: string | null }>
 ) {
-  return proposals.some((p) => {
-    const path = String(p?.path ?? "").toLowerCase();
-    return (
-      path.endsWith(".ts") ||
-      path.endsWith(".tsx") ||
-      path.endsWith(".js") ||
-      path.endsWith(".jsx") ||
-      path.endsWith(".mjs") ||
-      path.endsWith(".cjs") ||
-      path.endsWith(".py")
-    );
-  });
+  return proposals.some((p) => isVerifyableRepoPath(String(p?.path ?? "")));
 }
 
 export async function attemptFastPathRepair(opts: {
@@ -263,15 +280,9 @@ export async function runAutoVerifyForRepo(opts: {
     };
   }
 
-  const verifyableFiles = (files ?? []).filter((f) => {
-    const path = String(f.path ?? "").toLowerCase();
-
-    if (!path) return false;
-    if (path.startsWith("memory/")) return false;
-    if (path.endsWith(".md")) return false;
-
-    return true;
-  });
+  const verifyableFiles = (files ?? []).filter((f) =>
+    isVerifyableRepoPath(String(f.path ?? ""))
+  );
 
   console.log("[verify] verifyable files", {
     repoId,
