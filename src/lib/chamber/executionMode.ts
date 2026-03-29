@@ -13,6 +13,25 @@ import {
   isConcreteEditRequest
 } from "@/lib/chamber/intent";
 
+function isCreateSiblingPageIntent(text: string) {
+  return hasAny(text, [
+    /\bcreate\b.*\bnew file\b/i,
+    /\bcreate\b.*\bpage\b/i,
+    /\bnew\b.*\bpage\b/i,
+    /\bcalled\b.*\b[a-z0-9_-]+\b/i,
+    /\babout page\b/i,
+    /\bcontact page\b/i,
+    /\bdungeons\b/i,
+  ]) && hasAny(text, [
+    /\bsame style\b/i,
+    /\bsame layout\b/i,
+    /\bcopy the styling\b/i,
+    /\bsame colors\b/i,
+    /\bhomepage\b/i,
+    /\bhome page\b/i,
+  ]);
+}
+
 function isScriptBootstrapIntent(text: string) {
   return hasAny(text, [
     /\bcreate\b.*\bpython script\b/i,
@@ -193,6 +212,24 @@ export function filterExecutionPaths(paths: string[]) {
   });
 }
 
+function isTargetReferenceAlignmentIntent(text: string, mentionedPaths: string[]) {
+  const hasTwoExplicitPaths = mentionedPaths.length === 2;
+  const hasHtmlPair = mentionedPaths.every((p) => /\.html?$/i.test(String(p)));
+
+  if (!hasTwoExplicitPaths || !hasHtmlPair) return false;
+
+  return hasAny(text, [
+    /\balign\b.*\bwith\b/i,
+    /\bmatch\b.*\bwith\b/i,
+    /\bsame (style|layout|look|feel)\b.*\bas\b/i,
+    /\bvisually align\b/i,
+    /\bmatch(?:es|ing)? the style of\b/i,
+    /\brewrite\b.*\bto\b.*\balign\b/i,
+    /\brewrite\b.*\bto\b.*\bmatch\b/i,
+    /\bmake\b.*\blook like\b/i,
+  ]) && /\b(style|styling|layout|design|look|feel|visual|visually)\b/i.test(text);
+}
+
 export function resolveExecutionMode(content: string): ExecutionModeResolution {
   const text = normText(content);
   const lower = text.toLowerCase();
@@ -213,9 +250,19 @@ const mentionedPaths =
 
   const hasCssPath = mentionedPaths.some((p) => /\.css$/i.test(p));
 
+if (isTargetReferenceAlignmentIntent(text, mentionedPaths)) {
+  return {
+    mode: "surgical",
+    confidence: "high",
+    reasons: ["target_reference_alignment_intent"],
+    mentionedPaths,
+    hasExplicitPaths,
+  };
+}
+
 if (isLayoutAlignmentIntent(text)) {
   return {
-    mode: hasExplicitPaths ? "incremental" : "incremental",
+    mode: "incremental",
     confidence: hasExplicitPaths ? "high" : "medium",
     reasons: [
       "layout_alignment_intent",
@@ -277,6 +324,16 @@ if (isInternalGoalExecutionPrompt(text)) {
       mode: "advisory",
       confidence: "high",
       reasons: ["goal_planning_request"],
+      mentionedPaths,
+      hasExplicitPaths,
+    };
+  }
+
+  if (isCreateSiblingPageIntent(text)) {
+    return {
+      mode: "incremental",
+      confidence: "high",
+      reasons: ["create_sibling_page_intent"],
       mentionedPaths,
       hasExplicitPaths,
     };
@@ -447,6 +504,41 @@ if (isExplainOnlyQuestion(text)) {
     rawMentionedPaths,
     filteredMentionedPaths: mentionedPaths,
   });
+
+const implicitEditSignal =
+  /\b(change|improve|increase|adjust|refine|update|tweak|enhance|restyle|polish|revamp|make)\b/i.test(text) &&
+  /\b(layout|style|design|look|feel|ui|ux|theme|visual|page|website)\b/i.test(text);
+
+const continuationEditSignal =
+  /\b(rest|remaining|untouched|everything else|the rest|continue|further|more|same style|match|align)\b/i.test(text);
+
+const uiElementSignal =
+  /\b(nav(bar)?|header|footer|button|text|title|section|background|hero|menu)\b/i.test(text);
+
+// 🔑 unified decision
+const isImplicitEdit =
+  implicitEditSignal ||
+  continuationEditSignal ||
+  uiElementSignal;
+
+if (isImplicitEdit) {
+  return {
+    mode: "incremental",
+    confidence:
+      continuationEditSignal ? "high" :
+      uiElementSignal ? "medium" :
+      "medium",
+    reasons: [
+      continuationEditSignal
+        ? "continuation_repo_edit"
+        : uiElementSignal
+        ? "ui_targeted_edit"
+        : "implicit_repo_edit_followup",
+    ],
+    mentionedPaths,
+    hasExplicitPaths,
+  };
+}
 
   return {
     mode: "advisory",

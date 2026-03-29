@@ -1,3 +1,5 @@
+import { normalizeCommonPathVariants } from "@/lib/chamber/pathNormalization";
+
 export type RecentFileRefSource =
   | "apply"
   | "proposal"
@@ -17,42 +19,36 @@ export type ContinuityResolution = {
   reason: string;
 };
 
-const IMPLICIT_EDIT_PATTERNS: RegExp[] = [
-  /\byes continue\b/i,
-  /\bcontinue\b/i,
-  /\bchange (it|that|this)\b/i,
-  /\bupdate (it|that|this)\b/i,
-  /\bmodify (it|that|this)\b/i,
-  /\bedit (it|that|this)\b/i,
-  /\bfix (it|that|this)\b/i,
-  /\bmake (it|that|this)\b/i,
-  /\bmake\b/i,
-  /\badd\b/i,
-  /\bremove\b/i,
-  /\bshorten\b/i,
-  /\blengthen\b/i,
-  /\brename\b/i,
-  /\bheaders?\b/i,
-  /\brows?\b/i,
-  /\bcolumns?\b/i,
-  /\bgreen\b/i,
-  /\bblue\b/i,
-  /\bred\b/i,
-  /\blight green\b/i,
-  /\blight blue\b/i,
-  /\bit\b/i,
-  /\bthat\b/i,
-  /\bthis\b/i,
-];
-
 function normalizePath(path: string): string {
   return String(path ?? "").replace(/\\/g, "/").trim().toLowerCase();
 }
 
-export function isLikelyImplicitEditRequest(content: string): boolean {
-  const text = String(content ?? "").trim();
-  if (!text) return false;
-  return IMPLICIT_EDIT_PATTERNS.some((rx) => rx.test(text));
+function extname(path: string): string {
+  const m = normalizePath(path).match(/(\.[a-z0-9]+)$/i);
+  return m?.[1] ?? "";
+}
+
+function isLikelyImplicitEditRequest(content: string) {
+  const t = String(content ?? "").toLowerCase().trim();
+  if (!t) return false;
+
+  const hasAction =
+    /\b(change|update|edit|rewrite|rename|replace|make|set|turn|fix|correct|adjust|improve|repair)\b/.test(t);
+
+  const hasContinuation =
+    /\b(continue|go ahead|yes|still|again|retry|fix it|do it)\b/.test(t);
+
+  const hasTargetReference =
+    /\b(page|about|index|layout|navbar|nav|header|footer|hero|section|content|chart|macro|formula|sheet|table|graph)\b/.test(t);
+
+  const hasQualitySignal =
+    /\b(wrong|bad|off|not right|broken|issue|error|not working|not linked|linked)\b/.test(t);
+
+  return (
+    (hasAction && hasTargetReference) ||
+    (hasContinuation && hasTargetReference) ||
+    (hasTargetReference && hasQualitySignal)
+  );
 }
 
 function scoreRecentFile(ref: RecentFileRef, now = Date.now()): number {
@@ -69,6 +65,88 @@ function scoreRecentFile(ref: RecentFileRef, now = Date.now()): number {
     else if (ageMs < 10 * 60 * 1000) score += 4;
     else if (ageMs < 30 * 60 * 1000) score += 2;
   }
+
+  return score;
+}
+
+function isStyleOnlyRequest(text: string): boolean {
+  const hasStyle =
+    /\b(css|styles|styling|theme|colors?|background|shadow|gradient|hover|font|spacing|padding|margin)\b/.test(text);
+
+  const hasContentOrStructure =
+    /\b(title|heading|headline|text|copy|content|label|name|naming|story|mission|team|section|hero|navbar|nav|header|footer|layout|page)\b/.test(text);
+
+  return hasStyle && !hasContentOrStructure;
+}
+
+function contentAwarePathBias(content: string, path: string): number {
+  const text = String(content ?? "").toLowerCase();
+  const normalizedPath = normalizePath(path);
+  const ext = extname(normalizedPath);
+
+  let score = 0;
+
+  const isAbout = normalizedPath.endsWith("about.html");
+  const isIndex = normalizedPath.endsWith("index.html");
+  const isCss = ext === ".css";
+  const isHtml = ext === ".html";
+
+  const mentionsAbout =
+    /\babout page\b/.test(text) ||
+    /\babout\.html\b/.test(text) ||
+    /\babout\b/.test(text);
+
+  const mentionsIndex =
+    /\bindex\.html\b/.test(text) ||
+    /\bhome page\b/.test(text) ||
+    /\bhomepage\b/.test(text) ||
+    /\bindex\b/.test(text);
+
+  const textOrContentRequest =
+    /\b(title|heading|headline|text|copy|wording|content|label|name|naming|story|mission|team|paragraph|section)\b/.test(
+      text
+    );
+
+  const layoutRequest =
+    /\b(layout|structure|page|hero|navbar|nav|header|footer|align|match|same|consistent|visually align|visually match)\b/.test(
+      text
+    );
+
+  const pureStyleRequest =
+    /\b(css|styles|styling|theme|colors?|background|shadow|gradient|hover|font|spacing|padding|margin)\b/.test(
+      text
+    );
+
+  const pageIdentityCorrection =
+    /\b(has nothing to do with|wrong page|wrong content|wrong topic|completely different|doesn'?t match the page)\b/.test(
+      text
+    );
+
+  const referenceStylePattern =
+    /\bmatch .* with\b/.test(text) ||
+    /\balign .* with\b/.test(text) ||
+    /\blike index\.html\b/.test(text) ||
+    /\bwith index\.html\b/.test(text);
+
+  if (mentionsAbout && isAbout) score += 10;
+  if (mentionsIndex && isIndex) score += 10;
+
+  if (textOrContentRequest && isHtml) score += 5;
+  if (layoutRequest && isHtml) score += 4;
+  if (pureStyleRequest && isCss) score += 4;
+
+  if (isStyleOnlyRequest(text) && isCss) score += 6;
+  if (!isStyleOnlyRequest(text) && isCss) score -= 1;
+
+  if (pageIdentityCorrection && isHtml) score += 7;
+  if (pageIdentityCorrection && isCss) score -= 2;
+
+  if (referenceStylePattern && isHtml) score += 3;
+
+  if (/\bnavbar naming\b/.test(text) && isHtml) score += 6;
+  if (/\bnavbar naming\b/.test(text) && isCss) score -= 2;
+
+  if (/\bpokemon\b/.test(text) && isAbout) score += 4;
 
   return score;
 }
@@ -101,10 +179,12 @@ export function resolveImplicitFollowupTarget(args: {
   const deduped = new Map<string, RecentFileRef & { score: number }>();
 
   for (const ref of recentFiles) {
-    const key = normalizePath(ref.path);
+    const key = normalizeCommonPathVariants(ref.path);
     if (!key) continue;
 
-    const score = scoreRecentFile(ref);
+    const score =
+      scoreRecentFile(ref) + contentAwarePathBias(content, ref.path);
+
     const prev = deduped.get(key);
 
     if (!prev || score > prev.score) {
@@ -136,7 +216,7 @@ export function resolveImplicitFollowupTarget(args: {
     };
   }
 
-  if (best.score >= 8 && margin >= 4) {
+  if (best.score >= 8 && margin >= 2) {
     return {
       matched: true,
       confidence: "medium",

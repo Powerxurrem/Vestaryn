@@ -1,7 +1,8 @@
 import OpenAI from "openai";
 import { runTool } from "@/lib/vault/toolRuntime";
 import { resolveFileIdByPathOrName } from "@/lib/vault/tools";
-import { generateNewFileContent, generateRewrittenFileContent } from "@/lib/chamber/generation";
+import { extractMentionedPaths, isLayoutAlignmentIntent } from "@/lib/chamber/intent";
+import { generateNewFileContent } from "@/lib/chamber/generation";
 import { inferTextMimeFromPath } from "@/lib/vault/utils";
 import { shouldPreVerifyProposalSet } from "@/lib/chamber/verify";
 import { finalizeProposalSet } from "@/lib/chamber/proposalFlow";
@@ -25,6 +26,39 @@ function labelFromPath(path: string) {
     ?.replace(/\.html?$/i, "") ?? "page";
 
   return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+function extractTitleFromHtml(html: string) {
+  const m = String(html ?? "").match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return m ? String(m[1]).replace(/\s+/g, " ").trim() : "";
+}
+
+function extractBrandTextFromHtml(html: string) {
+  const brandMatch =
+    String(html ?? "").match(/<div\b[^>]*class=["'][^"']*brand[^"']*["'][^>]*>([\s\S]*?)<\/div>/i) ||
+    String(html ?? "").match(/<a\b[^>]*class=["'][^"']*brand[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
+
+  return brandMatch ? String(brandMatch[1]).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() : "";
+}
+
+function extractNavLinksFromHtml(html: string) {
+  const navMatch = String(html ?? "").match(/<nav\b[^>]*>([\s\S]*?)<\/nav>/i);
+  if (!navMatch) return [];
+
+  return Array.from(navMatch[1].matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi))
+    .map((m) => ({
+      href: String(m[1] ?? "").trim(),
+      label: String(m[2] ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
+    }))
+    .filter((x) => x.href && x.label);
+}
+
+function extractStylesheetRefsFromHtml(html: string) {
+  return Array.from(
+    String(html ?? "").matchAll(/<link\b[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*>/gi)
+  )
+    .map((m) => String(m[1] ?? "").trim())
+    .filter(Boolean);
 }
 
 function injectNavLinksIntoHtml(
@@ -81,18 +115,93 @@ function resolveImplicitStaticPageRequest(content: string) {
   const t = String(content ?? "").toLowerCase();
   const createPaths: string[] = [];
 
-  if (/\babout page\b/.test(t) || /\babout\b/.test(t)) {
+  const hasExplicitCreateVerb = /\b(create|make|add|build|generate)\b/.test(t);
+  const hasExplicitPageWord = /\b(page|html)\b/.test(t);
+  const hasExplicitHtmlFile = /\b[a-z0-9_-]+\.html\b/.test(t);
+
+  const mentionsAboutPage =
+    /\babout page\b/.test(t) ||
+    /\babout\.html\b/.test(t) ||
+    /\b(create|make|add|build|generate)\b.*\babout\b.*\b(page|html)\b/.test(t);
+
+  const mentionsContactPage =
+    /\bcontact page\b/.test(t) ||
+    /\bcontact\.html\b/.test(t) ||
+    /\b(create|make|add|build|generate)\b.*\bcontact\b.*\b(page|html)\b/.test(t);
+
+  const sectionOnlyLanguage =
+    /\b(about|contact|services|highlights|hero)\s+(section|block|area|part)\b/.test(t) ||
+    /\b(section|block|area|part|component|card)\b/.test(t);
+
+  const explicitPageIntent =
+    (hasExplicitCreateVerb && hasExplicitPageWord) || hasExplicitHtmlFile;
+
+  if (!explicitPageIntent || sectionOnlyLanguage) {
+    return {
+      createPaths: [],
+      shouldLinkFromIndex: false,
+    };
+  }
+
+  if (mentionsAboutPage) {
     createPaths.push("about.html");
   }
 
-  if (/\bcontact page\b/.test(t) || /\bcontact\b/.test(t)) {
+  if (mentionsContactPage) {
     createPaths.push("contact.html");
   }
 
   return {
     createPaths,
-    shouldLinkFromIndex: /\b(connect|connecting|link|navigation|nav)\b/.test(t),
+    shouldLinkFromIndex:
+      /\b(connect|connecting|link|links|linked|navigation|nav)\b/.test(t),
   };
+}
+
+function buildCanonicalStaticPageRequest(args: {
+  originalRequest: string;
+  createPath: string;
+  canonicalHtml: string;
+  canonicalTitle?: string;
+  canonicalBrand?: string;
+  canonicalNav?: Array<{ href: string; label: string }>;
+  canonicalStylesheets?: string[];
+}) {
+  const {
+    originalRequest,
+    createPath,
+    canonicalHtml,
+    canonicalTitle,
+    canonicalBrand,
+    canonicalNav = [],
+    canonicalStylesheets = [],
+  } = args;
+
+  return (
+    `${originalRequest}\n\n` +
+    `Create this as a new sibling page using index.html as the canonical layout.\n` +
+    `Repository-derived identity:\n` +
+    `- Canonical title: ${canonicalTitle || "(none)"}\n` +
+    `- Canonical brand text: ${canonicalBrand || "(none)"}\n` +
+    `- Existing nav links: ${
+      canonicalNav.length
+        ? canonicalNav.map((x) => `${x.label} -> ${x.href}`).join(", ")
+        : "(none)"
+    }\n` +
+    `- Existing stylesheet refs: ${
+      canonicalStylesheets.length ? canonicalStylesheets.join(", ") : "(none)"
+    }\n` +
+    `Hard rules:\n` +
+    `- Reuse the same stylesheet reference pattern as index.html.\n` +
+    `- Reuse the same site identity, naming, and tone as index.html.\n` +
+    `- Preserve the existing nav items from index.html unless the user explicitly asked to change them.\n` +
+    `- Do not invent fake email addresses, fake social links, fake contact details, testimonials, or placeholder business data.\n` +
+    `- Do not invent new local assets, logos, icons, SVGs, scripts, or image files.\n` +
+    `- Do not use an inline <style> block if index.html uses shared CSS.\n` +
+    `- Keep the structure aligned with index.html.\n` +
+    `- Output a complete working page for: ${createPath}\n\n` +
+    `Canonical file content:\n${canonicalHtml}`
+  );
 }
 
 export async function handleImplicitStaticPageMode({
@@ -111,7 +220,44 @@ export async function handleImplicitStaticPageMode({
     return null;
   }
 
-   const { createPaths, shouldLinkFromIndex } =
+  const t = String(content ?? "").toLowerCase();
+  const mentionedPaths = extractMentionedPaths(content);
+
+  const explicitPageIntent =
+    /\b(create|make|add|build|generate)\b.*\b(page|html)\b/.test(t) ||
+    /\bnew\s+(page|html)\b/.test(t) ||
+    /\b[a-z0-9_-]+\.html\b/.test(t);
+
+  const sectionOnlyLanguage =
+    /\b(about|contact|services|highlights|hero)\s+(section|block|area|part)\b/.test(t) ||
+    /\b(section|block|area|part|component|card)\b/.test(t);
+
+  // explicit multi-file or explicit html edit requests should never hit implicit page creation
+  if (mentionedPaths.length >= 2) {
+    return null;
+  }
+
+  if (
+    mentionedPaths.length === 1 &&
+    /\.html?$/i.test(String(mentionedPaths[0] ?? ""))
+  ) {
+    return null;
+  }
+
+  // alignment / edit requests should not be hijacked by implicit page creation
+  if (
+    isLayoutAlignmentIntent(content) ||
+    /\b(fix|align|match|same styling|same style|same theme)\b/i.test(content)
+  ) {
+    return null;
+  }
+
+  // Do not treat "about section" or "highlights section" as page creation
+  if (!explicitPageIntent || sectionOnlyLanguage) {
+    return null;
+  }
+
+  const { createPaths, shouldLinkFromIndex } =
     resolveImplicitStaticPageRequest(content);
 
   if (createPaths.length === 0) return null;
@@ -130,23 +276,12 @@ export async function handleImplicitStaticPageMode({
     createPath
   );
 
-  if (existingId) {
+   if (existingId) {
     console.log("[implicit_static_page] skipped: file already exists", {
       createPath,
     });
 
-    return new Response(
-      "[Observation]\nThe requested page already exists.\n\n" +
-        `[Assessment]\n${createPath} is already present in the repository.\n\n` +
-        "[Action]\nRequest a modification to that page or create a different one.",
-      {
-        status: 200,
-        headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          "Cache-Control": "no-cache, no-transform",
-        },
-      }
-    );
+    return null;
   }
 
   const proposals: any[] = [];
@@ -177,10 +312,62 @@ export async function handleImplicitStaticPageMode({
       mime: inferTextMimeFromPath(createPath),
     };
 
+const canonicalIndex = await runTool(
+  supabase,
+  repoId,
+  userId,
+  content,
+  "vault_read_text",
+  { path: "index.html" }
+);
+
+const canonicalHtml =
+  canonicalIndex &&
+  typeof canonicalIndex === "object" &&
+  !("error" in canonicalIndex)
+    ? String((canonicalIndex as any).content ?? "")
+    : "";
+
+const canonicalTitle = canonicalHtml
+  ? extractTitleFromHtml(canonicalHtml)
+  : "";
+
+const canonicalBrand = canonicalHtml
+  ? extractBrandTextFromHtml(canonicalHtml)
+  : "";
+
+const canonicalNav = canonicalHtml
+  ? extractNavLinksFromHtml(canonicalHtml)
+  : [];
+
+const canonicalStylesheets = canonicalHtml
+  ? extractStylesheetRefsFromHtml(canonicalHtml)
+  : [];
+
+const effectiveUserRequest = canonicalHtml
+  ? buildCanonicalStaticPageRequest({
+      originalRequest: content,
+      createPath,
+      canonicalHtml,
+      canonicalTitle,
+      canonicalBrand,
+      canonicalNav,
+      canonicalStylesheets,
+    })
+  : content;
+
+console.log("[implicit_static_page canonical identity]", {
+  createPath,
+  canonicalTitle,
+  canonicalBrand,
+  canonicalNav,
+  canonicalStylesheets,
+});
+
     try {
       newPageContent = await generateNewFileContent({
         ...baseArgs,
-        userRequest: content,
+        userRequest: effectiveUserRequest,
       });
     } catch (e: any) {
       const msg = String(e?.message ?? "");
@@ -198,7 +385,7 @@ export async function handleImplicitStaticPageMode({
       newPageContent = await generateNewFileContent({
         ...baseArgs,
         userRequest:
-          `${content}\n\nRetry rules:\n` +
+          `${effectiveUserRequest}\n\nRetry rules:\n` +
           `- Return the FULL complete file.\n` +
           `- Do not truncate.\n` +
           `- Keep the page compact but complete.\n` +
@@ -207,6 +394,31 @@ export async function handleImplicitStaticPageMode({
         maxOutputTokens: 5200,
       });
     }
+
+if (canonicalStylesheets.length > 0) {
+  const missingStylesheet = canonicalStylesheets.some(
+    (href) => !newPageContent.includes(href)
+  );
+
+  if (missingStylesheet) {
+    console.log("[implicit_static_page retry missing stylesheet]", {
+      createPath,
+      canonicalStylesheets,
+    });
+
+    newPageContent = await generateNewFileContent({
+      ...baseArgs,
+      userRequest:
+        `${effectiveUserRequest}\n\n` +
+        `Critical retry rules:\n` +
+        `- Reuse the exact stylesheet link pattern from index.html.\n` +
+        `- The page must include these stylesheet refs: ${canonicalStylesheets.join(", ")}\n` +
+        `- Do not omit the shared stylesheet.\n` +
+        `- Return the FULL complete file.\n`,
+      maxOutputTokens: 5200,
+    });
+  }
+}
 
     const createProposal = await runTool(
       supabase,

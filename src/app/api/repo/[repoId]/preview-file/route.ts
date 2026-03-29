@@ -131,15 +131,50 @@ const preferredRow =
 const resolvedPath = String(preferredRow.path ?? requestedPath);
 
 const readResult = await vault_read_text(supabase, repoId, preferredRow.id);
-const content = readResult?.content ?? "";
+let content = String(readResult?.content ?? "");
 
 if (!content) {
   return new Response(`Preview asset empty: ${resolvedPath}`, { status: 404 });
 }
 
+const isHtmlFragment =
+  resolvedPath.toLowerCase().endsWith(".html") &&
+  !content.includes("<html") &&
+  !content.includes("<body");
+
+if (isHtmlFragment) {
+  const cssHref =
+    `/api/repo/${repoId}/preview-file?path=${encodeURIComponent("styles.css")}` +
+    `&base=${encodeURIComponent(resolvedPath)}`;
+
+  content = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="${cssHref}" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+    }
+    body {
+      padding: 24px;
+    }
+  </style>
+</head>
+<body>
+${content}
+</body>
+</html>`;
+}
+
 return new Response(content, {
   headers: {
-    "Content-Type": inferContentType(resolvedPath),
+    "Content-Type": isHtmlFragment
+      ? "text/html; charset=utf-8"
+      : inferContentType(resolvedPath),
     "Cache-Control": "no-store, no-cache, must-revalidate",
   },
 });

@@ -5,8 +5,13 @@ import { isLayoutAlignmentIntent } from "@/lib/chamber/intent";
 function looksTruncatedHtml(text: string) {
   const t = String(text ?? "").trim().toLowerCase();
   if (!t) return true;
+
   if (t.includes("<html") && !t.includes("</html>")) return true;
   if (t.includes("<body") && !t.includes("</body>")) return true;
+  if (t.includes("<head") && !t.includes("</head>")) return true;
+  if ((t.match(/<style\b/g) ?? []).length !== (t.match(/<\/style>/g) ?? []).length) return true;
+  if ((t.match(/<script\b/g) ?? []).length !== (t.match(/<\/script>/g) ?? []).length) return true;
+
   return false;
 }
 
@@ -255,6 +260,9 @@ export type WebsiteSectionBrief = {
 
 export type WebsiteBootstrapBrief = {
   siteTitle: string;
+  siteType: string;
+  tone: string;
+  visualStyle: string;
   heroTitle: string;
   heroSubtitle: string;
   ctaText: string;
@@ -276,6 +284,9 @@ You are creating a small structured brief for an initial static website bootstra
 Return ONLY valid JSON in this exact shape:
 {
   "siteTitle": "string",
+  "siteType": "string",
+  "tone": "string",
+  "visualStyle": "string",
   "heroTitle": "string",
   "heroSubtitle": "string",
   "ctaText": "string",
@@ -324,6 +335,9 @@ ${opts.userRequest}
 
     return {
       siteTitle: String(parsed?.siteTitle ?? "").trim() || fallback.siteTitle,
+      siteType: String(parsed?.siteType ?? "").trim() || fallback.siteType,
+      tone: String(parsed?.tone ?? "").trim() || fallback.tone,
+      visualStyle: String(parsed?.visualStyle ?? "").trim() || fallback.visualStyle,
       heroTitle: String(parsed?.heroTitle ?? "").trim() || fallback.heroTitle,
       heroSubtitle: String(parsed?.heroSubtitle ?? "").trim() || fallback.heroSubtitle,
       ctaText: String(parsed?.ctaText ?? "").trim() || fallback.ctaText,
@@ -394,8 +408,12 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
   if (s.includes("pokemon")) {
     return {
       siteTitle: "PokeHub",
+      siteType: "fan_site",
+      tone: "playful",
+      visualStyle: "playful",
       heroTitle: "Discover Your Favorite Pokémon",
-      heroSubtitle: "A playful landing page for exploring featured Pokémon, trainers, and adventures.",
+      heroSubtitle:
+        "A playful landing page for exploring featured Pokémon, trainers, and adventures.",
       ctaText: "Explore Now",
       secondaryCtaText: includeAboutPage ? "About" : "",
       styleMood: "playful modern",
@@ -420,8 +438,12 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
   if (s.includes("coffee")) {
     return {
       siteTitle: "Morning Roast",
+      siteType: "restaurant",
+      tone: "minimal",
+      visualStyle: "elegant",
       heroTitle: "Coffee for Calm Mornings",
-      heroSubtitle: "A cozy landing page for a café, roastery, or coffee brand.",
+      heroSubtitle:
+        "A cozy landing page for a café, roastery, or coffee brand.",
       ctaText: "View Menu",
       secondaryCtaText: includeAboutPage ? "About" : "",
       styleMood: "warm minimal",
@@ -441,8 +463,12 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
   if (s.includes("portfolio")) {
     return {
       siteTitle: "Portfolio",
+      siteType: "portfolio",
+      tone: "professional",
+      visualStyle: "clean",
       heroTitle: "Designing Clear, Useful Experiences",
-      heroSubtitle: "A simple starter portfolio for showcasing work and background.",
+      heroSubtitle:
+        "A simple starter portfolio for showcasing work and background.",
       ctaText: "View Work",
       secondaryCtaText: "About",
       styleMood: "clean professional",
@@ -459,27 +485,79 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
     };
   }
 
-  // Request-aware generic fallback
   const styleMood = hasGold ? "elegant warm" : "clean modern";
   const paletteHint = hasGold ? "gold black cream" : "blue slate";
-  const heroTitle = topic ? `Welcome to ${topicTitle}` : "Welcome";
+
+  const siteType: WebsiteBootstrapBrief["siteType"] =
+    /\bportfolio|work|project\b/i.test(raw)
+      ? "portfolio"
+      : /\bmenu|food|drink|coffee|cafe|restaurant\b/i.test(raw)
+      ? "restaurant"
+      : /\bproduct|app|saas|tool\b/i.test(raw)
+      ? "product"
+      : /\bbusiness|company|agency|studio\b/i.test(raw)
+      ? "business"
+      : /\bpokemon|fan\b/i.test(raw)
+      ? "fan_site"
+      : "general";
+
+  const tone: WebsiteBootstrapBrief["tone"] =
+    hasGold
+      ? "luxury"
+      : /\bfun|playful|cute|pokemon\b/i.test(raw)
+      ? "playful"
+      : /\bminimal|minimalist|clean\b/i.test(raw)
+      ? "minimal"
+      : /\bbold|strong|dramatic\b/i.test(raw)
+      ? "bold"
+      : "professional";
+
+  const visualStyle: WebsiteBootstrapBrief["visualStyle"] =
+    hasGold
+      ? "premium"
+      : /\bdark\b/i.test(raw)
+      ? "dark"
+      : /\bplayful|pokemon\b/i.test(raw)
+      ? "playful"
+      : /\belegant|luxury\b/i.test(raw)
+      ? "elegant"
+      : "clean";
+
+  const heroTitle = topic
+    ? `${topicTitle}`
+    : "Build Something Clear and Focused";
+
   const heroSubtitle = topic
-    ? `A simple website focused on ${topic.toLowerCase()}${hasPictures ? " with a visual gallery feel" : ""}.`
+    ? `A simple website focused on ${topic.toLowerCase()}${
+        hasPictures ? " with a visual gallery feel" : ""
+      }.`
     : "A clean, simple website starter.";
 
-  const sectionTitle = topic
-    ? `About ${topicTitle}`
-    : "Getting Started";
+  const sectionTitle = topic ? `About ${topicTitle}` : "Getting Started";
 
   const sectionBody = topic
     ? `A focused introduction to ${topic.toLowerCase()} with clear sections and a simple layout.`
     : "A reliable starter layout with room to customize.";
 
+  const ctaText =
+    /\b(book|appointment|reserve)\b/i.test(raw)
+      ? "Book Now"
+      : /\b(menu|food|drink|coffee)\b/i.test(raw)
+      ? "View Menu"
+      : /\bportfolio|work|project\b/i.test(raw)
+      ? "View Work"
+      : /\bpokemon|fan|gallery|images|pictures\b/i.test(raw)
+      ? "Explore"
+      : "Get Started";
+
   return {
     siteTitle: topicTitle || "Landing Page",
+    siteType,
+    tone,
+    visualStyle,
     heroTitle,
     heroSubtitle,
-    ctaText: hasPictures ? "View Gallery" : "Explore",
+    ctaText,
     secondaryCtaText: includeAboutPage ? "About" : "",
     styleMood,
     paletteHint,
@@ -496,7 +574,11 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
               type: "features" as const,
               title: "Gallery Highlights",
               body: "A visual section for featured images and themed highlights.",
-              items: ["Featured image", "Highlighted section", "Visual showcase"],
+              items: [
+                "Featured image",
+                "Highlighted section",
+                "Visual showcase",
+              ],
             },
           ]
         : []),
@@ -656,6 +738,8 @@ ${htmlCssCoordinationRules}
 ${cssLocalizationRules}
 
 ${htmlLocalizationRules}
+
+${htmlAlignmentRules}
 
 User request:
 ${userRequest}

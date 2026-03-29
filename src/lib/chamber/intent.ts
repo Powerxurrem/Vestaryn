@@ -116,16 +116,20 @@ export function inferImplicitPagePath(text: string) {
   return null;
 }
 
-export function extractMentionedPaths(text: string) {
-  const sanitized = sanitizeIntentParsingInput(text);
+export function extractMentionedPaths(content: string): string[] {
+  const text = String(content ?? "");
 
-  return Array.from(
-    new Set(
-      (sanitized.match(/\b(?:[\w-]+\/)*[\w.\-[\]]+\.[A-Za-z0-9]{1,8}\b/g) ?? [])
-        .map((s) => s.trim())
-        .filter(isValidPathCandidate)
+  const matches = Array.from(
+    text.matchAll(
+      /\b[a-zA-Z0-9_./-]+\.(?:html|css|js|jsx|ts|tsx|py|sql|json|md|txt|bas|csv|xml|yml|yaml)\b/gi
     )
-  );
+  )
+    .map((m) => String(m[0] ?? "").trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(matches))
+    .filter((p) => /[a-zA-Z]/.test(p))
+    .filter((p) => !/^\d+(?:\.\d+)+$/.test(p));
 }
 
 export function isLayoutAlignmentIntent(text: string) {

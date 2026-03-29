@@ -358,6 +358,56 @@ async function exportFile(f: RepoFile) {
     setMenu({ open: true, x: ox, y: oy, file });
     setMenuPos({ x: ox, y: oy });
   }
+async function handleCopyFile(file: { id: string; path: string; name?: string }) {
+  try {
+    const metaRes = await fetch(`/api/repos/${repoId}/files/${file.id}`, {
+      cache: "no-store",
+      credentials: "include",
+    });
+
+    const metaJson = await metaRes.json().catch(() => null);
+
+    if (!metaRes.ok) {
+      throw new Error(metaJson?.error || `Failed to load file (${metaRes.status})`);
+    }
+
+    let content = String(metaJson?.content ?? "");
+
+    if (!content) {
+      const signedUrl = String(metaJson?.signed_url ?? "").trim();
+
+      if (!signedUrl) {
+        throw new Error("No file content or signed_url returned");
+      }
+
+      const fileRes = await fetch(signedUrl, { cache: "no-store" });
+      if (!fileRes.ok) {
+        throw new Error(`Failed to fetch file body (${fileRes.status})`);
+      }
+
+      content = await fileRes.text();
+    }
+
+    if (!content.length) {
+      throw new Error("File is empty");
+    }
+
+    await navigator.clipboard.writeText(content);
+
+    console.log("[RepoVault] copied file", {
+      fileId: file.id,
+      path: file.path,
+      length: content.length,
+    });
+
+    setError(null);
+  } catch (err: any) {
+    console.error("[RepoVault] copy file failed", err);
+    setError(err?.message ?? "Copy failed");
+  }
+}
+
+
 
   // ─────────────────────────────────────────────────────────────
   // Effects: load files on repoId change
@@ -625,6 +675,19 @@ async function exportFile(f: RepoFile) {
             >
               Open
             </button>
+
+<button
+  type="button"
+  onClick={() => {
+  if (!menu.file) return;
+
+  handleCopyFile(menu.file);
+  setMenu({ open: false, x: 0, y: 0, file: null });
+}}
+  className="block w-full px-3 py-2 text-left text-sm text-white/80 hover:bg-white/5 hover:text-white"
+>
+  Copy File
+</button>
 
             {(() => {
               const canExport = ALLOW_EXPORT_UI[tier];

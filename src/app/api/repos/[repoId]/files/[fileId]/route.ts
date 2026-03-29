@@ -27,6 +27,24 @@ function isUuid(v: string) {
   );
 }
 
+function isTextLikeMime(mime: string | null | undefined, path: string | null | undefined) {
+  const m = String(mime ?? "").toLowerCase();
+  const p = String(path ?? "").toLowerCase();
+
+  if (
+    m.startsWith("text/") ||
+    m.includes("json") ||
+    m.includes("javascript") ||
+    m.includes("typescript") ||
+    m.includes("xml") ||
+    m.includes("svg")
+  ) {
+    return true;
+  }
+
+  return /\.(ts|tsx|js|jsx|css|html|md|txt|json|py|sql|bas|xml|svg|yml|yaml)$/i.test(p);
+}
+
 function json(
   body: any,
   status = 200,
@@ -215,7 +233,7 @@ export async function GET(_req: Request, ctx: Ctx) {
 
   if (!storageKey) return json({ error: "missing storage_key" }, 400);
 
-  // Sign URL (30 min)
+    // Sign URL (30 min)
   const { data: signed, error: signErr } = await supabase.storage
     .from(VAULT_BUCKET)
     .createSignedUrl(storageKey, 60 * 30);
@@ -223,10 +241,25 @@ export async function GET(_req: Request, ctx: Ctx) {
   if (signErr) return json({ error: signErr.message }, 400);
   if (!signed?.signedUrl) return json({ error: "failed to sign url" }, 400);
 
+  let content: string | null = null;
+
+  if (isTextLikeMime(file.mime, file.path)) {
+    const { data: blob, error: dlErr } = await supabase.storage
+      .from(VAULT_BUCKET)
+      .download(storageKey);
+
+    if (dlErr) {
+      return json({ error: dlErr.message }, 400);
+    }
+
+    content = await blob.text();
+  }
+
   return json({
     file,
     latest_version: null,
     signed_url: signed.signedUrl,
+    content,
   });
 }
 

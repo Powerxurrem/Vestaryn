@@ -14,6 +14,9 @@ type CreateMissingFileDeps = {
   userId: string;
   content: string;
   model: string;
+  executionMode?: {
+    mentionedPaths?: string[];
+  } | null;
 };
 
 type CanonicalProposal = {
@@ -36,6 +39,39 @@ function textResponse(body: string) {
       "Cache-Control": "no-cache, no-transform",
     },
   });
+}
+
+function extractTitleFromHtml(html: string) {
+  const m = String(html ?? "").match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+  return m ? String(m[1]).replace(/\s+/g, " ").trim() : "";
+}
+
+function extractBrandTextFromHtml(html: string) {
+  const brandMatch =
+    String(html ?? "").match(/<div\b[^>]*class=["'][^"']*brand[^"']*["'][^>]*>([\s\S]*?)<\/div>/i) ||
+    String(html ?? "").match(/<a\b[^>]*class=["'][^"']*brand[^"']*["'][^>]*>([\s\S]*?)<\/a>/i);
+
+  return brandMatch ? String(brandMatch[1]).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() : "";
+}
+
+function extractNavLinksFromHtml(html: string) {
+  const navMatch = String(html ?? "").match(/<nav\b[^>]*>([\s\S]*?)<\/nav>/i);
+  if (!navMatch) return [];
+
+  return Array.from(navMatch[1].matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi))
+    .map((m) => ({
+      href: String(m[1] ?? "").trim(),
+      label: String(m[2] ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
+    }))
+    .filter((x) => x.href && x.label);
+}
+
+function extractStylesheetRefsFromHtml(html: string) {
+  return Array.from(
+    String(html ?? "").matchAll(/<link\b[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*>/gi)
+  )
+    .map((m) => String(m[1] ?? "").trim())
+    .filter(Boolean);
 }
 
 function shouldForceCompactBootstrapHtml(content: string, requestedPath: string) {
@@ -146,8 +182,16 @@ export async function handleCreateMissingFileMode({
   userId,
   content,
   model,
+  executionMode,
 }: CreateMissingFileDeps): Promise<Response | null> {
-  const requestedPath = resolveCreateMissingTargetPath(content);
+  const hintedPaths = Array.isArray(executionMode?.mentionedPaths)
+  ? executionMode!.mentionedPaths!.map((p) => String(p ?? "").trim()).filter(Boolean)
+  : [];
+
+const requestedPath =
+  hintedPaths.length === 1
+    ? hintedPaths[0]
+    : resolveCreateMissingTargetPath(content);
 
   if (!requestedPath) {
     console.log("[create_missing] skipped: no single explicit path");
@@ -214,17 +258,31 @@ export async function handleCreateMissingFileMode({
           requestedPath
         );
 
+const canonicalHtml = String(canonicalFile?.content ?? "");
+const canonicalTitle = extractTitleFromHtml(canonicalHtml);
+const canonicalBrand = extractBrandTextFromHtml(canonicalHtml);
+const canonicalNav = extractNavLinksFromHtml(canonicalHtml);
+const canonicalStylesheets = extractStylesheetRefsFromHtml(canonicalHtml);
+
         const canonicalUserRequest =
           `${content}\n\n` +
           `Create this as a new sibling page using index.html as the canonical layout.\n` +
+          `Repository-derived identity:\n` +
+          `- Canonical title: ${canonicalTitle || "(none)"}\n` +
+          `- Canonical brand text: ${canonicalBrand || "(none)"}\n` +
+          `- Existing nav links: ${canonicalNav.map((x) => `${x.label} -> ${x.href}`).join(", ") || "(none)"}\n` +
+          `- Existing stylesheet refs: ${canonicalStylesheets.join(", ") || "(none)"}\n` +
           `Hard rules:\n` +
           `- Reuse the same stylesheet reference pattern as index.html.\n` +
-          `- Preserve the same site identity, naming, and general tone as index.html.\n` +
+          `- Reuse the same brand/site identity as index.html.\n` +
+          `- Preserve the existing nav items from index.html.\n` +
+          `- Add the new page link only if the request implies it.\n` +
+          `- Do not invent fake email addresses, fake social links, fake contact details, testimonials, or placeholder business data.\n` +
           `- Do not invent new local assets, logos, icons, SVGs, scripts, or image files.\n` +
-          `- Do not reference files that do not already exist, except the target page being created.\n` +
-          `- Keep the structure aligned with index.html.\n` +
-          `- Prefer simple compatible markup over introducing a brand new design system.\n` +
-          `- Output a complete working page for: ${requestedPath}\n` +
+          `- Do not use an inline <style> block if index.html uses shared CSS.\n` +
+          `- Keep structure aligned with index.html.\n` +
+          `- Output a complete working page for: ${requestedPath}\n\n` +
+          `Canonical file content:\n${canonicalHtml}`;
           (
             shouldForceCompactHtml
               ? `- Keep the page SMALL and complete.\n` +

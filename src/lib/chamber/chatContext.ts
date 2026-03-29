@@ -29,10 +29,10 @@ export async function buildChatContext(args: {
   const inference = inferRepoProfile(filePaths);
 
   console.log("[repo_inference]", {
-    repoId,
-    fileCount: filePaths.length,
-
-  });
+  repoId,
+  fileCount: filePaths.length,
+  inference,
+});
 
   let sacredText = "";
   try {

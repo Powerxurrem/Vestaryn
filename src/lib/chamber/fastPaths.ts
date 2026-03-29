@@ -1,15 +1,11 @@
 import OpenAI from "openai";
 import {
+  extractMentionedPaths,
   extractSingleMentionedPath,
   isNamedFileExecutionRequest,
   isMetaRepositoryQuestion,
-  isCreateAndModifyIntent,
-  resolveCreateAndModifyPaths,
-  isExtractToModuleIntent,
-  resolveExtractToModulePaths,
   isExplainOnlyQuestion,
 } from "@/lib/chamber/intent";
-import { isImportRefactorIntent } from "@/lib/chamber/refactorIntent";
 import {
   resolveFileIdByPathOrName,
   vault_read_text,
@@ -17,20 +13,15 @@ import {
   vault_propose_write,
 } from "@/lib/vault/tools";
 import {
-  inferTextMimeFromPath,
-  normalizeForNoopCheck,
   scrubVisibleToolPayload,
   ensureTriplet,
   stripDuplicateTriplet,
   stripCodeFences,
 } from "@/lib/vault/utils";
 import {
-  generateExtractHelpersResult,
-  generateNewFileContent,
   generateRewrittenFileContent,
 } from "@/lib/chamber/generation";
 import { setRepoFileStatus } from "@/lib/vault/fileStatus";
-import { finalizeProposalSet } from "@/lib/chamber/proposalFlow";
 import { type VerifyCommand,
   attemptFastPathRepair,
   isBaselinePreverifyFailure,
@@ -42,6 +33,7 @@ import {
 import { hasValidAssistantContract } from "@/lib/chamber/output";
 import { resolveVerifyCommand,  } from "@/lib/chamber/verifyRuntime";
 import { loadRepoInference } from "@/lib/chamber/repoContext";
+import { normalizeCommonPathVariants } from "@/lib/chamber/pathNormalization";
 
 export async function tryHandleFastPaths(args: {
   openai: OpenAI;
@@ -160,13 +152,21 @@ export async function tryHandleFastPaths(args: {
   } | null = null;
 
   try {
-    const targetPath = extractSingleMentionedPath(content);
+    const mentionedPaths = extractMentionedPaths(content);
+      const normalizedMentionedPaths = mentionedPaths.map(normalizeCommonPathVariants);
 
-    if (
-      targetPath &&
-      isNamedFileExecutionRequest(content) &&
-      !isMetaRepositoryQuestion(content)
-    ) {
+      const targetPath =
+        extractSingleMentionedPath(content)
+          ? normalizeCommonPathVariants(extractSingleMentionedPath(content)!)
+          : normalizedMentionedPaths.length > 0
+            ? normalizedMentionedPaths[0]
+            : null;
+
+      if (
+        targetPath &&
+        isNamedFileExecutionRequest(content) &&
+        !isMetaRepositoryQuestion(content)
+      ) {
       const resolvedId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
 
       if (resolvedId) {

@@ -18,36 +18,50 @@ import {
 import { resolveVerifyCommand } from "@/lib/chamber/verifyRuntime";
 import { loadRepoInference } from "@/lib/chamber/repoContext";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
-import { isInternalGoalExecutionPrompt } from "@/lib/chamber/intent";
 
 function shouldAdvanceGoal(args: {
-  content: string;
   appliedPaths: string[];
   stepFiles?: string[];
 }) {
-  const { content, appliedPaths, stepFiles } = args;
-
-  if (!isInternalGoalExecutionPrompt(content)) {
-    return { ok: false, reason: "not_internal_execution" };
-  }
+  const { appliedPaths, stepFiles } = args;
 
   const normalize = (p: string) =>
-    p
+    String(p ?? "")
       .replace(/^src\//, "")
       .replace(/^app\//, "")
       .replace(/\\/g, "/")
-      .toLowerCase();
+      .toLowerCase()
+      .trim();
 
-  const normalizedApplied = appliedPaths.map(normalize);
+  const normalizedApplied = appliedPaths
+    .map(normalize)
+    .filter(Boolean);
 
-  const normalizedStepFiles = (stepFiles ?? appliedPaths).map(normalize);
+  const normalizedStepFiles = (stepFiles ?? [])
+    .map(normalize)
+    .filter(Boolean);
 
-  const overlaps = normalizedApplied.some(p =>
+  if (normalizedApplied.length === 0) {
+    return { ok: false, reason: "no_applied_paths" };
+  }
+
+  if (normalizedStepFiles.length === 0) {
+    return { ok: true, reason: "no_step_files_declared" };
+  }
+
+  const overlaps = normalizedApplied.some((p) =>
     normalizedStepFiles.includes(p)
   );
 
   if (!overlaps) {
-    return { ok: false, reason: "no_overlap" };
+    return {
+      ok: false,
+      reason: "no_overlap",
+      debug: {
+        normalizedApplied,
+        normalizedStepFiles,
+      },
+    };
   }
 
   return { ok: true };
@@ -628,16 +642,16 @@ export async function handleApplyCommand(args: {
 
                 if (latestExecute?.goalId && latestExecute?.stepId) {
                   const guard = shouldAdvanceGoal({
-          content,
-          appliedPaths,
-          stepFiles: latestExecute?.files,
-        });
+                    appliedPaths,
+                    stepFiles: latestExecute?.files,
+                  });
 
           if (!guard.ok) {
             console.log("[goal_advance_after_apply skipped]", {
               repoId,
               reason: guard.reason,
               appliedPaths,
+              debug: (guard as any).debug ?? null,
             });
           } else {
             const advancement = await advanceGoalAfterStepSuccess({
@@ -797,7 +811,6 @@ export async function handleApplyCommand(args: {
 
       if (latestExecute?.goalId && latestExecute?.stepId) {
         const guard = shouldAdvanceGoal({
-          content,
           appliedPaths,
           stepFiles: latestExecute?.files,
         });
@@ -807,6 +820,7 @@ export async function handleApplyCommand(args: {
             repoId,
             reason: guard.reason,
             appliedPaths,
+            debug: (guard as any).debug ?? null,
           });
         } else {
           const advancement = await advanceGoalAfterStepSuccess({
