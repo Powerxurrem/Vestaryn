@@ -53,11 +53,12 @@ function shouldUseDeterministicWebsiteBootstrap(args: {
 }) {
   const text = String(args.content ?? "");
 
-  if (!args.inference?.needsBootstrap) return false;
-  if (!/\b(site|website|landing page|portfolio|home page)\b/i.test(text)) return false;
+  const looksLikeWebsiteRequest =
+    /\b(site|website|landing page|portfolio|home page)\b/i.test(text);
 
   const targetPaths = resolveBootstrapPathsFromUserRequest(text);
-  return targetPaths.length > 0;
+
+  return looksLikeWebsiteRequest && targetPaths.length > 0;
 }
 
 function extractRelevantFilesFromGoalExecutionPrompt(text: string) {
@@ -378,6 +379,7 @@ const inferredVerifyCmd = baselineVerify.verifyCmd;
   // ─────────────────────────────────────────
   // EMPTY-REPO WEBSITE BOOTSTRAP
   // ─────────────────────────────────────────
+  
   if (shouldUseDeterministicWebsiteBootstrap({ content, inference })) {
     try {
       const targetPaths = resolveBootstrapPathsFromUserRequest(content);

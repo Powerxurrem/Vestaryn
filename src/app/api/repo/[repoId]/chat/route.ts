@@ -592,7 +592,6 @@ function getEffectiveSinglePath() {
 const shouldRunCreateMissingMode =
   !continuityTargetPath &&
   (
-    executionMode.mode === "bootstrap" ||
     executionMode.mode === "incremental" ||
     executionMode.mode === "surgical" ||
     executionMode.mode === "rewrite"
@@ -739,7 +738,6 @@ if (shouldAllowPreStreamRepoOpsForMode(executionMode.mode)) {
     mode: executionMode.mode,
   });
 }
-
 
 if (shouldAllowBootstrapForMode(executionMode.mode)) {
   const bootstrapResponse = await tryHandleBootstrap({
