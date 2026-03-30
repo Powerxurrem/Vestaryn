@@ -2,6 +2,7 @@ import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { runnerRun } from "@/lib/runner/client";
 import { updateChamberStateDoc } from "@/lib/chamber/memory";
+import { persistRunConsoleLog } from "@/lib/chamber/persistRunConsoleLog";
 
 export const ALLOWED_VERIFY_COMMANDS = [
   "node_verify",
@@ -86,21 +87,64 @@ export async function handleDirectVerifyCommand(args: {
       stderrHead: String(result.stderr ?? "").slice(0, 500),
     });
 
-    await supabaseAdmin.from("repo_runs").insert({
-      repo_id: repoId,
-      change_id: null,
-      command: verifyCmd,
-      ok: Boolean(result.ok),
-      exit_code: Number(result.exitCode ?? -1),
-      duration_ms: Number(result.durationMs ?? 0),
-      stdout: (result.stdout ?? "").slice(0, 8000),
-      stderr: (result.stderr ?? "").slice(0, 8000),
-      job_id: jobId,
-      runner_fingerprint: result.fingerprint ?? null,
-      failed_step: result.failedStep ?? null,
-      failure_kind: result.failureKind ?? null,
-      timed_out: Boolean(result.timedOut),
+    const { data: runRow, error: runInsErr } = await supabaseAdmin
+  .from("repo_runs")
+  .insert({
+    repo_id: repoId,
+    change_id: null,
+    command: verifyCmd,
+    ok: Boolean(result.ok),
+    exit_code: Number(result.exitCode ?? -1),
+    duration_ms: Number(result.durationMs ?? 0),
+    stdout: (result.stdout ?? "").slice(0, 8000),
+    stderr: (result.stderr ?? "").slice(0, 8000),
+    job_id: jobId,
+    runner_fingerprint: result.fingerprint ?? null,
+    failed_step: result.failedStep ?? null,
+    failure_kind: result.failureKind ?? null,
+    timed_out: Boolean(result.timedOut),
+  })
+  .select("id")
+  .single();
+
+if (runInsErr) {
+  console.log("[verifyRuntime] repo_runs insert failed:", runInsErr.message);
+} else {
+  try {
+    const consoleLog = await persistRunConsoleLog({
+      supabase: supabaseAdmin,
+      bucket: "vestaryn-files",
+      repoId,
+      runId: runRow.id,
+      runKind: "verify",
+      createdAt: new Date().toISOString(),
+      failedStep: result.failedStep ?? null,
+      durationMs: Number(result.durationMs ?? 0),
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
     });
+
+    const { error: runUpdErr } = await supabaseAdmin
+      .from("repo_runs")
+      .update({
+        run_kind: "verify",
+        stdout_preview: consoleLog.stdoutPreview,
+        stderr_preview: consoleLog.stderrPreview,
+        log_storage_key: consoleLog.logStorageKey,
+        log_size_bytes: consoleLog.logSizeBytes,
+      })
+      .eq("id", runRow.id);
+
+    if (runUpdErr) {
+      console.log(
+        "[verifyRuntime] repo_runs console update failed:",
+        runUpdErr.message
+      );
+    }
+  } catch (e: any) {
+    console.log("[verifyRuntime] persistRunConsoleLog failed:", e?.message ?? e);
+  }
+}
 
     console.log("[verify] runner returned", {
       ok: result.ok,

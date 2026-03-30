@@ -3,6 +3,9 @@ import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { runnerRun } from "@/lib/runner/client";
 import { stripCodeFences } from "@/lib/vault/utils";
+import { persistRunConsoleLog } from "@/lib/chamber/persistRunConsoleLog";
+
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
@@ -362,7 +365,9 @@ console.log("[runAutoVerifyForRepo result artifactPreview]", {
   sheetCount: result?.artifactPreview?.sheets?.length ?? 0,
 });
 
-  await supabaseAdmin.from("repo_runs").insert({
+  const { data: runRow, error: runInsErr } = await supabaseAdmin
+  .from("repo_runs")
+  .insert({
     repo_id: repoId,
     change_id: null,
     command: verifyCmd,
@@ -376,7 +381,45 @@ console.log("[runAutoVerifyForRepo result artifactPreview]", {
     failed_step: result.failedStep ?? null,
     failure_kind: result.failureKind ?? null,
     timed_out: Boolean(result.timedOut),
-  });
+  })
+  .select("id")
+  .single();
+
+if (runInsErr) {
+  console.log("[runAutoVerifyForRepo] repo_runs insert failed:", runInsErr.message);
+} else {
+  try {
+    const consoleLog = await persistRunConsoleLog({
+      supabase: supabaseAdmin,
+      bucket: "vestaryn-files",
+      repoId,
+      runId: runRow.id,
+      runKind: "verify",
+      createdAt: new Date().toISOString(),
+      failedStep: result.failedStep ?? null,
+      durationMs: Number(result.durationMs ?? 0),
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    });
+
+    const { error: runUpdErr } = await supabaseAdmin
+      .from("repo_runs")
+      .update({
+        run_kind: "verify",
+        stdout_preview: consoleLog.stdoutPreview,
+        stderr_preview: consoleLog.stderrPreview,
+        log_storage_key: consoleLog.logStorageKey,
+        log_size_bytes: consoleLog.logSizeBytes,
+      })
+      .eq("id", runRow.id);
+
+    if (runUpdErr) {
+      console.log("[runAutoVerifyForRepo] repo_runs console update failed:", runUpdErr.message);
+    }
+  } catch (e: any) {
+    console.log("[runAutoVerifyForRepo] persistRunConsoleLog failed:", e?.message ?? e);
+  }
+}
 
 console.log("[runAutoVerifyForRepo verifyPayload artifactPreview]", {
   hasArtifactPreview: !!(result?.artifactPreview),

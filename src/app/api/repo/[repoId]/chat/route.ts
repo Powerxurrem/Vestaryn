@@ -1,3 +1,9 @@
+// IMPORTANT:
+// Do not route bootstrap-mode requests through create-missing-file mode.
+// High-level website bootstraps may infer index.html as a target, but they
+// must still flow into deterministic bootstrap so index.html + styles.css
+// are staged together instead of a single freeform file being generated.
+
 import OpenAI from "openai";
 import { supabaseServerComponent } from "@/lib/supabase/server";
 import { resolveTierPolicy } from "@/lib/membership/tiers";
@@ -591,11 +597,20 @@ function getEffectiveSinglePath() {
 
 const shouldRunCreateMissingMode =
   !continuityTargetPath &&
+  executionMode.mode !== "bootstrap" &&
+  effectiveMentionedPaths.length > 0 &&
   (
     executionMode.mode === "incremental" ||
     executionMode.mode === "surgical" ||
     executionMode.mode === "rewrite"
   );
+
+console.log("[route_path_decision]", {
+  mode: executionMode.mode,
+  createMissing: shouldRunCreateMissingMode,
+  bootstrap: shouldAllowBootstrapForMode(executionMode.mode),
+  effectiveMentionedPaths,
+});
 
 if (shouldRunCreateMissingMode) {
   console.log("[execution_mode] create-missing-file handler active", {

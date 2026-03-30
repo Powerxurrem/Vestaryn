@@ -7,7 +7,7 @@ import type { OpenTab } from "@/components/FileOverlay";
 import VaultEditorPane from "@/components/vault/VaultEditorPane";
 import { VestarynFrame } from "@/components/dev/RepoHud";
 import type { RepoVaultHandle } from "@/components/RepoVault"; // adjust path if needed
-
+import RunConsolePanel from "@/components/chamber/RunConsolePanel";
 
 
 type RepoFile = { id: string; path: string; mime: string };
@@ -129,7 +129,7 @@ useEffect(() => {
 
   // files touched since last verify started
   const pendingTouchedRef = useRef<Set<string>>(new Set());
-  type ChamberMode = "vault" | "memory" | "handover" | "sql";
+  type ChamberMode = "vault" | "memory" | "console" | "handover" | "sql";
 
   const CHAMBER_WIDTH = 360; // px
   const [chamberMode, setChamberMode] = useState<ChamberMode | null>("vault");
@@ -806,8 +806,8 @@ onPreviewRefresh={() => {
 // ─────────────────────────────────────────────────────────────
 function HiddenChamber(props: {
   repoId: string;
-  mode: "vault" | "memory" | "handover" | "sql" | null;
-  onToggleMode: (m: "vault" | "memory" | "handover" | "sql") => void;
+  mode: "vault" | "memory" | "console" | "handover" | "sql" | null;
+  onToggleMode: (m: "vault" | "memory" | "console" | "handover" | "sql") => void;
   fileStatusById: Record<
     string,
     { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
@@ -904,6 +904,13 @@ return (
           onClick={() => onToggleMode("memory")}
         >
           Memory
+        </button>
+
+        <button
+          className={`px-3 py-1.5 rounded-lg text-sm ${btn("console")}`}
+          onClick={() => onToggleMode("console")}
+        >
+          Console
         </button>
 
         <div className="ml-auto text-xs text-white/50">
@@ -1103,6 +1110,10 @@ return (
             <div className="text-white/90 font-medium mb-2">Handover</div>
             <div className="text-xs text-white/50">Placeholder.</div>
           </div>
+        )}
+
+        {mode === "console" && (
+          <RunConsolePanel repoId={repoId} />
         )}
 
         {mode === "sql" && (

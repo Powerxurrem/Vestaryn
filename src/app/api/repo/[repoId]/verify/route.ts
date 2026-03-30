@@ -14,9 +14,9 @@ import {
   resolveVerifyCommand,
 } from "@/lib/chamber/verifyRuntime";
 import { loadRepoInference } from "@/lib/chamber/repoContext";
+import { persistRunConsoleLog } from "@/lib/chamber/persistRunConsoleLog";
+
 export const runtime = "nodejs";
-
-
 
 export async function POST(
   req: Request,
@@ -51,7 +51,6 @@ export async function POST(
   if (!isMember) return new Response("Forbidden", { status: 403 });
 
   // 3) Body
-    // 3) Body
   const body = await req.json().catch(() => ({} as any));
   const requestedCommand = String(body?.commandId ?? "");
 
@@ -68,10 +67,14 @@ export async function POST(
       ? (requestedCommand as VerifyCommand)
       : inferredFallback;
 
-  const runId = typeof body?.runId === "string" ? body.runId : crypto.randomUUID();
-  const changeId = typeof body?.changeId === "string" ? body.changeId : null;
+  const runId =
+    typeof body?.runId === "string" ? body.runId : crypto.randomUUID();
+  const changeId =
+    typeof body?.changeId === "string" ? body.changeId : null;
 
-  const touchedFileIds = Array.isArray(body?.touchedFileIds) ? body.touchedFileIds : [];
+  const touchedFileIds = Array.isArray(body?.touchedFileIds)
+    ? body.touchedFileIds
+    : [];
   const touched = touchedFileIds.filter((x: any) => typeof x === "string");
 
   const jobId = `verify-${repoId}-${Date.now()}`;
@@ -84,6 +87,15 @@ export async function POST(
     async start(controller) {
       let supabaseAdmin: ReturnType<typeof createSupabaseAdmin> | null = null;
       let repoRunId: string | null = null;
+      let consoleLog:
+        | {
+            stdoutPreview: string;
+            stderrPreview: string;
+            logStorageKey: string;
+            logSizeBytes: number;
+            fullLogText: string;
+          }
+        | null = null;
 
       try {
         controller.enqueue(
@@ -94,55 +106,60 @@ export async function POST(
 
         supabaseAdmin = createSupabaseAdmin();
 
-// Insert repo_runs row (running). repo_runs.ok is NOT NULL so we use placeholders.
-{
-  const { data: runRow, error: runInsErr } = await supabaseAdmin
-    .from("repo_runs")
-    .insert({
-      repo_id: repoId,
-      change_id: changeId,          // may be null
-      actor_user_id: user.id,       // new column you added
-      command: verifyCmd,
+        // Insert repo_runs row (running). repo_runs.ok is NOT NULL so we use placeholders.
+        {
+          const { data: runRow, error: runInsErr } = await supabaseAdmin
+            .from("repo_runs")
+            .insert({
+              repo_id: repoId,
+              change_id: changeId,
+              actor_user_id: user.id,
+              command: verifyCmd,
 
-      status: "running",
-      touched_file_ids: touched,
+              status: "running",
+              touched_file_ids: touched,
 
-      ok: false,
-      exit_code: -1,
-      duration_ms: 0,
-      stdout: "",
-      stderr: "",
+              ok: false,
+              exit_code: -1,
+              duration_ms: 0,
+              stdout: "",
+              stderr: "",
 
-      job_id: jobId,
-      runner_fingerprint: null,
-      failed_step: null,
-      failure_kind: null,
-      timed_out: false,
-      summary: null,
-      updated_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
+              job_id: jobId,
+              runner_fingerprint: null,
+              failed_step: null,
+              failure_kind: null,
+              timed_out: false,
+              summary: null,
+              updated_at: new Date().toISOString(),
+            })
+            .select("id")
+            .single();
 
-  if (runInsErr) {
-    console.log("[repo_verify] repo_runs insert error:", runInsErr.message);
-  } else {
-    repoRunId = runRow.id;
-  }
-}
+          if (runInsErr) {
+            console.log("[repo_verify] repo_runs insert error:", runInsErr.message);
+          } else {
+            repoRunId = runRow.id;
+          }
+        }
 
-// Optional: mark change as verifying
-if (changeId) {
-  const { error: chUpErr } = await supabaseAdmin
-    .from("repo_changes")
-    .update({ status: "verifying", updated_at: new Date().toISOString() })
-    .eq("id", changeId)
-    .eq("repo_id", repoId);
+        // Optional: mark change as verifying
+        if (changeId) {
+          const { error: chUpErr } = await supabaseAdmin
+            .from("repo_changes")
+            .update({ status: "verifying", updated_at: new Date().toISOString() })
+            .eq("id", changeId)
+            .eq("repo_id", repoId);
 
-  if (chUpErr) console.log("[repo_verify] repo_changes verifying update error:", chUpErr.message);
-}
+          if (chUpErr) {
+            console.log(
+              "[repo_verify] repo_changes verifying update error:",
+              chUpErr.message
+            );
+          }
+        }
 
-        // build snapshot zip in storage + signed URL
+        // Build snapshot zip in storage + signed URL
         const snap = await buildRepoSnapshotSignedUrl(supabaseAdmin, repoId, jobId, {
           signedUrlTtlSec: 600,
         });
@@ -153,8 +170,6 @@ if (changeId) {
           )
         );
 
-
-        
         const result = await runnerRun({
           jobId,
           commandId: verifyCmd,
@@ -162,53 +177,92 @@ if (changeId) {
           timeoutMs: 300_000,
         });
 
-const ok = Boolean(result.ok);
+        const ok = Boolean(result.ok);
 
-const summary = [
-  ok ? "PASS" : "FAIL",
-  verifyCmd,
-  result.failedStep ? `step=${result.failedStep}` : null,
-  result.exitCode != null ? `code=${result.exitCode}` : null,
-].filter(Boolean).join(" • ");
+        const summary = [
+          ok ? "PASS" : "FAIL",
+          verifyCmd,
+          result.failedStep ? `step=${result.failedStep}` : null,
+          result.exitCode != null ? `code=${result.exitCode}` : null,
+        ]
+          .filter(Boolean)
+          .join(" • ");
 
-if (repoRunId) {
-  const { error: runUpErr } = await supabaseAdmin!
-    .from("repo_runs")
-    .update({
-      status: "finished",
-      ok,
-      exit_code: Number(result.exitCode ?? -1),
-      duration_ms: Number(result.durationMs ?? 0),
-      stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
-      job_id: jobId,
-      runner_fingerprint: result.fingerprint ?? null,
-      failed_step: result.failedStep ?? null,
-      failure_kind: result.failureKind ?? null,
-      timed_out: Boolean(result.timedOut),
-      summary,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", repoRunId);
+        if (repoRunId) {
+          try {
+            consoleLog = await persistRunConsoleLog({
+              supabase: supabaseAdmin,
+              bucket: "vestaryn-files",
+              repoId,
+              runId: repoRunId,
+              runKind: "verify",
+              createdAt: new Date().toISOString(),
+              failedStep: result.failedStep ?? null,
+              durationMs: Number(result.durationMs ?? 0),
+              stdout: result.stdout ?? "",
+              stderr: result.stderr ?? "",
+            });
+          } catch (e: any) {
+            console.log("[repo_verify] persistRunConsoleLog failed:", e?.message ?? e);
+          }
+        }
 
-  if (runUpErr) console.log("[repo_verify] repo_runs update error:", runUpErr.message);
-}
+        if (repoRunId) {
+          const { error: runUpErr } = await supabaseAdmin
+            .from("repo_runs")
+            .update({
+              status: "finished",
+              ok,
+              exit_code: Number(result.exitCode ?? -1),
+              duration_ms: Number(result.durationMs ?? 0),
+              stdout: result.stdout ?? "",
+              stderr: result.stderr ?? "",
+              stdout_preview:
+                consoleLog?.stdoutPreview ?? String(result.stdout ?? "").slice(0, 4000),
+              stderr_preview:
+                consoleLog?.stderrPreview ?? String(result.stderr ?? "").slice(0, 4000),
+              log_storage_key: consoleLog?.logStorageKey ?? null,
+              log_size_bytes: consoleLog?.logSizeBytes ?? null,
+              run_kind: "verify",
+              job_id: jobId,
+              runner_fingerprint: result.fingerprint ?? null,
+              failed_step: result.failedStep ?? null,
+              failure_kind: result.failureKind ?? null,
+              timed_out: Boolean(result.timedOut),
+              summary,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", repoRunId);
 
-// Optional: mark change final status
-if (changeId) {
-  const finalStatus = ok ? "verified_pass" : "verified_fail";
-  const { error: chFinalErr } = await supabaseAdmin!
-    .from("repo_changes")
-    .update({ status: finalStatus, updated_at: new Date().toISOString() })
-    .eq("id", changeId)
-    .eq("repo_id", repoId);
+          if (runUpErr) {
+            console.log("[repo_verify] repo_runs update error:", runUpErr.message);
+          }
+        }
 
-  if (chFinalErr) console.log("[repo_verify] repo_changes final update error:", chFinalErr.message);
-}
+        // Optional: mark change final status
+        if (changeId) {
+          const finalStatus = ok ? "verified_pass" : "verified_fail";
+          const { error: chFinalErr } = await supabaseAdmin
+            .from("repo_changes")
+            .update({ status: finalStatus, updated_at: new Date().toISOString() })
+            .eq("id", changeId)
+            .eq("repo_id", repoId);
 
-        // stream raw outputs for debugging / UX
-        if (result.stdout?.trim()) controller.enqueue(encoder.encode(String(result.stdout) + "\n"));
-        if (result.stderr?.trim()) controller.enqueue(encoder.encode(String(result.stderr) + "\n"));
+          if (chFinalErr) {
+            console.log(
+              "[repo_verify] repo_changes final update error:",
+              chFinalErr.message
+            );
+          }
+        }
+
+        // Stream raw outputs for debugging / UX
+        if (result.stdout?.trim()) {
+          controller.enqueue(encoder.encode(String(result.stdout) + "\n"));
+        }
+        if (result.stderr?.trim()) {
+          controller.enqueue(encoder.encode(String(result.stderr) + "\n"));
+        }
 
         const markerPayload = {
           ok: Boolean(result.ok),
@@ -241,7 +295,10 @@ if (changeId) {
           failedStep: result.failedStep,
           failureKind: result.failureKind,
         });
-        console.log("[repo_verify] emitting marker bytes=", JSON.stringify(markerPayload).length);
+        console.log(
+          "[repo_verify] emitting marker bytes=",
+          JSON.stringify(markerPayload).length
+        );
 
         controller.enqueue(encoder.encode(`\n__VERIFY__:${JSON.stringify(markerPayload)}\n`));
         controller.close();
@@ -249,7 +306,29 @@ if (changeId) {
         const msg = e?.message ?? "unknown";
         console.log("[repo_verify] stream fatal", { requestId, repoId, msg });
 
-        // best-effort persistence on server error
+        if (supabaseAdmin && repoRunId && !consoleLog) {
+          try {
+            consoleLog = await persistRunConsoleLog({
+              supabase: supabaseAdmin,
+              bucket: "vestaryn-files",
+              repoId,
+              runId: repoRunId,
+              runKind: "verify",
+              createdAt: new Date().toISOString(),
+              failedStep: "server",
+              durationMs: 0,
+              stdout: "",
+              stderr: msg,
+            });
+          } catch (err: any) {
+            console.log(
+              "[repo_verify] persistRunConsoleLog catch failed:",
+              err?.message ?? err
+            );
+          }
+        }
+
+        // Best-effort persistence on server error
         if (supabaseAdmin && repoRunId) {
           const { error: runUpErr } = await supabaseAdmin
             .from("repo_runs")
@@ -260,6 +339,11 @@ if (changeId) {
               duration_ms: 0,
               stdout: "",
               stderr: "",
+              stdout_preview: consoleLog?.stdoutPreview ?? "",
+              stderr_preview: consoleLog?.stderrPreview ?? String(msg).slice(0, 4000),
+              log_storage_key: consoleLog?.logStorageKey ?? null,
+              log_size_bytes: consoleLog?.logSizeBytes ?? null,
+              run_kind: "verify",
               runner_fingerprint: "repo_verify_route",
               failed_step: "server",
               failure_kind: "server_error",
@@ -269,7 +353,9 @@ if (changeId) {
             })
             .eq("id", repoRunId);
 
-          if (runUpErr) console.log("[repo_verify] repo_runs catch update error:", runUpErr.message);
+          if (runUpErr) {
+            console.log("[repo_verify] repo_runs catch update error:", runUpErr.message);
+          }
         }
 
         if (supabaseAdmin && changeId) {
@@ -279,7 +365,9 @@ if (changeId) {
             .eq("id", changeId)
             .eq("repo_id", repoId);
 
-          if (chErr) console.log("[repo_verify] repo_changes catch update error:", chErr.message);
+          if (chErr) {
+            console.log("[repo_verify] repo_changes catch update error:", chErr.message);
+          }
         }
 
         const markerPayload = {
