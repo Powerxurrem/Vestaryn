@@ -140,12 +140,36 @@ export async function runPreVerifyForProposalSet(opts: {
     })),
   });
 
+console.log("[preverify_runner_call]", {
+  repoId,
+  verifyCmd,
+  jobId,
+  runnerUrl: process.env.RUNNER_URL ?? null,
+  hasRunnerUrl: Boolean(process.env.RUNNER_URL),
+  hasRunnerSecret: Boolean(process.env.RUNNER_SECRET),
+  snapshotUrlHead: String(snap.snapshotSignedUrl ?? "").slice(0, 120),
+});
+
   const result = await runnerRun({
     jobId,
     commandId: verifyCmd,
     snapshotUrl: snap.snapshotSignedUrl,
     timeoutMs: 120_000,
   });
+
+console.log("[preverify_runner_result]", {
+  repoId,
+  verifyCmd,
+  jobId,
+  ok: result?.ok ?? null,
+  exitCode: result?.exitCode ?? null,
+  failedStep: result?.failedStep ?? null,
+  failureKind: result?.failureKind ?? null,
+  timedOut: result?.timedOut ?? null,
+  error: result?.error ?? null,
+  stdoutHead: String(result?.stdout ?? "").slice(0, 300),
+  stderrHead: String(result?.stderr ?? "").slice(0, 300),
+});
 
   return {
     command: verifyCmd,
@@ -352,12 +376,36 @@ export async function runAutoVerifyForRepo(opts: {
     signedUrlTtlSec: 600,
   });
 
+console.log("[autoverify_runner_call]", {
+  repoId,
+  verifyCmd,
+  jobId,
+  runnerUrl: process.env.RUNNER_URL ?? null,
+  hasRunnerUrl: Boolean(process.env.RUNNER_URL),
+  hasRunnerSecret: Boolean(process.env.RUNNER_SECRET),
+  snapshotUrlHead: String(snap.snapshotSignedUrl ?? "").slice(0, 120),
+});
+
   const result = await runnerRun({
     jobId,
     commandId: verifyCmd,
     snapshotUrl: snap.snapshotSignedUrl,
     timeoutMs: 120_000,
   });
+
+console.log("[autoverify_runner_result]", {
+  repoId,
+  verifyCmd,
+  jobId,
+  ok: result?.ok ?? null,
+  exitCode: result?.exitCode ?? null,
+  failedStep: result?.failedStep ?? null,
+  failureKind: result?.failureKind ?? null,
+  timedOut: result?.timedOut ?? null,
+  error: result?.error ?? null,
+  stdoutHead: String(result?.stdout ?? "").slice(0, 300),
+  stderrHead: String(result?.stderr ?? "").slice(0, 300),
+});
 
 console.log("[runAutoVerifyForRepo result artifactPreview]", {
   hasArtifactPreview: !!result?.artifactPreview,

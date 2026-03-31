@@ -102,6 +102,14 @@ export async function runnerRun(args: {
 
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
+
+      console.log("[runner_http_error_detail]", {
+        base,
+        commandId: args.commandId,
+        status: res.status,
+        bodyHead: txt.slice(0, 1000),
+      });
+
       return {
         ok: false,
         exitCode: -1,
@@ -116,6 +124,7 @@ export async function runnerRun(args: {
 
     const data: any = await res.json().catch(() => null);
     console.log("[runner_client raw artifactPreview]", data?.artifactPreview);
+
     if (!data || typeof data !== "object") {
       return {
         ok: false,
@@ -145,9 +154,10 @@ export async function runnerRun(args: {
         ? data.failedStep
         : null;
 
-        console.log("[runner_client mapped artifactPreview]", {
-          raw: data?.artifactPreview,
-        });
+    console.log("[runner_client mapped artifactPreview]", {
+      raw: data?.artifactPreview,
+    });
+
     return {
       ok,
       exitCode,
@@ -188,36 +198,56 @@ export async function runnerRun(args: {
           }))
         : undefined,
 
-      artifactPreview:  
-    data.artifactPreview && typeof data.artifactPreview === "object"
-      ? {
-          type: data.artifactPreview.type,
-          path:
-            typeof data.artifactPreview.path === "string"
-              ? data.artifactPreview.path
-              : "",
-          sheets: Array.isArray(data.artifactPreview.sheets)
-            ? data.artifactPreview.sheets.map((sheet: any) => ({
-                name:
-                  typeof sheet?.name === "string" ? sheet.name : "Sheet",
-                rows: Array.isArray(sheet?.rows)
-                  ? sheet.rows.map((row: any) =>
-                      Array.isArray(row)
-                        ? row.map((cell: any) =>
-                            cell === null ||
-                            typeof cell === "string" ||
-                            typeof cell === "number" ||
-                            typeof cell === "boolean"
-                              ? cell
-                              : String(cell)
-                          )
-                        : []
-                    )
-                  : [],
-              }))
-          : [],
-        }
-      : undefined,
+      artifactPreview:
+        data.artifactPreview && typeof data.artifactPreview === "object"
+          ? {
+              type: data.artifactPreview.type,
+              path:
+                typeof data.artifactPreview.path === "string"
+                  ? data.artifactPreview.path
+                  : "",
+              sheets: Array.isArray(data.artifactPreview.sheets)
+                ? data.artifactPreview.sheets.map((sheet: any) => ({
+                    name:
+                      typeof sheet?.name === "string" ? sheet.name : "Sheet",
+                    rows: Array.isArray(sheet?.rows)
+                      ? sheet.rows.map((row: any) =>
+                          Array.isArray(row)
+                            ? row.map((cell: any) =>
+                                cell === null ||
+                                typeof cell === "string" ||
+                                typeof cell === "number" ||
+                                typeof cell === "boolean"
+                                  ? cell
+                                  : String(cell)
+                              )
+                            : []
+                        )
+                      : [],
+                  }))
+                : [],
+            }
+          : undefined,
+    };
+  } catch (e: any) {
+    console.log("[runner_fetch_error]", {
+      base,
+      commandId: args.commandId,
+      message: e?.message ?? String(e),
+      name: e?.name ?? null,
+    });
+
+    return {
+      ok: false,
+      exitCode: -1,
+      durationMs: 0,
+      error: e?.message ?? "Runner fetch failed",
+      fingerprint: "runner_client:v2",
+      failedStep: null,
+      failureKind: "runner_fetch_error",
+      timedOut:
+        e?.name === "AbortError" ||
+        /abort|aborted|timeout/i.test(String(e?.message ?? "")),
     };
   } finally {
     clearTimeout(t);
