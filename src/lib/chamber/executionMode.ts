@@ -10,7 +10,8 @@ import {
   normText,
   isInternalGoalExecutionPrompt,
   isLayoutAlignmentIntent,
-  isConcreteEditRequest
+  isConcreteEditRequest,
+  isShortFollowupExecutionIntent,
 } from "@/lib/chamber/intent";
 
 function isCreateSiblingPageIntent(text: string) {
@@ -231,10 +232,21 @@ function isTargetReferenceAlignmentIntent(text: string, mentionedPaths: string[]
 }
 
 export function resolveExecutionMode(content: string): ExecutionModeResolution {
-  const text = normText(content);
-  const lower = text.toLowerCase();
-  const rawMentionedPaths = extractMentionedPaths(text);
+  
+const text = normText(content);
+const lower = text.toLowerCase();
+const rawMentionedPaths = extractMentionedPaths(text);
 const isGoalExecution = isInternalGoalExecutionPrompt(text);
+
+if (isShortFollowupExecutionIntent(text)) {
+  return {
+    mode: "incremental",
+    confidence: "high",
+    reasons: ["short_followup_execution_intent"],
+    mentionedPaths: [],
+    hasExplicitPaths: false,
+  };
+}
 
 const mentionedPaths =
   isInternalControlPrompt(text) && !isGoalExecution

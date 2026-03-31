@@ -103,11 +103,56 @@ export async function prepareChatRuntimeOrchestration({
     recentFiles: continuityRecentFiles,
   });
 
-    let effectiveMentionedPaths =
-    continuity.matched && continuity.targetPath
-      ? [continuity.targetPath]
+  const isShortRetryFollowup =
+    /^(yes|yes please|do it|go ahead|apply it|retry|can you retry|try again|please retry|continue)$/i.test(
+      String(text ?? "").trim()
+    );
+
+  const recentAssistantNeedsNavCleanup = cleanedHistory
+    .slice(-4)
+    .some(
+      (m: any) =>
+        m?.role === "assistant" &&
+        /\b(nav|navbar|navigation|duplicate|duplicates|still contain|single home \/ explore \/ about|retry removing)\b/i.test(
+          String(m?.content ?? "")
+        )
+    );
+
+    const staticSiteHtmlPaths = Array.from(
+    new Set(
+      continuityRecentFiles
+        .filter((f) => ["apply", "proposal", "read"].includes(String(f?.source ?? "")))
+        .map((f) => String(f?.path ?? "").trim().toLowerCase())
+        .filter(Boolean)
+        .filter((p) => /\.html?$/i.test(p))
+    )
+  );
+
+  const continuityOverride =
+    isShortRetryFollowup &&
+    recentAssistantNeedsNavCleanup &&
+    String(inference?.projectType ?? "").toLowerCase() === "static_site" &&
+    staticSiteHtmlPaths.length >= 2
+      ? {
+          matched: true,
+          confidence: "high" as const,
+          targetPath: null,
+          reason: "short_followup_resume_previous_task",
+        }
+      : continuity;
+
+  let effectiveMentionedPaths =
+    continuityOverride.matched && continuityOverride.targetPath
+      ? [continuityOverride.targetPath]
       : mergedMentionedPaths;
 
+  if (
+    continuityOverride.reason === "short_followup_resume_previous_task" &&
+    staticSiteHtmlPaths.length >= 2
+  ) {
+    effectiveMentionedPaths = staticSiteHtmlPaths;
+  }
+  
   // 1) explicit artifact inference from the current prompt
   if (effectiveMentionedPaths.length === 0) {
     const inferredPath = inferArtifactPath(text);
@@ -131,16 +176,16 @@ export async function prepareChatRuntimeOrchestration({
     }
   }
 
-  let executionMode =
-    continuity.matched &&
-    (continuity.confidence === "high" || continuity.confidence === "medium")
+    let executionMode =
+    continuityOverride.matched &&
+    (continuityOverride.confidence === "high" || continuityOverride.confidence === "medium")
       ? {
           ...rawExecutionMode,
           mode: "surgical" as const,
-          confidence: continuity.confidence,
+          confidence: continuityOverride.confidence,
           reasons: [
             ...(rawExecutionMode.reasons ?? []),
-            `implicit_followup:${continuity.reason}`,
+            `implicit_followup:${continuityOverride.reason}`,
           ],
           mentionedPaths: effectiveMentionedPaths,
           hasExplicitPaths: effectiveMentionedPaths.length > 0,
@@ -205,8 +250,8 @@ export async function prepareChatRuntimeOrchestration({
   }
 
   const continuityTargetPath =
-    continuity.matched && continuity.targetPath
-      ? continuity.targetPath
+    continuityOverride.matched && continuityOverride.targetPath
+      ? continuityOverride.targetPath
       : null;
 
   console.log("[followup_continuity]", {
@@ -214,7 +259,7 @@ export async function prepareChatRuntimeOrchestration({
     rawMentionedPaths: rawExecutionMode.mentionedPaths ?? [],
     repoPathMentions,
     mergedMentionedPaths,
-    continuity,
+    continuity: continuityOverride,
     effectiveMentionedPaths,
     finalMode: executionMode.mode,
     finalConfidence: executionMode.confidence,
@@ -259,7 +304,7 @@ export async function prepareChatRuntimeOrchestration({
     membershipBlock,
     repoPathMentions,
     mergedMentionedPaths,
-    continuity,
+    continuity: continuityOverride,
     effectiveMentionedPaths,
     executionMode,
     continuityTargetPath,

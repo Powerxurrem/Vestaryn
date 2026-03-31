@@ -185,141 +185,185 @@ export async function handleCreateMissingFileMode({
   executionMode,
 }: CreateMissingFileDeps): Promise<Response | null> {
   const hintedPaths = Array.isArray(executionMode?.mentionedPaths)
-  ? executionMode!.mentionedPaths!.map((p) => String(p ?? "").trim()).filter(Boolean)
-  : [];
+    ? executionMode.mentionedPaths.map((p) => String(p ?? "").trim()).filter(Boolean)
+    : [];
 
-const requestedPath =
-  hintedPaths.length === 1
-    ? hintedPaths[0]
-    : resolveCreateMissingTargetPath(content);
+  const resolvedCreateMissingTarget = resolveCreateMissingTargetPath(content);
 
-  if (!requestedPath) {
-    console.log("[create_missing] skipped: no single explicit path");
+  const requestedPaths =
+    hintedPaths.length > 1
+      ? hintedPaths
+      : Array.isArray(resolvedCreateMissingTarget)
+        ? resolvedCreateMissingTarget
+        : hintedPaths.length === 1
+          ? hintedPaths
+          : resolvedCreateMissingTarget
+            ? [resolvedCreateMissingTarget]
+            : [];
+
+  if (requestedPaths.length === 0) {
+    console.log("[create_missing] skipped: no requested path");
     return null;
   }
 
-  const existingFileId = await resolveFileIdByPathOrName(
-    supabase,
-    repoId,
-    requestedPath
+  const existingChecks = await Promise.all(
+    requestedPaths.map(async (path) => ({
+      path,
+      existingFileId: await resolveFileIdByPathOrName(supabase, repoId, path),
+    }))
   );
 
-  if (existingFileId) {
-    console.log("[create_missing] skipped: file already exists", {
-      requestedPath,
-      existingFileId,
+  const missingPaths = existingChecks
+    .filter((x) => !x.existingFileId)
+    .map((x) => x.path);
+
+  const existingPaths = existingChecks
+    .filter((x) => x.existingFileId)
+    .map((x) => x.path);
+
+  if (missingPaths.length === 0) {
+    console.log("[create_missing] skipped: all requested files already exist", {
+      requestedPaths,
+      existingPaths,
     });
     return null;
   }
 
-  const mime = inferTextMimeFromPath(requestedPath);
+  const stagedProposals: CanonicalProposal[] = [];
 
+  for (const requestedPath of missingPaths) {
+    const mime = inferTextMimeFromPath(requestedPath);
     let newContent = "";
 
-  try {
-    const shouldUseCanonicalHtmlPath = isHtmlSiblingStyleRequest(
-      content,
-      requestedPath
-    );
-
-    if (shouldUseCanonicalHtmlPath) {
-      const canonicalFileId = await resolveFileIdByPathOrName(
-        supabase,
-        repoId,
-        "index.html"
+    try {
+      const shouldUseCanonicalHtmlPath = isHtmlSiblingStyleRequest(
+        content,
+        requestedPath
       );
 
-      if (canonicalFileId) {
-        const canonicalFile = await vault_read_text(
+      if (shouldUseCanonicalHtmlPath) {
+        const canonicalFileId = await resolveFileIdByPathOrName(
           supabase,
           repoId,
-          canonicalFileId
+          "index.html"
         );
 
-        const { data: repoFiles } = await supabase
-          .from("repo_files")
-          .select("path")
-          .eq("repo_id", repoId)
-          .is("deleted_at", null);
+        if (canonicalFileId) {
+          const canonicalFile = await vault_read_text(
+            supabase,
+            repoId,
+            canonicalFileId
+          );
 
-        const repoFilePaths = new Set(
-          (repoFiles ?? [])
-            .map((f: any) => String(f?.path ?? "").trim())
-            .filter(Boolean)
-        );
+          const { data: repoFiles } = await supabase
+            .from("repo_files")
+            .select("path")
+            .eq("repo_id", repoId)
+            .is("deleted_at", null);
 
-        console.log("[create_missing] canonical html fast-path", {
-          requestedPath,
-          canonicalPath: "index.html",
-        });
+          const repoFilePaths = new Set(
+            (repoFiles ?? [])
+              .map((f: any) => String(f?.path ?? "").trim())
+              .filter(Boolean)
+          );
 
-        const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
-          content,
-          requestedPath
-        );
-
-const canonicalHtml = String(canonicalFile?.content ?? "");
-const canonicalTitle = extractTitleFromHtml(canonicalHtml);
-const canonicalBrand = extractBrandTextFromHtml(canonicalHtml);
-const canonicalNav = extractNavLinksFromHtml(canonicalHtml);
-const canonicalStylesheets = extractStylesheetRefsFromHtml(canonicalHtml);
-
-        const canonicalUserRequest =
-          `${content}\n\n` +
-          `Create this as a new sibling page using index.html as the canonical layout.\n` +
-          `Repository-derived identity:\n` +
-          `- Canonical title: ${canonicalTitle || "(none)"}\n` +
-          `- Canonical brand text: ${canonicalBrand || "(none)"}\n` +
-          `- Existing nav links: ${canonicalNav.map((x) => `${x.label} -> ${x.href}`).join(", ") || "(none)"}\n` +
-          `- Existing stylesheet refs: ${canonicalStylesheets.join(", ") || "(none)"}\n` +
-          `Hard rules:\n` +
-          `- Reuse the same stylesheet reference pattern as index.html.\n` +
-          `- Reuse the same brand/site identity as index.html.\n` +
-          `- Preserve the existing nav items from index.html.\n` +
-          `- Add the new page link only if the request implies it.\n` +
-          `- Do not invent fake email addresses, fake social links, fake contact details, testimonials, or placeholder business data.\n` +
-          `- Do not invent new local assets, logos, icons, SVGs, scripts, or image files.\n` +
-          `- Do not use an inline <style> block if index.html uses shared CSS.\n` +
-          `- Keep structure aligned with index.html.\n` +
-          `- Output a complete working page for: ${requestedPath}\n\n` +
-          `Canonical file content:\n${canonicalHtml}`;
-          (
-            shouldForceCompactHtml
-              ? `- Keep the page SMALL and complete.\n` +
-                `- Prefer a minimal first version over a large elaborate page.\n` +
-                `- Use only essential sections.\n` +
-                `- Do not add filler sections, fake testimonials, fake forms, or extra marketing blocks unless explicitly requested.\n`
-              : ""
-          ) +
-          `\nCanonical file content:\n${String(canonicalFile?.content ?? "")}`;
-
-        newContent = await generateNewFileContentWithRetry({
-          openai,
-          model,
-          userRequest: canonicalUserRequest,
-          path: requestedPath,
-          mime,
-          maxOutputTokens: 10000,
-        });
-
-        const localAssetRefs = extractLocalAssetRefs(newContent);
-
-        const missingAssetRefs = localAssetRefs.filter((ref) => {
-          const normalized = normalizeRepoRelativePath(ref);
-          return !repoFilePaths.has(normalized);
-        });
-
-        if (missingAssetRefs.length > 0) {
-          console.log("[create_missing] canonical html fast-path generated missing assets", {
+          console.log("[create_missing] canonical html fast-path", {
             requestedPath,
-            missingAssetRefs,
+            canonicalPath: "index.html",
           });
 
-          return textResponse(
-            "[Observation]\nThe requested file could not be staged safely.\n\n" +
-              `[Assessment]\nVestaryn generated ${requestedPath}, but it referenced local assets that do not exist in the repository.\n\n` +
-              "[Action]\nRetry with a simpler page request, or add the required assets first."
+          const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
+            content,
+            requestedPath
           );
+
+          const canonicalHtml = String(canonicalFile?.content ?? "");
+          const canonicalTitle = extractTitleFromHtml(canonicalHtml);
+          const canonicalBrand = extractBrandTextFromHtml(canonicalHtml);
+          const canonicalNav = extractNavLinksFromHtml(canonicalHtml);
+          const canonicalStylesheets = extractStylesheetRefsFromHtml(canonicalHtml);
+
+          const canonicalUserRequest =
+            `${content}\n\n` +
+            `Create this as a new sibling page using index.html as the canonical layout.\n` +
+            `Repository-derived identity:\n` +
+            `- Canonical title: ${canonicalTitle || "(none)"}\n` +
+            `- Canonical brand text: ${canonicalBrand || "(none)"}\n` +
+            `- Existing nav links: ${canonicalNav.map((x) => `${x.label} -> ${x.href}`).join(", ") || "(none)"}\n` +
+            `- Existing stylesheet refs: ${canonicalStylesheets.join(", ") || "(none)"}\n` +
+            `Hard rules:\n` +
+            `- Reuse the same stylesheet reference pattern as index.html.\n` +
+            `- Reuse the same brand/site identity as index.html.\n` +
+            `- Preserve the existing nav items from index.html.\n` +
+            `- Add the new page link only if the request implies it.\n` +
+            `- Do not invent fake email addresses, fake social links, fake contact details, testimonials, or placeholder business data.\n` +
+            `- Do not invent new local assets, logos, icons, SVGs, scripts, or image files.\n` +
+            `- Do not use an inline <style> block if index.html uses shared CSS.\n` +
+            `- Keep structure aligned with index.html.\n` +
+            `- Output a complete working page for: ${requestedPath}\n` +
+            (
+              shouldForceCompactHtml
+                ? `- Keep the page SMALL and complete.\n` +
+                  `- Prefer a minimal first version over a large elaborate page.\n` +
+                  `- Use only essential sections.\n` +
+                  `- Do not add filler sections, fake testimonials, fake forms, or extra marketing blocks unless explicitly requested.\n`
+                : ""
+            ) +
+            `\nCanonical file content:\n${canonicalHtml}`;
+
+          newContent = await generateNewFileContentWithRetry({
+            openai,
+            model,
+            userRequest: canonicalUserRequest,
+            path: requestedPath,
+            mime,
+            maxOutputTokens: 10000,
+          });
+
+          const localAssetRefs = extractLocalAssetRefs(newContent);
+
+          const missingAssetRefs = localAssetRefs.filter((ref) => {
+            const normalized = normalizeRepoRelativePath(ref);
+            return !repoFilePaths.has(normalized);
+          });
+
+          if (missingAssetRefs.length > 0) {
+            console.log("[create_missing] canonical html fast-path generated missing assets", {
+              requestedPath,
+              missingAssetRefs,
+            });
+
+            return textResponse(
+              "[Observation]\nThe requested file could not be staged safely.\n\n" +
+                `[Assessment]\nVestaryn generated ${requestedPath}, but it referenced local assets that do not exist in the repository.\n\n` +
+                "[Action]\nRetry with a simpler page request, or add the required assets first."
+            );
+          }
+        } else {
+          const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
+            content,
+            requestedPath
+          );
+
+          const baseUserRequest =
+            shouldForceCompactHtml
+              ? `${content}\n\nAdditional generation rules:\n` +
+                `- Create a SMALL first version of the page.\n` +
+                `- Keep the HTML compact and complete.\n` +
+                `- Use only essential sections for the first scaffold.\n` +
+                `- Do not generate a long landing page.\n` +
+                `- Do not add unnecessary cards, extra marketing sections, fake testimonials, fake forms, or filler copy.\n` +
+                `- Prefer a minimal hero plus 1 to 2 short sections.\n` +
+                `- Return a complete valid HTML document with closing </body> and </html> tags.\n`
+              : content;
+
+          newContent = await generateNewFileContentWithRetry({
+            openai,
+            model,
+            userRequest: baseUserRequest,
+            path: requestedPath,
+            mime,
+          });
         }
       } else {
         const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
@@ -347,106 +391,90 @@ const canonicalStylesheets = extractStylesheetRefsFromHtml(canonicalHtml);
           mime,
         });
       }
-    } else {
-    const shouldForceCompactHtml = shouldForceCompactBootstrapHtml(
-       content,
-      requestedPath
-    );
+    } catch (e: any) {
+      const message = String(e?.message ?? "unknown error");
 
-      const baseUserRequest =
-        shouldForceCompactHtml
-          ? `${content}\n\nAdditional generation rules:\n` +
-            `- Create a SMALL first version of the page.\n` +
-            `- Keep the HTML compact and complete.\n` +
-            `- Use only essential sections for the first scaffold.\n` +
-            `- Do not generate a long landing page.\n` +
-            `- Do not add unnecessary cards, extra marketing sections, fake testimonials, fake forms, or filler copy.\n` +
-            `- Prefer a minimal hero plus 1 to 2 short sections.\n` +
-            `- Return a complete valid HTML document with closing </body> and </html> tags.\n`
-          : content;
-
-      newContent = await generateNewFileContentWithRetry({
-        openai,
-        model,
-        userRequest: baseUserRequest,
-        path: requestedPath,
-        mime,
+      console.log("[create_missing] generation failed", {
+        requestedPath,
+        message,
       });
-    }
-  } catch (e: any) {
-    const message = String(e?.message ?? "unknown error");
 
-    console.log("[create_missing] generation failed", {
-      requestedPath,
-      message,
-    });
+      if (/appears truncated/i.test(message)) {
+        return textResponse(
+          "[Observation]\nThe requested files could not be staged safely.\n\n" +
+            `[Assessment]\nVestaryn attempted to generate ${requestedPath}, but the generated file was truncated before a valid complete file could be produced.\n\n` +
+            "[Action]\nRetry with a narrower request, or describe a smaller first version of the file."
+        );
+      }
 
-    if (/appears truncated/i.test(message)) {
       return textResponse(
-        "[Observation]\nThe requested file could not be staged safely.\n\n" +
-          `[Assessment]\nVestaryn attempted to generate ${requestedPath}, but the generated file was truncated before a valid complete file could be produced.\n\n` +
-          "[Action]\nRetry with a narrower request, or describe a smaller first version of the file."
+        "[Observation]\nThe requested files could not be prepared.\n\n" +
+          `[Assessment]\nVestaryn attempted to generate ${requestedPath}, but file generation failed before staging the full multi-file set.\n\n` +
+          "[Action]\nRetry the request with a clearer description of the files you want created."
       );
     }
 
-    return textResponse(
-      "[Observation]\nThe requested file could not be prepared.\n\n" +
-        `[Assessment]\nVestaryn attempted to generate ${requestedPath}, but file generation failed before staging.\n\n` +
-        "[Action]\nRetry the request with a clearer description of the file you want created."
+    const proposal = await runTool(
+      supabase,
+      repoId,
+      userId,
+      content,
+      "vault_propose_create",
+      {
+        path: requestedPath,
+        content: newContent,
+        mime,
+      }
     );
-  }
 
-  const proposal = await runTool(
-    supabase,
-    repoId,
-    userId,
-    content,
-    "vault_propose_create",
-    {
-      path: requestedPath,
-      content: newContent,
-      mime,
+    if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+      console.log("[create_missing] propose failed", {
+        requestedPath,
+        proposal,
+      });
+
+      return textResponse(
+        "[Observation]\nThe requested files could not be staged.\n\n" +
+          `[Assessment]\nVestaryn generated ${requestedPath} but proposal staging failed before the full multi-file set could be prepared.\n\n` +
+          "[Action]\nRetry the request or inspect vault proposal handling."
+      );
     }
-  );
 
-  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
-    console.log("[create_missing] propose failed", {
-      requestedPath,
-      proposal,
+    if ((proposal as any).noop === true) {
+      continue;
+    }
+
+    stagedProposals.push({
+      fileId: String((proposal as any).fileId),
+      content: String((proposal as any).content ?? newContent),
+      prevHash: String((proposal as any).prevHash ?? ""),
+      nextHash: String((proposal as any).nextHash ?? ""),
+      confirm: String((proposal as any).confirm ?? ""),
+      path: (proposal as any).path ?? requestedPath,
+      name: (proposal as any).name ?? null,
+      mime: (proposal as any).mime ?? mime,
+      meta: (proposal as any).meta ?? null,
     });
-
-    return textResponse(
-      "[Observation]\nThe requested file could not be staged.\n\n" +
-        `[Assessment]\nVestaryn generated content for ${requestedPath} but proposal staging failed.\n\n` +
-        "[Action]\nRetry the request or inspect vault proposal handling."
-    );
   }
 
-  if ((proposal as any).noop === true) {
+  if (stagedProposals.length === 0) {
     return textResponse(
       "[Observation]\nThe requested file creation is already satisfied.\n\n" +
-        `[Assessment]\nNo staged change was needed because ${requestedPath} already matches the requested content.\n\n` +
+        "[Assessment]\nNo staged change was needed because the requested files already exist or matched the requested content.\n\n" +
         "[Action]\nContinue with the next change or request another file."
     );
   }
 
-  const canonicalProposal: CanonicalProposal = {
-    fileId: String((proposal as any).fileId),
-    content: String((proposal as any).content ?? newContent),
-    prevHash: String((proposal as any).prevHash ?? ""),
-    nextHash: String((proposal as any).nextHash ?? ""),
-    confirm: String((proposal as any).confirm ?? ""),
-    path: (proposal as any).path ?? requestedPath,
-    name: (proposal as any).name ?? null,
-    mime: (proposal as any).mime ?? mime,
-    meta: (proposal as any).meta ?? null,
-  };
-
   const body =
-    `\n__PROPOSAL__:${JSON.stringify(canonicalProposal)}\n` +
-    "[Observation]\nRequired repository changes were staged.\n\n" +
-    "[Assessment]\nA new file was prepared and staged.\n\n" +
-    "[Action]\nA staged change is ready. Confirm to apply.";
+    stagedProposals.length === 1
+      ? `\n__PROPOSAL__:${JSON.stringify(stagedProposals[0])}\n` +
+        "[Observation]\nRequired repository changes were staged.\n\n" +
+        "[Assessment]\nA new file was prepared and staged.\n\n" +
+        "[Action]\nA staged change is ready. Confirm to apply."
+      : `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: stagedProposals })}\n` +
+        "[Observation]\nRequired repository changes were staged.\n\n" +
+        "[Assessment]\nMultiple new files were prepared and staged as one aligned change set.\n\n" +
+        "[Action]\nA staged multi-file change is ready. Confirm to apply.";
 
   return textResponse(body);
 }

@@ -5,11 +5,18 @@
 // are staged together instead of a single freeform file being generated.
 
 import OpenAI from "openai";
-import { supabaseServerComponent } from "@/lib/supabase/server";
 import { resolveTierPolicy } from "@/lib/membership/tiers";
 import { SYSTEM_PROTECTOR_DEFAULT,SYSTEM_PROTECTOR_ARCH,} from "@/lib/chamber/prompts";
-import {extractSingleMentionedPath,isRepositoryExecutionIntent,
-isCreateAndModifyIntent,isHighLevelBuildRequest, isInternalGoalExecutionPrompt,normText,isInternalControlPrompt, isGoalPlanningUserIntent,
+import {
+  extractSingleMentionedPath,
+  isRepositoryExecutionIntent,
+  isCreateAndModifyIntent,
+  isHighLevelBuildRequest,
+  isInternalGoalExecutionPrompt,
+  normText,
+  isInternalControlPrompt,
+  isGoalPlanningUserIntent,
+  resolveCreateMissingTargetPath,
 } from "@/lib/chamber/intent";
 import {isSourceTargetTransferIntent,isImportRefactorIntent,isSplitFileIntent} from "@/lib/chamber/refactorIntent";
 import { generateNewFileContent} from "@/lib/chamber/generation";
@@ -43,6 +50,8 @@ import { tryHandleEarlyOrchestration } from "@/lib/chamber/toolOrchestration/ear
 import { runToolExecutionLoop } from "@/lib/chamber/toolOrchestration/toolExecutionLoopOrchestration";
 import { runToolExecutionRounds } from "@/lib/chamber/toolOrchestration/toolExecutionRoundsOrchestration";
 import { supabaseRouteHandler } from "@/lib/supabase/server";
+import { vault_read_text, resolveFileIdByPathOrName } from "@/lib/vault/tools";
+import { runTool } from "@/lib/vault/toolRuntime";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -160,6 +169,35 @@ function joinWithinDir(dir: string, leaf: string) {
   const cleanLeaf = String(leaf ?? "").trim().replace(/^\/+/, "");
   if (!dir) return cleanLeaf;
   return `${dir}/${cleanLeaf}`;
+}
+
+function normalizeNavHref(href: string) {
+  const h = String(href ?? "").trim().toLowerCase();
+
+  if (!h) return "";
+  if (h === "#home" || h === "/" || h === "/index.html" || h === "index.html") {
+    return "index.html";
+  }
+
+  return h.replace(/^\/+/, "");
+}
+
+function normalizeNavLabel(label: string) {
+  return String(label ?? "").trim().toLowerCase();
+}
+
+function extractNavLinks(html: string): Array<{ href: string; label: string }> {
+  const navMatch = String(html ?? "").match(/<nav\b[^>]*>([\s\S]*?)<\/nav>/i);
+  if (!navMatch) return [];
+
+  return Array.from(
+    String(navMatch[1] ?? "").matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)
+  )
+    .map((m) => ({
+      href: String(m[1] ?? "").trim(),
+      label: String(m[2] ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
+    }))
+    .filter((x) => x.href && x.label);
 }
 
 function resolveMentionedRepoPaths(
@@ -302,11 +340,193 @@ function resolveEditTarget(
   };
 }
 
+function isStaticSiteStyleFollowup(args: {
+  content: string;
+  inference: any;
+  availableFiles: string[];
+  effectiveMentionedPaths: string[];
+}) {
+  const intent = classifyEditIntent(args.content);
+  const projectType = String(args.inference?.projectType ?? "").toLowerCase();
+  const hasStylesCss = args.availableFiles.some((p) => /(^|\/)styles\.css$/i.test(p));
+  const hasHtml = args.availableFiles.some((p) => /\.html?$/i.test(p));
+  const hasExplicitPaths = args.effectiveMentionedPaths.length > 0;
+
+  return (
+    projectType === "static_site" &&
+    (intent === "style" || intent === "structure") &&
+    !hasExplicitPaths &&
+    hasStylesCss &&
+    hasHtml
+  );
+}
+
+function resolveStaticSiteStyleTargets(availableFiles: string[]) {
+  const stylesPath =
+    availableFiles.find((p) => /(^|\/)styles\.css$/i.test(p)) ?? "styles.css";
+
+  const htmlPath =
+    availableFiles.find((p) => /(^|\/)index\.html$/i.test(p)) ??
+    availableFiles.find((p) => /\.html?$/i.test(p)) ??
+    null;
+
+  return {
+    targetPath: stylesPath,
+    referencePaths: htmlPath ? [htmlPath] : [],
+  };
+}
+
+function dedupeLinks(
+  links: Array<{ href: string; label: string }>
+): Array<{ href: string; label: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ href: string; label: string }> = [];
+
+  for (const link of links) {
+    const href = String(link?.href ?? "").trim();
+    const label = String(link?.label ?? "").trim();
+    if (!href || !label) continue;
+    if (seen.has(href)) continue;
+    seen.add(href);
+    out.push({ href, label });
+  }
+
+  return out;
+}
+
+function titleFromPath(path: string) {
+  const base = String(path ?? "")
+    .replace(/^.*\//, "")
+    .replace(/\.html?$/i, "")
+    .trim();
+
+  if (!base) return "Page";
+  if (base.toLowerCase() === "index") return "Home";
+
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+function buildDesiredLinksForPages(htmlPaths: string[]) {
+  const unique = Array.from(new Set(htmlPaths.map((p) => String(p).trim()).filter(Boolean)));
+
+  return unique.map((path) => ({
+    href: path,
+    label: titleFromPath(path),
+  }));
+}
+
+function ensureNavContainsLinks(
+  html: string,
+  desiredLinks: Array<{ href: string; label: string }>
+): string {
+  const source = String(html ?? "");
+  if (!source.trim()) return source;
+
+  const navMatch = source.match(/<nav\b[^>]*>[\s\S]*?<\/nav>/i);
+  if (!navMatch) return source;
+
+  const navFull = String(navMatch[0] ?? "");
+
+  const canonicalOrder = ["index.html", "explore.html", "about.html"];
+
+  const desiredByPage = new Map<string, { href: string; label: string }>();
+
+  for (const link of desiredLinks) {
+    const href = String(link?.href ?? "").trim();
+    const label = String(link?.label ?? "").trim();
+    if (!href || !label) continue;
+
+    const pageKey = normalizeNavHref(href);
+    if (!pageKey) continue;
+
+    if (!desiredByPage.has(pageKey)) {
+      desiredByPage.set(pageKey, {
+        href: pageKey,
+        label,
+      });
+    }
+  }
+
+  const cleanedLinks = canonicalOrder
+    .filter((page) => desiredByPage.has(page))
+    .map((page) => desiredByPage.get(page)!)
+    .map((link) => ({
+      href: link.href,
+      label:
+        link.href === "index.html"
+          ? "Home"
+          : link.href === "explore.html"
+            ? "Explore"
+            : link.href === "about.html"
+              ? "About"
+              : link.label,
+    }));
+
+  const rebuiltNav =
+    '<nav class="nav">\n' +
+    cleanedLinks
+      .map((link) => `        <a href="${link.href}">${link.label}</a>`)
+      .join("\n") +
+    "\n      </nav>";
+
+  if (rebuiltNav === navFull) {
+    return source;
+  }
+
+  return source.replace(navFull, rebuiltNav);
+}
+
+function isExistingMultiPageLinkingRequest(args: {
+  content: string;
+  availableFiles: string[];
+  effectiveMentionedPaths: string[];
+}) {
+  const t = String(args.content ?? "").toLowerCase().trim();
+
+  const mentionedHtmlPaths = args.effectiveMentionedPaths.filter((p) => /\.html?$/i.test(p));
+  const existingHtmlPaths = mentionedHtmlPaths.filter((p) => args.availableFiles.includes(p));
+
+  const allExistingHtmlPaths = args.availableFiles.filter((p) => /\.html?$/i.test(p));
+
+  const hasLinkingIntent =
+    /\b(link|linked|linking|connect|wire up|navigation|nav|navbar|menu)\b/.test(t);
+
+  const hasSharedLayoutIntent =
+    /\b(same styling|same style|same layout|same theme|same color|same colours|same colors|align|match)\b/.test(t);
+
+  const hasNavCleanupIntent =
+    /\b(remove|clean up|cleanup|fix|dedupe|deduplicate|delete)\b/.test(t) &&
+    /\b(nav|navbar|navigation|menu|links?)\b/.test(t);
+
+  const hasDuplicateNavIntent =
+    /\b(double|duplicate|duplicates|duplicated)\b/.test(t) &&
+    /\b(nav|navbar|navigation|menu|links?|pages)\b/.test(t);
+
+  const isShortRetryFollowup =
+    /^(yes|yes please|do it|go ahead|apply it|retry|can you retry|try again|please retry|continue)$/i.test(
+      String(args.content ?? "").trim()
+    );
+
+  if (existingHtmlPaths.length >= 2 && (hasLinkingIntent || hasSharedLayoutIntent)) {
+    return true;
+  }
+
+  if (allExistingHtmlPaths.length >= 2 && (hasNavCleanupIntent || hasDuplicateNavIntent)) {
+    return true;
+  }
+
+  if (existingHtmlPaths.length >= 2 && isShortRetryFollowup) {
+    return true;
+  }
+
+  return false;
+}
+
 function classifyEditIntent(content: string): "style" | "content" | "structure" | "unknown" {
   const t = String(content ?? "").toLowerCase();
 
   if (
-    /\b(color|colors|background|theme|style|styling|navbar|top bar|header|footer|layout|spacing|padding|margin|font|visual|look|feel)\b/.test(t)
+    /\b(color|colors|background|theme|style|styling|navbar|nav bar|top bar|header|footer|layout|spacing|padding|margin|font|visual|look|feel|shade|shadow|blur|transparent|glass|border|surrounding|surround|glow)\b/.test(t)
   ) {
     return "style";
   }
@@ -318,7 +538,7 @@ function classifyEditIntent(content: string): "style" | "content" | "structure" 
   }
 
   if (
-    /\b(add|remove|section|div|container|grid|layout block|structure|component)\b/.test(t)
+    /\b(add|remove|section|sections|div|container|grid|layout block|blocks|structure|component|components)\b/.test(t)
   ) {
     return "structure";
   }
@@ -572,63 +792,323 @@ const {
   runtimePolicy,
 } = runtimeSetup;
 
-function getEffectiveMentionedPaths() {
-  return effectiveMentionedPaths;
+const availableFiles = await getAvailableFiles();
+
+let effectivePathsResolved = [...effectiveMentionedPaths];
+let continuityTargetResolved = continuityTargetPath;
+let executionModeResolved = executionMode;
+
+const createMissingTarget = resolveCreateMissingTargetPath(content);
+
+const createMissingTargetPaths = Array.isArray(createMissingTarget)
+  ? createMissingTarget
+  : createMissingTarget
+    ? [createMissingTarget]
+    : [];
+
+const hasExistingExplicitPaths =
+  effectiveMentionedPaths.length > 0 &&
+  effectiveMentionedPaths.some((p) => availableFiles.includes(p));
+
+if (
+  executionModeResolved.mode !== "bootstrap" &&
+  createMissingTargetPaths.length > 0 &&
+  !hasExistingExplicitPaths
+) {
+  const filteredCreateMissingPaths = createMissingTargetPaths.filter(
+    (p) => p && p !== continuityTargetResolved
+  );
+
+  if (filteredCreateMissingPaths.length > 0) {
+    effectivePathsResolved = Array.from(
+      new Set([...filteredCreateMissingPaths, ...effectivePathsResolved])
+    );
+
+    executionModeResolved = {
+      ...executionModeResolved,
+      mode: "incremental",
+      confidence: "high",
+      reasons: [
+        ...(Array.isArray(executionModeResolved?.reasons)
+          ? executionModeResolved.reasons
+          : []),
+        "implicit_create_missing_targets",
+      ],
+      mentionedPaths: effectivePathsResolved,
+    };
+
+    console.log("[create_missing_targets_resolved]", {
+      createMissingTarget,
+      effectivePathsResolved,
+    });
+  }
 }
 
-function getAvailableFiles() {
-  const inferredFiles = (inference as any)?.files;
-  const files = Array.isArray(inferredFiles) ? inferredFiles : [];
+if (
+  isStaticSiteStyleFollowup({
+    content,
+    inference,
+    availableFiles,
+    effectiveMentionedPaths,
+  })
+) {
+  const styleTargets = resolveStaticSiteStyleTargets(availableFiles);
 
-  return files
-    .map((f: any) => String(f?.path ?? "").trim())
+  effectivePathsResolved = [styleTargets.targetPath];
+  continuityTargetResolved = styleTargets.targetPath;
+
+  executionModeResolved = {
+    ...executionMode,
+    mode: "surgical",
+    confidence: "high",
+    reasons: [
+      ...(Array.isArray(executionMode?.reasons) ? executionMode.reasons : []),
+      "static_site_style_followup_auto_targeted",
+    ],
+    mentionedPaths: [styleTargets.targetPath, ...styleTargets.referencePaths],
+  };
+
+  console.log("[static_site_style_followup_override]", {
+    targetPath: styleTargets.targetPath,
+    referencePaths: styleTargets.referencePaths,
+    availableFiles,
+  });
+}
+
+async function tryHandleExistingMultiPageLinking(args: {
+  openai: OpenAI;
+  supabase: any;
+  repoId: string;
+  userId: string;
+  content: string;
+  runtimePolicy: any;
+  effectiveMentionedPaths: string[];
+}) {
+  const explicitHtmlPaths = args.effectiveMentionedPaths
+    .filter((p) => /\.html?$/i.test(p))
+    .map((p) => String(p).trim())
     .filter(Boolean);
+
+  const availableHtmlPaths = availableFiles.filter((p) => /\.html?$/i.test(p));
+
+  const lower = String(args.content ?? "").toLowerCase();
+
+  const isLinking =
+    /\b(link|linked|linking|connect|navigation|nav|navbar|menu)\b/.test(lower);
+
+  const isNavCleanupFollowup =
+    (/\b(remove|clean up|cleanup|fix|dedupe|deduplicate|delete)\b/.test(lower) &&
+      /\b(nav|navbar|navigation|menu|links?)\b/.test(lower)) ||
+    (/\b(double|duplicate|duplicates|duplicated)\b/.test(lower) &&
+      /\b(nav|navbar|navigation|menu|links?|pages)\b/.test(lower));
+
+  const isShortRetryFollowup =
+    /^(yes|yes please|do it|go ahead|apply it|retry|can you retry|try again|please retry|continue)$/i.test(
+      String(args.content ?? "").trim()
+    );
+
+  const htmlPaths = Array.from(
+    new Set(
+      (isNavCleanupFollowup ? availableHtmlPaths : explicitHtmlPaths)
+        .map((p) => String(p).trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (htmlPaths.length < 2) return null;
+    if (!isLinking && !isNavCleanupFollowup && !isShortRetryFollowup) return null;
+
+    console.log("[existing_multi_page_linking.handler]", {
+    repoId: args.repoId,
+    htmlPaths,
+    isLinking,
+    isNavCleanupFollowup,
+    isShortRetryFollowup,
+  });
+
+  const desiredLinks = dedupeLinks(buildDesiredLinksForPages(htmlPaths));
+  const stagedProposals: any[] = [];
+
+  for (const path of htmlPaths) {
+    const fileId = await resolveFileIdByPathOrName(args.supabase, args.repoId, path);
+    if (!fileId) continue;
+
+    const file = await vault_read_text(args.supabase, args.repoId, fileId);
+    const currentHtml = String(file?.content ?? "");
+    if (!currentHtml.trim()) continue;
+
+    const nextHtml = ensureNavContainsLinks(currentHtml, desiredLinks);
+
+    if (nextHtml === currentHtml) {
+      console.log("[existing_multi_page_linking.noop]", {
+        repoId: args.repoId,
+        path,
+      });
+      continue;
+    }
+
+    const proposal = await runTool(
+      args.supabase,
+      args.repoId,
+      args.userId,
+      args.content,
+      "vault_propose_write",
+      {
+        fileId,
+        content: nextHtml,
+      }
+    );
+
+    if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+      console.log("[existing_multi_page_linking.propose_failed]", {
+        repoId: args.repoId,
+        path,
+        proposal,
+      });
+      return null;
+    }
+
+    if ((proposal as any).noop === true) {
+      continue;
+    }
+
+    stagedProposals.push({
+      fileId: String((proposal as any).fileId),
+      content: String((proposal as any).content ?? nextHtml),
+      prevHash: String((proposal as any).prevHash ?? ""),
+      nextHash: String((proposal as any).nextHash ?? ""),
+      confirm: String((proposal as any).confirm ?? ""),
+      path: (proposal as any).path ?? path,
+      name: (proposal as any).name ?? path,
+      mime: (proposal as any).mime ?? "text/html",
+      meta: (proposal as any).meta ?? null,
+    });
+  }
+
+  if (stagedProposals.length === 0) {
+    return new Response(
+      "[Observation]\nThe requested navigation cleanup is already satisfied.\n\n" +
+        "[Assessment]\nThe referenced HTML pages already contain the required navigation links and no duplicate cleanup was needed.\n\n" +
+        "[Action]\nNo staged change is needed.",
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+        },
+      }
+    );
+  }
+
+  const body =
+    stagedProposals.length === 1
+      ? `\n__PROPOSAL__:${JSON.stringify(stagedProposals[0])}\n` +
+        "[Observation]\nRequired repository changes were staged.\n\n" +
+        "[Assessment]\nA page navigation update was prepared.\n\n" +
+        "[Action]\nA staged change is ready. Confirm to apply."
+      : `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: stagedProposals })}\n` +
+        "[Observation]\nRequired repository changes were staged.\n\n" +
+        "[Assessment]\nNavigation links were prepared across multiple existing pages.\n\n" +
+        "[Action]\nA staged multi-file change is ready. Confirm to apply.";
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+    },
+  });
+}
+
+function getEffectiveMentionedPaths() {
+  return effectivePathsResolved;
+}
+
+async function getAvailableFiles() {
+  const { data, error } = await supabase
+    .from("repo_files")
+    .select("path")
+    .eq("repo_id", repoId)
+    .is("deleted_at", null);
+
+  if (error) {
+    console.log("[available_files] query failed", {
+      repoId,
+      error: error.message,
+    });
+    return [];
+  }
+
+  const paths = Array.isArray(data)
+    ? data.map((row: any) => String(row?.path ?? "").trim()).filter(Boolean)
+    : [];
+
+  console.log("[available_files]", {
+    repoId,
+    count: paths.length,
+    paths,
+  });
+
+  return paths;
 }
 
 function getEffectiveSinglePath() {
-  if (effectiveMentionedPaths.length === 1) {
-    return effectiveMentionedPaths[0];
+  if (effectivePathsResolved.length === 1) {
+    return effectivePathsResolved[0];
   }
-  if (executionMode?.mentionedPaths?.length === 1) {
-    return executionMode.mentionedPaths[0];
+  if (executionModeResolved?.mentionedPaths?.length === 1) {
+    return executionModeResolved.mentionedPaths[0];
   }
   return extractSingleMentionedPath(content);
 }
 
+const shouldRunExistingMultiPageLinking =
+  isExistingMultiPageLinkingRequest({
+    content,
+    availableFiles,
+    effectiveMentionedPaths: effectivePathsResolved,
+  });
+
+const missingEffectivePaths = effectivePathsResolved.filter(
+  (p) => !availableFiles.includes(p)
+);
+
 const shouldRunCreateMissingMode =
-  !continuityTargetPath &&
-  executionMode.mode !== "bootstrap" &&
-  effectiveMentionedPaths.length > 0 &&
+  !shouldRunExistingMultiPageLinking &&
+  !continuityTargetResolved &&
+  executionModeResolved.mode !== "bootstrap" &&
+  missingEffectivePaths.length > 0 &&
   (
-    executionMode.mode === "incremental" ||
-    executionMode.mode === "surgical" ||
-    executionMode.mode === "rewrite"
+    executionModeResolved.mode === "incremental" ||
+    executionModeResolved.mode === "surgical" ||
+    executionModeResolved.mode === "rewrite"
   );
 
 console.log("[route_path_decision]", {
-  mode: executionMode.mode,
+  mode: executionModeResolved.mode,
   createMissing: shouldRunCreateMissingMode,
-  bootstrap: shouldAllowBootstrapForMode(executionMode.mode),
-  effectiveMentionedPaths,
+  bootstrap: shouldAllowBootstrapForMode(executionModeResolved.mode),
+  effectiveMentionedPaths: effectivePathsResolved,
 });
+
 
 if (shouldRunCreateMissingMode) {
   console.log("[execution_mode] create-missing-file handler active", {
-    confidence: executionMode.confidence,
-    paths: executionMode.mentionedPaths,
+    confidence: executionModeResolved.confidence,
+    paths: executionModeResolved.mentionedPaths,
   });
 
   const createMissingResponse = await handleCreateMissingFileMode({
-  openai,
-  supabase,
-  repoId,
-  userId: user.id,
-  content,
-  model: runtimePolicy.model,
-  executionMode,
-});
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    model: runtimePolicy.model,
+    executionMode: executionModeResolved,
+  });
 
-   if (createMissingResponse) {
+  if (createMissingResponse) {
     const responseText = await createMissingResponse.text();
 
     return await buildCreateMissingResponseOrchestration({
@@ -638,7 +1118,7 @@ if (shouldRunCreateMissingMode) {
       workspaceId,
       periodStart,
       requestId,
-      executionMode,
+      executionMode: executionModeResolved,
       runtimePolicy,
       responseText,
       chargeCreditsForUsage,
@@ -646,32 +1126,44 @@ if (shouldRunCreateMissingMode) {
   }
 }
 
-if (executionMode.mode === "surgical") {
+if (executionModeResolved.mode === "surgical") {
   console.log("[execution_mode] surgical handler active", {
-    confidence: executionMode.confidence,
-    paths: executionMode.mentionedPaths,
+    confidence: executionModeResolved.confidence,
+    paths: executionModeResolved.mentionedPaths,
   });
+
+  const resolvedSurgicalPaths = resolveSurgicalPaths(content);
+
+  const surgicalTargetPath =
+    getEffectiveSinglePath() ??
+    resolvedSurgicalPaths.targetPath ??
+    (effectivePathsResolved.length >= 1 ? effectivePathsResolved[0] : null);
+
+  const surgicalReferencePath =
+    resolvedSurgicalPaths.referencePath ??
+    (effectivePathsResolved.length >= 2 ? effectivePathsResolved[1] : null);
 
   const surgicalResponse = await handleSurgicalMode({
-  openai,
-  supabase,
-  repoId,
-  userId: user.id,
-  content,
-  model: runtimePolicy.model,
-  baselineVerify,
-  inferredVerifyCmd,
-  targetPathOverride: getEffectiveSinglePath(),
-});
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    model: runtimePolicy.model,
+    baselineVerify,
+    inferredVerifyCmd,
+    targetPathOverride: surgicalTargetPath,
+    referencePathOverride: surgicalReferencePath,
+  });
 
-    if (surgicalResponse) {
+  if (surgicalResponse) {
     const responseText = await surgicalResponse.text();
 
-  console.log("[execution_mode] surgical handler returned response", {
-    repoId,
-    responseLen: responseText.length,
-  });
-    
+    console.log("[execution_mode] surgical handler returned response", {
+      repoId,
+      responseLen: responseText.length,
+    });
+
     return await buildSurgicalResponseOrchestration({
       supabase,
       repoId,
@@ -687,7 +1179,7 @@ const explainModeResponse = await tryHandleExplainModeOrchestration({
   repoId,
   userId: user.id,
   content,
-  executionMode,
+  executionMode: executionModeResolved,
   runtimePolicy,
   resolvedInstructions,
   membershipBlock,
@@ -726,7 +1218,7 @@ const repoWideStyleResponse = await tryHandleRepoWideStyleOrchestration({
   repoId,
   userId: user.id,
   content,
-  executionMode,
+  executionMode: executionModeResolved,
   runtimePolicy,
 });
 
@@ -734,7 +1226,29 @@ if (repoWideStyleResponse) {
   return repoWideStyleResponse;
 }
 
-if (shouldAllowPreStreamRepoOpsForMode(executionMode.mode)) {
+if (shouldRunExistingMultiPageLinking) {
+  const multiPageLinkingResponse = await tryHandleExistingMultiPageLinking({
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    runtimePolicy,
+    effectiveMentionedPaths: effectivePathsResolved,
+  });
+
+  if (multiPageLinkingResponse) {
+    return multiPageLinkingResponse;
+  }
+}
+
+console.log("[existing_multi_page_linking]", {
+  shouldRunExistingMultiPageLinking,
+  effectivePathsResolved,
+  content,
+});
+
+if (shouldAllowPreStreamRepoOpsForMode(executionModeResolved.mode)) {
   const preStreamResponse = await tryHandlePreStreamRepoOps({
     openai,
     supabase,
@@ -750,39 +1264,39 @@ if (shouldAllowPreStreamRepoOpsForMode(executionMode.mode)) {
   }
 } else {
   console.log("[prestream] skipped", {
-    mode: executionMode.mode,
+    mode: executionModeResolved.mode,
   });
 }
 
-if (shouldAllowBootstrapForMode(executionMode.mode)) {
+if (shouldAllowBootstrapForMode(executionModeResolved.mode)) {
   const bootstrapResponse = await tryHandleBootstrap({
-  openai,
-  supabase,
-  repoId,
-  userId: user.id,
-  content,
-  inference,
-  runtimePolicy,
-  membershipBlock,
-  sacredBlock,
-  profileBlock,
-  masterBlock,
-  chamberBlock,
-  treeBlock,
-  ledgerBlock,
-  cleanedHistory,
-  baselineVerify,
-  workspaceId,
-  periodStart,
-  requestId,
-});
+    openai,
+    supabase,
+    repoId,
+    userId: user.id,
+    content,
+    inference,
+    runtimePolicy,
+    membershipBlock,
+    sacredBlock,
+    profileBlock,
+    masterBlock,
+    chamberBlock,
+    treeBlock,
+    ledgerBlock,
+    cleanedHistory,
+    baselineVerify,
+    workspaceId,
+    periodStart,
+    requestId,
+  });
 
   if (bootstrapResponse) {
     return bootstrapResponse;
   }
 } else {
   console.log("[bootstrap] skipped", {
-    mode: executionMode.mode,
+    mode: executionModeResolved.mode,
   });
 }
 
@@ -791,7 +1305,6 @@ const input = [
   { role: "system", content: sacredBlock },
   { role: "system", content: profileBlock },
 
-  // 🧠 Vestaryn chamber memory
   { role: "system", content: masterBlock },
   { role: "system", content: chamberBlock },
   { role: "system", content: treeBlock },
@@ -819,7 +1332,7 @@ const earlyResponse = await tryHandleEarlyOrchestration({
   userId: user.id,
   content,
   inference,
-  executionMode,
+  executionMode: executionModeResolved,
   runtimePolicy,
   requestHandledByOrchestration: false,
   isImplicitPythonScriptBootstrapRequest,
@@ -923,9 +1436,9 @@ const encoder = new TextEncoder();
             await normalizePass1ToolsOrchestration({
               repoId,
               content,
-              executionMode,
+              executionMode: executionModeResolved,
               pendingTools,
-              effectiveMentionedPaths,
+              effectiveMentionedPaths: effectivePathsResolved,
               inference,
               isImportRefactorIntent,
               isSplitFileIntent,
@@ -956,7 +1469,7 @@ const encoder = new TextEncoder();
         supabase,
         repoId,
         content,
-        executionMode,
+        executionMode: executionModeResolved,
         initialHadTools,
         pendingTools,
         pass1Buffer: pass1.buffer ?? "",
@@ -989,8 +1502,8 @@ const encoder = new TextEncoder();
           content,
           runtimePolicy,
           tierPolicy,
-          executionMode,
-          continuityTargetPath,
+          executionMode: executionModeResolved,
+          continuityTargetPath: continuityTargetResolved,
           baselineVerify,
           inferredVerifyCmd,
           generateNewFileContentSafe,

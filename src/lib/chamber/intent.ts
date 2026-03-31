@@ -25,6 +25,32 @@ function sanitizeIntentParsingInput(text: string) {
   return stripExampleNoise(stripCodeBlocks(text));
 }
 
+export function inferMultipleImplicitPagePaths(text: string): string[] {
+  const t = normText(text).toLowerCase();
+  if (!t) return [];
+
+  const mappings: Array<[RegExp, string]> = [
+    [/\bportfolio\b/, "portfolio.html"],
+    [/\bgallery\b/, "gallery.html"],
+    [/\babout\b/, "about.html"],
+    [/\bcontact\b/, "contact.html"],
+    [/\bpricing\b/, "pricing.html"],
+    [/\bservices\b/, "services.html"],
+    [/\bfaq\b/, "faq.html"],
+    [/\bexplore\b/, "explore.html"],
+  ];
+
+  const results: string[] = [];
+
+  for (const [regex, path] of mappings) {
+    if (regex.test(t)) {
+      results.push(path);
+    }
+  }
+
+  return Array.from(new Set(results));
+}
+
 function isValidPathCandidate(value: string) {
   const v = String(value ?? "").trim();
 
@@ -53,6 +79,10 @@ export function isConcreteEditRequest(text: string): boolean {
     /\bchange\b/.test(t) ||
     /\bmodify\b/.test(t) ||
     /\bedit\b/.test(t) ||
+    /\badjust\b/.test(t) ||
+    /\btweak\b/.test(t) ||
+    /\bpolish\b/.test(t) ||
+    /\brefine\b/.test(t) ||
     /\bclean up\b/.test(t) ||
     /\brefactor\b/.test(t) ||
     /\brewrite\b/.test(t) ||
@@ -62,9 +92,39 @@ export function isConcreteEditRequest(text: string): boolean {
     /\binput\b/.test(t) ||
     /\badd\b/.test(t) ||
     /\bput\b/.test(t) ||
+    /\bmake\b/.test(t) ||
     /\bthere (is|are)\b.*\b(break|breaks|issue|issues|error|errors|problem|problems)\b/.test(t) ||
-    /\bplease\b.*\b(correct|fix|repair|update|change|modify|edit|rewrite|replace|write|insert|input|add|put)\b/.test(t)
+    /\bplease\b.*\b(correct|fix|repair|update|change|modify|edit|rewrite|replace|write|insert|input|add|put|adjust|tweak|polish|refine|make)\b/.test(t)
   );
+}
+
+export function isImplicitFollowupEditIntent(text: string): boolean {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isInternalGoalExecutionPrompt(t)) return false;
+
+  const editVerb =
+    /\b(change|edit|update|adjust|modify|tweak|polish|refine|rewrite|replace|add|remove|make)\b/.test(t);
+
+  const followupTarget =
+    /\b(it|that|this|same|same blocks|same section|same sections|same file|same layout|same styling)\b/.test(t) ||
+    /\bthe blocks you adjusted\b/.test(t) ||
+    /\bthe section you adjusted\b/.test(t) ||
+    /\bthe sections you adjusted\b/.test(t) ||
+    /\bthe part you adjusted\b/.test(t) ||
+    /\bthe thing you adjusted\b/.test(t) ||
+    /\bprevious\b/.test(t) ||
+    /\bagain\b/.test(t);
+
+  const visualOrRepoSignal =
+    /\b(block|blocks|section|sections|layout|styling|style|colors|background|hero|nav|navbar|header|footer|card|cards|component|components|page|site|website)\b/.test(t);
+
+  const explainOnly =
+    /\b(explain|just explain|tell me|help me understand|what is|why is|how does)\b/.test(t);
+
+  return editVerb && followupTarget && visualOrRepoSignal && !explainOnly;
 }
 
 export function isCreateLinkedPageIntent(text: string) {
@@ -82,21 +142,39 @@ export function isCreateLinkedPageIntent(text: string) {
   return wantsNewPage && wantsLinking && hasReferencePage;
 }
 
+
+
 export function resolveCreateMissingTargetPath(text: string) {
   const raw = normText(text);
   const explicit = extractSingleMentionedPath(raw);
-  const implicit = inferImplicitPagePath(raw);
+  const implicitMultiple = inferMultipleImplicitPagePaths(raw);
+  const implicitSingle = inferImplicitPagePath(raw);
 
   const wantsNewFile =
-    /\b(new file|separate file|separately|create a new page|add a .* page|create a .* page)\b/i.test(raw);
+    /\b(new file|new files|separate file|separate files|separately|create a new page|create new pages|add a .* page|add .* pages|create a .* page|create .* pages)\b/i.test(raw);
 
-  // If the prompt clearly asks to create a new page, prefer the inferred page target
+  // If the prompt clearly asks to create new page(s), prefer implicit page targets
   // over a referenced existing file like index.html.
-  if (wantsNewFile && implicit) {
-    return implicit;
+  if (wantsNewFile && implicitMultiple.length > 0) {
+    return implicitMultiple;
   }
 
-  return explicit || implicit || null;
+  if (wantsNewFile && implicitSingle) {
+    return implicitSingle;
+  }
+
+  return explicit || implicitSingle || null;
+}
+
+export function isShortFollowupExecutionIntent(text: string): boolean {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+
+  return (
+    /^(yes|yes please|do it|go ahead|apply it|retry|try again|please retry|continue)$/i.test(t)
+  );
 }
 
 export function inferImplicitPagePath(text: string) {
@@ -160,6 +238,7 @@ export function isVisualRefinementIntent(text: string) {
   if (!t) return false;
   if (isInternalControlPrompt(t)) return false;
   if (isGoalPlanningUserIntent(t)) return false;
+  if (isShortFollowupExecutionIntent(t)) return true;
 
   const refinementVerb =
     /\b(make|improve|refine|polish|upgrade|tweak|adjust|elevate)\b/.test(t);
@@ -190,10 +269,10 @@ export function isVisualRefinementExecutionIntent(text: string) {
   if (isGoalPlanningUserIntent(t)) return false;
 
   const refinementVerb =
-    /\b(change|make|improve|upgrade|refine|polish|adjust)\b/.test(t);
+    /\b(change|make|improve|upgrade|refine|polish|adjust|add|remove|restyle|tweak)\b/.test(t);
 
   const visualTarget =
-    /\b(background|layout|sections|section|spacing|styling|style|hero|design|look|ui|colors|visuals)\b/.test(t);
+    /\b(background|layout|sections|section|blocks|block|spacing|styling|style|hero|design|look|ui|colors|color|visuals|theme|navbar|nav bar|header|footer|card|cards|shadow|shade|border|transparent|glass)\b/.test(t);
 
   const explainOnly =
     /\b(explain|just explain|tell me how|how do i|what is|why is)\b/.test(t);
@@ -245,31 +324,36 @@ export function isRepositoryExecutionIntent(content: string) {
   const mentionedPaths = extractMentionedPaths(t);
 
   const hasConcreteEditVerb =
-  /\b(fix|edit|update|change|modify|adjust|rewrite|refactor|replace|correct|repair)\b/.test(t);
+    /\b(fix|edit|update|change|modify|adjust|rewrite|refactor|replace|correct|repair|add|remove|make|tweak|polish|refine)\b/.test(t);
 
-const hasCodeLikeMention = mentionedPaths.some(isCodeLikeRepoPath);
-const hasContentLikeMention = mentionedPaths.some(isContentLikeRepoPath);
+  const hasCodeLikeMention = mentionedPaths.some(isCodeLikeRepoPath);
+  const hasContentLikeMention = mentionedPaths.some(isContentLikeRepoPath);
 
-if (hasCodeLikeMention && hasConcreteEditVerb) {
-  return true;
-}
+  if (hasCodeLikeMention && hasConcreteEditVerb) {
+    return true;
+  }
 
-if (
-  hasContentLikeMention &&
-  /\b(write|rewrite|replace|update|change|edit|modify|input|insert|add)\b/.test(t)
-) {
-  return true;
-}
+  if (
+    hasContentLikeMention &&
+    /\b(write|rewrite|replace|update|change|edit|modify|input|insert|add)\b/.test(t)
+  ) {
+    return true;
+  }
 
+  if (isImplicitFollowupEditIntent(t)) return true;
   if (isVisualRefinementIntent(t)) return true;
+  if (isVisualRefinementExecutionIntent(t)) return true;
+  if (isConcreteEditRequest(t) && /\b(site|website|page|layout|blocks|sections|navbar|nav bar|header|footer|card|cards)\b/.test(t)) {
+    return true;
+  }
 
   const hasStrongActionVerb =
-  /\b(create|build|implement|fix|update|edit|modify|change|rewrite|refactor|replace|delete|remove|add|repair|resolve|adjust|write|insert|input|put)\b/.test(
-    t
-  );
+    /\b(create|build|implement|fix|update|edit|modify|change|rewrite|refactor|replace|delete|remove|add|repair|resolve|adjust|write|insert|input|put|make|tweak|polish|refine)\b/.test(
+      t
+    );
 
   const hasExecutionTarget =
-    /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard)\b/.test(
+    /\b(file|repo|repository|project|component|page|route|api|endpoint|function|module|script|site|website|app|dashboard|layout|section|sections|block|blocks|navbar|nav bar|header|footer|card|cards)\b/.test(
       t
     ) || mentionedPaths.length > 0;
 
@@ -279,8 +363,6 @@ if (
     );
 
   if (explainOnlyLanguage) return false;
-
-  if (isVisualRefinementExecutionIntent(t)) return true;
 
   return hasStrongActionVerb && hasExecutionTarget;
 }

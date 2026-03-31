@@ -40,6 +40,12 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
   const createPath = "scripts/generate_xlsx.py";
   const mime = inferTextMimeFromPath(createPath);
 
+  console.log("[implicit_python_bootstrap] entered", {
+    repoId,
+    createPath,
+    needsBootstrap: inference?.needsBootstrap ?? null,
+  });
+
   let newContent: string;
 
   try {
@@ -54,6 +60,14 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
       path: createPath,
       mime,
       maxOutputTokens: 5200,
+    });
+
+    console.log("[implicit_python_bootstrap] generated", {
+      repoId,
+      createPath,
+      contentLen: newContent.length,
+      head: newContent.slice(0, 120),
+      tail: newContent.slice(-200),
     });
   } catch (e: any) {
     const msg = e?.message ?? "Unknown generation error";
@@ -88,16 +102,24 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
     }
   );
 
-  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
-    const visible =
-      "[Observation]\nPython bootstrap staging failed.\n\n" +
-      "[Assessment]\nThe file content was generated, but proposal creation did not complete.\n\n" +
-      "[Action]\nRetry the bootstrap request.";
+  console.log("[implicit_python_bootstrap] proposal result", {
+    repoId,
+    createPath,
+    proposalType: typeof proposal,
+    isObject: !!proposal && typeof proposal === "object",
+    hasError: !!proposal && typeof proposal === "object" && "error" in proposal,
+    keys:
+      proposal && typeof proposal === "object"
+        ? Object.keys(proposal as Record<string, unknown>)
+        : [],
+  });
 
-    return new Response(visible, {
-      status: 200,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
+  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+    console.log("[implicit_python_bootstrap] proposal invalid -> returning null", {
+      repoId,
+      createPath,
     });
+    return null;
   }
 
   const visible =
@@ -105,11 +127,16 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
     "[Assessment]\nA new Python workbook generator was prepared for the empty repository.\n\n" +
     "[Action]\nA staged change is ready. Confirm to apply.";
 
-  return new Response(
-    `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`,
-    {
-      status: 200,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    }
-  );
+  const body = `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`;
+
+  console.log("[implicit_python_bootstrap] returning response", {
+    repoId,
+    createPath,
+    bodyLen: body.length,
+  });
+
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
 }
