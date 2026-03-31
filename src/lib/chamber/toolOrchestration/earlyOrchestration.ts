@@ -16,7 +16,19 @@ export async function tryHandleEarlyOrchestration(args: {
   const pythonBootstrap =
     await tryHandleImplicitPythonBootstrapOrchestration(args);
 
-  if (pythonBootstrap) return pythonBootstrap;
+  console.log("[early_orchestration] implicit python bootstrap returned", {
+    repoId: args.repoId,
+    hasResponse: Boolean(pythonBootstrap),
+    status: pythonBootstrap?.status ?? null,
+  });
+
+  if (pythonBootstrap) {
+    console.log("[early_orchestration] returning implicit python bootstrap response", {
+      repoId: args.repoId,
+      status: pythonBootstrap.status,
+    });
+    return pythonBootstrap;
+  }
 
   return null;
 }

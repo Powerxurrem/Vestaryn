@@ -812,6 +812,33 @@ const { count: totalMsgCount, error: totalCountErr } = await supabase
 
 if (totalCountErr) console.log("[maintenance] count failed:", totalCountErr.message);
 
+const earlyResponse = await tryHandleEarlyOrchestration({
+  openai,
+  supabase,
+  repoId,
+  userId: user.id,
+  content,
+  inference,
+  executionMode,
+  runtimePolicy,
+  requestHandledByOrchestration: false,
+  isImplicitPythonScriptBootstrapRequest,
+});
+
+console.log("[chat_route] early orchestration result", {
+  repoId,
+  hasResponse: Boolean(earlyResponse),
+  status: earlyResponse?.status ?? null,
+});
+
+if (earlyResponse) {
+  console.log("[chat_route] returning early orchestration response", {
+    repoId,
+    status: earlyResponse.status,
+  });
+  return earlyResponse;
+}
+
 const encoder = new TextEncoder();
 
  const stream = new ReadableStream<Uint8Array>({
@@ -829,23 +856,7 @@ const encoder = new TextEncoder();
     let pendingTools: { call_id: string; name: string; arguments: string }[] = [];
     const toolArgsByCallId = new Map<string, string>();
     const toolNameByCallId = new Map<string, string>();
-    
-const earlyResponse = await tryHandleEarlyOrchestration({
-  openai,
-  supabase,
-  repoId,
-  userId: user.id,
-  content,
-  inference,
-  executionMode,
-  runtimePolicy,
-  requestHandledByOrchestration,
-  isImplicitPythonScriptBootstrapRequest,
-});
-
-if (earlyResponse) {
-  return earlyResponse;
-}
+  
 
     try {
       let resp: any;
@@ -942,20 +953,20 @@ if (earlyResponse) {
       });
 
       const fallbackResult = await handlePass1FallbackOrchestration({
-  supabase,
-  repoId,
-  content,
-  executionMode,
-  initialHadTools,
-  pendingTools,
-  pass1Buffer: pass1.buffer ?? "",
-  controller,
-  encoder,
-});
+        supabase,
+        repoId,
+        content,
+        executionMode,
+        initialHadTools,
+        pendingTools,
+        pass1Buffer: pass1.buffer ?? "",
+        controller,
+        encoder,
+      });
 
-initialHadTools = fallbackResult.initialHadTools;
-pendingTools = fallbackResult.pendingTools;
-fullText = fallbackResult.fullText;
+      initialHadTools = fallbackResult.initialHadTools;
+      pendingTools = fallbackResult.pendingTools;
+      fullText = fallbackResult.fullText;
 
       console.log("[stream] pass1", {
         pass1SawTools: pass1.sawToolsThisPass,
@@ -967,42 +978,42 @@ fullText = fallbackResult.fullText;
 
 
       const roundsResult = await runToolExecutionRounds({
-  pendingTools,
-  runtimePolicy,
-  tierPolicy,
-  ctx: {
-    openai,
-    supabase,
-    repoId,
-    userId: user.id,
-    content,
-    runtimePolicy,
-    tierPolicy,
-    executionMode,
-    continuityTargetPath,
-    baselineVerify,
-    inferredVerifyCmd,
-    generateNewFileContentSafe,
-    getEffectiveSinglePath,
-    getEffectiveMentionedPaths,
-    getAvailableFiles,
-    resolveEditTarget,
-    executeToolOrchestration,
-    runToolExecutionLoop,
-  },
-  toolArgsByCallId,
-  state: {
-    requestHandledByOrchestration,
-    pendingProposalOuts,
-    handledSplitTurn,
-    deterministicToolHandled,
-    fullText,
-  },
-  io: {
-    controller,
-    encoder,
-  },
-});
+        pendingTools,
+        runtimePolicy,
+        tierPolicy,
+        ctx: {
+          openai,
+          supabase,
+          repoId,
+          userId: user.id,
+          content,
+          runtimePolicy,
+          tierPolicy,
+          executionMode,
+          continuityTargetPath,
+          baselineVerify,
+          inferredVerifyCmd,
+          generateNewFileContentSafe,
+          getEffectiveSinglePath,
+          getEffectiveMentionedPaths,
+          getAvailableFiles,
+          resolveEditTarget,
+          executeToolOrchestration,
+          runToolExecutionLoop,
+        },
+        toolArgsByCallId,
+        state: {
+          requestHandledByOrchestration,
+          pendingProposalOuts,
+          handledSplitTurn,
+          deterministicToolHandled,
+          fullText,
+        },
+        io: {
+          controller,
+          encoder,
+        },
+      });
 
 requestHandledByOrchestration = roundsResult.state.requestHandledByOrchestration;
 pendingProposalOuts = roundsResult.state.pendingProposalOuts;

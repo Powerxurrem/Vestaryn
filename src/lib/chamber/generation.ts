@@ -613,18 +613,26 @@ ${opts.userRequest}
 `.trim();
 
   const resp = await opts.openai.responses.create({
-  model: opts.model,
-  input: prompt,
-  max_output_tokens: opts.maxOutputTokens ?? 10000,
-});
+    model: opts.model,
+    input: prompt,
+    max_output_tokens: opts.maxOutputTokens ?? 10000,
+  });
 
-const text = (resp.output_text || "").trim();
+  const text = (resp.output_text || "").trim();
 
-if (detectTruncation(opts.path, text)) {
-  throw new Error(`Generated file appears truncated: ${opts.path}`);
-}
+  if (detectTruncation(opts.path, text)) {
+    console.log("[generation truncation_detected]", {
+      path: opts.path,
+      mime: opts.mime,
+      textLen: text.length,
+      head: text.slice(0, 300),
+      tail: text.slice(-500),
+    });
 
-return text;
+    throw new Error(`Generated file appears truncated: ${opts.path}`);
+  }
+
+  return text;
 }
 
 export async function generateRewrittenFileContent(opts: {
