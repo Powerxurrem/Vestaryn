@@ -170,12 +170,31 @@ export async function POST(
           )
         );
 
+console.log("[verify_runner_call]", {
+  repoId,
+  verifyCmd,
+  jobId,
+  runnerUrl: process.env.RUNNER_URL ?? null,
+  hasRunnerUrl: Boolean(process.env.RUNNER_URL),
+  hasRunnerSecret: Boolean(process.env.RUNNER_SECRET),
+});
+
         const result = await runnerRun({
           jobId,
           commandId: verifyCmd,
           snapshotUrl: snap.snapshotSignedUrl,
           timeoutMs: 300_000,
         });
+
+console.log("[verify_runner_result]", {
+  repoId,
+  verifyCmd,
+  ok: result?.ok,
+  exitCode: result?.exitCode,
+  failedStep: result?.failedStep,
+  failureKind: result?.failureKind,
+  error: result?.error,
+});
 
         const ok = Boolean(result.ok);
 
