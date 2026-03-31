@@ -42,7 +42,7 @@ import { buildSurgicalResponseOrchestration } from "@/lib/chamber/toolOrchestrat
 import { tryHandleEarlyOrchestration } from "@/lib/chamber/toolOrchestration/earlyOrchestration";
 import { runToolExecutionLoop } from "@/lib/chamber/toolOrchestration/toolExecutionLoopOrchestration";
 import { runToolExecutionRounds } from "@/lib/chamber/toolOrchestration/toolExecutionRoundsOrchestration";
-
+import { supabaseRouteHandler } from "@/lib/supabase/server";
 
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
@@ -336,7 +336,7 @@ export async function POST(req: Request, context: { params: Promise<{ repoId: st
   const requestId = crypto.randomUUID();
   const url = new URL(req.url);
   const forceMaintenance = url.searchParams.get("forceMaintenance") === "1";
-  const supabase = await supabaseServerComponent();
+  const supabase = await supabaseRouteHandler();
   const {
     data: { user },
   } = await supabase.auth.getUser();
