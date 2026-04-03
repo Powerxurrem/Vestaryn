@@ -146,6 +146,9 @@ export function isCreateLinkedPageIntent(text: string) {
 
 export function resolveCreateMissingTargetPath(text: string) {
   const raw = normText(text);
+    if (isExplicitPythonFileCreateIntent(raw)) {
+    return "script.py";
+  }
   const explicit = extractSingleMentionedPath(raw);
   const implicitMultiple = inferMultipleImplicitPagePaths(raw);
   const implicitSingle = inferImplicitPagePath(raw);
@@ -173,7 +176,7 @@ export function isShortFollowupExecutionIntent(text: string): boolean {
   if (isInternalControlPrompt(t)) return false;
 
   return (
-    /^(yes|yes please|do it|go ahead|apply it|retry|try again|please retry|continue)$/i.test(t)
+    /^(yes|yes please|do it|go ahead|apply it|retry|try again|please retry|continue|go for it|proceed|do that)$/i.test(t)
   );
 }
 
@@ -280,6 +283,28 @@ export function isVisualRefinementExecutionIntent(text: string) {
   return refinementVerb && visualTarget && !explainOnly;
 }
 
+export function isExplicitPythonFileCreateIntent(text: string) {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isInternalGoalExecutionPrompt(t)) return false;
+
+  const createVerb =
+    /\b(write|create|generate|build|make|convert)\b/.test(t);
+
+  const pythonTarget =
+    /\bpython\b/.test(t) ||
+    /\bpython script\b/.test(t) ||
+    /\.py\b/.test(t) ||
+    /\bscript\b/.test(t);
+
+  const explainOnly =
+    /\b(explain|just explain|help me understand|what kind|which kind|how does)\b/.test(t);
+
+  return createVerb && pythonTarget && !explainOnly;
+}
+
 export function isNamedFileExecutionRequest(text: string) {
   if (isCreateAndModifyIntent(text)) {
     return false;
@@ -294,6 +319,16 @@ export function isNamedFileExecutionRequest(text: string) {
       text || ""
     ) || isVisualRefinementIntent(text || "")
   );
+}
+
+export function isPlanningOrSpecPrompt(text: string) {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isInternalGoalExecutionPrompt(t)) return false;
+
+  return /\b(design|structure|schema|workbook|worksheet|spreadsheet|dashboard|formula|formulas|logic|plan|planning|analysis|spec|specification|refine|refinement|implementation-ready|python generation|direct python generation|openpyxl|scaffold|automation opportunities)\b/i.test(t);
 }
 
 export function isExplainOnlyQuestion(text: string) {
@@ -321,6 +356,10 @@ export function isRepositoryExecutionIntent(content: string) {
   // Explicit planning requests should not be treated as execution
   if (isGoalPlanningUserIntent(t)) return false;
 
+    if (isPlanningOrSpecPrompt(t) && !isExplicitPythonFileCreateIntent(t)) {
+    return false;
+  }
+
   const mentionedPaths = extractMentionedPaths(t);
 
   const hasConcreteEditVerb =
@@ -337,6 +376,10 @@ export function isRepositoryExecutionIntent(content: string) {
     hasContentLikeMention &&
     /\b(write|rewrite|replace|update|change|edit|modify|input|insert|add)\b/.test(t)
   ) {
+    return true;
+  }
+
+  if (isExplicitPythonFileCreateIntent(t)) {
     return true;
   }
 

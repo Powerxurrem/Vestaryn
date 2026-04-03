@@ -192,6 +192,13 @@ if (strongLayoutStructureSignal && isCss) score -= 2;
   return score;
 }
 
+function isPlanningOrSpecPrompt(content: string) {
+  const t = String(content ?? "").toLowerCase().trim();
+  if (!t) return false;
+
+  return /\b(design|structure|schema|workbook|dashboard|formula|formulas|logic|plan|planning|analysis|spec|specification|refine|refinement|python generation|direct python generation|openpyxl|scaffold|automation opportunities|implementation-ready)\b/i.test(t);
+}
+
 export function resolveImplicitFollowupTarget(args: {
   content: string;
   mentionedPaths: string[];
@@ -208,6 +215,15 @@ export function resolveImplicitFollowupTarget(args: {
     };
   }
 
+  if (isPlanningOrSpecPrompt(content)) {
+    return {
+      matched: false,
+      confidence: "low",
+      targetPath: null,
+      reason: "planning_prompt_no_file_resume",
+    };
+  }
+  
   if (!isLikelyImplicitEditRequest(content)) {
     return {
       matched: false,

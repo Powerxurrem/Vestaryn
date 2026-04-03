@@ -31,6 +31,13 @@ type CanonicalProposal = {
   meta?: any;
 };
 
+function isPythonWorkbookRequest(content: string, path: string) {
+  return (
+    /\.py$/i.test(path) &&
+    /\b(excel|workbook|openpyxl|spreadsheet|dashboard)\b/i.test(content)
+  );
+}
+
 function textResponse(body: string) {
   return new Response(body, {
     status: 200,
@@ -311,14 +318,43 @@ export async function handleCreateMissingFileMode({
             ) +
             `\nCanonical file content:\n${canonicalHtml}`;
 
-          newContent = await generateNewFileContentWithRetry({
-            openai,
-            model,
-            userRequest: canonicalUserRequest,
-            path: requestedPath,
-            mime,
-            maxOutputTokens: 10000,
-          });
+          if (isPythonWorkbookRequest(content, requestedPath)) {
+            const workbookPrompt =
+              `${content}\n\n` +
+              `You are generating a Python script using openpyxl.\n\n` +
+              `Hard rules:\n` +
+              `- This must be a COMPLETE working script.\n` +
+              `- Do NOT return a placeholder or minimal script.\n` +
+              `- Do NOT return "Hello World".\n` +
+              `- The script must CREATE an Excel workbook.\n` +
+              `- The script must create sheets and headers.\n` +
+              `- The script must include realistic workbook structure.\n` +
+              `- The script must save the workbook to a file.\n\n` +
+              `Minimum requirements:\n` +
+              `- import openpyxl\n` +
+              `- create Workbook()\n` +
+              `- create at least 3 sheets\n` +
+              `- add headers to each sheet\n` +
+              `- save the file\n\n` +
+              `Return ONLY the full Python file.\n`;
+
+            newContent = await generateNewFileContentWithRetry({
+              openai,
+              model,
+              userRequest: workbookPrompt,
+              path: requestedPath,
+              mime,
+              maxOutputTokens: 10000,
+            });
+          } else {
+            newContent = await generateNewFileContentWithRetry({
+              openai,
+              model,
+              userRequest: content,
+              path: requestedPath,
+              mime,
+            });
+          }
 
           const localAssetRefs = extractLocalAssetRefs(newContent);
 

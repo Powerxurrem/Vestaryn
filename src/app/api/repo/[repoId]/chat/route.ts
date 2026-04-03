@@ -61,6 +61,7 @@ import { runTool } from "@/lib/vault/toolRuntime";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
+const GOAL_PLAN_ENABLED = false;
 
 // ─────────────────────────────────────────────────────────────
 // OpenAI client
@@ -103,15 +104,25 @@ async function generateNewFileContentSafe(args: {
 
 function isImplicitPythonScriptBootstrapRequest(text: string) {
   const t = String(text ?? "").toLowerCase();
-  return (
-    /\bpython script\b/.test(t) &&
+
+  const asksForScript =
+    /\b(write|create|generate|build|make|convert)\b/.test(t) &&
     (
-      /\.xlsx\b/.test(t) ||
-      /\bexcel\b/.test(t) ||
-      /\bworkbook\b/.test(t) ||
-      /\bspreadsheet\b/.test(t)
-    )
-  );
+      /\bpython\b/.test(t) ||
+      /\.py\b/.test(t) ||
+      /\bpython script\b/.test(t) ||
+      /\bscript\b/.test(t)
+    );
+
+  const spreadsheetContext =
+    /\.xlsx\b/.test(t) ||
+    /\bexcel\b/.test(t) ||
+    /\bworkbook\b/.test(t) ||
+    /\bspreadsheet\b/.test(t) ||
+    /\bopenpyxl\b/.test(t) ||
+    /\bdashboard\b/.test(t);
+
+  return asksForScript && spreadsheetContext;
 }
 
 function resolveSurgicalPaths(content: string): {
@@ -596,12 +607,14 @@ console.log("[execution_mode.raw]", {
 });
 
 const explicitGoalPlanRequest =
+  GOAL_PLAN_ENABLED &&
   !isInternalControlPrompt(text) &&
   isGoalPlanningUserIntent(text);
 
 const planningRequest = explicitGoalPlanRequest;
 
 const autoGoalPlanRequest =
+  GOAL_PLAN_ENABLED &&
   !isInternalControlPrompt(text) &&
   !explicitGoalPlanRequest &&
   !isRepositoryExecutionIntent(text) &&
@@ -660,7 +673,7 @@ console.log("[policy]", {
   mode: resolvedMode,
 });
 
-if (planningRequest || autoGoalPlanRequest) {
+if (GOAL_PLAN_ENABLED && (planningRequest || autoGoalPlanRequest)) {
   return await handlePlanningRequest({
     openai,
     supabase,
@@ -1343,6 +1356,7 @@ const earlyResponse = await tryHandleEarlyOrchestration({
   runtimePolicy,
   requestHandledByOrchestration: false,
   isImplicitPythonScriptBootstrapRequest,
+  cleanedHistory,
 });
 
 console.log("[chat_route] early orchestration result", {

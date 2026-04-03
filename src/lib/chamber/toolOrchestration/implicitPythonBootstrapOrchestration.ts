@@ -14,7 +14,34 @@ type ImplicitPythonBootstrapOrchestrationArgs = {
   runtimePolicy: any;
   requestHandledByOrchestration: boolean;
   isImplicitPythonScriptBootstrapRequest: (text: string) => boolean;
+  cleanedHistory: Array<{ role: string; content: string }>;
 };
+
+function hasWorkbookSpecContext(
+  cleanedHistory: Array<{ role: string; content: string }>
+) {
+  const joined = cleanedHistory
+    .slice(-8)
+    .map((m) => String(m?.content ?? ""))
+    .join("\n")
+    .toLowerCase();
+
+  return /\b(excel|workbook|spreadsheet|dashboard|openpyxl|monthly sales|raw_sales|monthly_summary|category_analysis|region_analysis)\b/.test(joined);
+}
+
+function isExplicitPythonScriptFollowup(text: string) {
+  const t = String(text ?? "").toLowerCase();
+
+  return (
+    /\b(write|create|generate|build|make|convert)\b/.test(t) &&
+    (
+      /\bpython\b/.test(t) ||
+      /\.py\b/.test(t) ||
+      /\bpython script\b/.test(t) ||
+      /\bscript\b/.test(t)
+    )
+  );
+}
 
 export async function tryHandleImplicitPythonBootstrapOrchestration({
   openai,
@@ -27,17 +54,28 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
   runtimePolicy,
   requestHandledByOrchestration,
   isImplicitPythonScriptBootstrapRequest,
+  cleanedHistory,
 }: ImplicitPythonBootstrapOrchestrationArgs): Promise<Response | null> {
+    const explicitPythonScriptRequest =
+    isImplicitPythonScriptBootstrapRequest(content);
+
+  const workbookSpecContext =
+    hasWorkbookSpecContext(cleanedHistory);
+
+  const shouldRunImplicitPythonBootstrap =
+    explicitPythonScriptRequest ||
+    (isExplicitPythonScriptFollowup(content) && workbookSpecContext);
+
   if (
     requestHandledByOrchestration ||
     !inference?.needsBootstrap ||
     executionMode?.hasExplicitPaths ||
-    !isImplicitPythonScriptBootstrapRequest(content)
+    !shouldRunImplicitPythonBootstrap
   ) {
     return null;
   }
 
-  const createPath = "scripts/generate_xlsx.py";
+  const createPath = "script.py";
   const mime = inferTextMimeFromPath(createPath);
 
   console.log("[implicit_python_bootstrap] entered", {
@@ -56,7 +94,12 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
         `${content}\n\n` +
         `Create the file at ${createPath}.\n` +
         `Return a complete runnable Python script.\n` +
-        `Use openpyxl.\n`,
+        `Use openpyxl.\n` +
+        `This script must generate an Excel workbook scaffold, not a generic Python starter.\n` +
+        `Include workbook sheets for a small reporting/dashboard workflow.\n` +
+        `At minimum, create sheets for raw data, summary, and dashboard.\n` +
+        `Write headers, basic formatting, and save the workbook to an .xlsx file.\n` +
+        `Do not return placeholder code like hello world.\n`,
       path: createPath,
       mime,
       maxOutputTokens: 5200,

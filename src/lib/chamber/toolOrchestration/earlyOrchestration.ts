@@ -12,6 +12,7 @@ export async function tryHandleEarlyOrchestration(args: {
   runtimePolicy: any;
   requestHandledByOrchestration: boolean;
   isImplicitPythonScriptBootstrapRequest: (text: string) => boolean;
+  cleanedHistory: Array<{ role: string; content: string }>;
 }) {
   const pythonBootstrap =
     await tryHandleImplicitPythonBootstrapOrchestration(args);

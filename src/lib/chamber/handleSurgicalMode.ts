@@ -1086,6 +1086,11 @@ function isImagePopulationRequest(text: string) {
   );
 }
 
+function isNonWebPlanningContext(text: string) {
+  const t = String(text ?? "").toLowerCase();
+  return /\b(excel|workbook|worksheet|spreadsheet|dashboard|formula|formulas|python|openpyxl|pandas|script|vba|macro|\.py|\.bas)\b/i.test(t);
+}
+
 function hasImageSourceSpecified(text: string) {
   const t = String(text ?? "").toLowerCase();
   return /\b(remote|url|urls|placeholder|local|unsplash)\b/.test(t);
@@ -1145,6 +1150,7 @@ export async function handleSurgicalMode({
 // 🔥 STRUCTURAL OVERRIDE
 if (
   isStructuralHtmlRequest(content) &&
+  !isNonWebPlanningContext(content) &&
   !/\b(glow|neon|color|colors|palette|theme|style|styling|background|text shadow|shadow|border)\b/i.test(content)
 ) {
   const htmlCandidate =
