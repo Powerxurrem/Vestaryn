@@ -8,6 +8,8 @@ import { inferTextMimeFromPath } from "@/lib/vault/utils";
 import { resolveFileIdByPathOrName } from "@/lib/vault/tools";
 import { runTool } from "@/lib/vault/toolRuntime";
 import { normalizeCommonPathVariants } from "@/lib/chamber/pathNormalization";
+import { applyStyleRecipeFastPath } from "@/lib/chamber/style/styleFastPath";
+import { applyLayoutRecipeFastPath } from "@/lib/chamber/layout/layoutFastPath";
 
 type SurgicalDeps = {
   openai: OpenAI;
@@ -95,6 +97,29 @@ function replaceHeaderOrNav(args: {
   }
 
   return null;
+}
+
+function isStructuralHtmlRequest(text: string) {
+  const t = String(text ?? "").toLowerCase();
+
+  const hasStructureVerb =
+    /\b(add|create|insert|generate|duplicate|remove|delete|move|reorder)\b/.test(t);
+
+const genericAddWithPlacement =
+  /\b(add|insert|place)\b/.test(t) &&
+  /\b(below|above|under|before|after)\b/.test(t);
+
+  const hasStructureTarget =
+    /\b(block|blocks|section|sections|card|cards|container|div|row|rows|column|columns|grid|layout|gallery|hero|footer|header|navbar|menu|list|items|image|images)\b/.test(t);
+
+  const hasPlacement =
+    /\b(below|above|under|next to|before|after|per row|in a row)\b/.test(t);
+
+  return (
+    (hasStructureVerb && hasStructureTarget) ||
+    (hasStructureTarget && hasPlacement) ||
+    genericAddWithPlacement
+  );
 }
 
 function extractLikelyHtmlTextTargets(currentContent: string) {
@@ -339,6 +364,403 @@ function tryHtmlIntentFastPath(content: string, currentPath: string, currentCont
   return null;
 }
 
+function extractSectionBlocks(html: string) {
+  const source = String(html ?? "");
+  const matches = Array.from(
+    source.matchAll(/<section\b[^>]*class=["'][^"']*\bsection\b[^"']*\bcard\b[^"']*["'][^>]*>[\s\S]*?<\/section>/gi)
+  );
+
+  return matches.map((m) => {
+    const full = String(m[0] ?? "");
+    const headingMatch = full.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i);
+
+    return {
+      full,
+      heading: headingMatch
+        ? String(headingMatch[1] ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()
+        : "",
+    };
+  });
+}
+
+function normalizeHeadingText(value: string) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractRequestedSectionNamesFromPrompt(content: string) {
+  const raw = String(content ?? "");
+  const names = extractQuotedStrings(raw).map((s) => s.trim()).filter(Boolean);
+
+  const lower = raw.toLowerCase();
+
+  // Specific known headings from your current site flows
+  if (/\babout vestaryn\b/i.test(lower)) names.push("About Vestaryn");
+  if (/\bcore features\b/i.test(lower)) names.push("Core Features");
+  if (/\bcontact\b.*\baccess\b/i.test(lower)) names.push("Contact & Access");
+
+  return Array.from(new Set(names.map((s) => normalizeHeadingText(s))));
+}
+
+function cleanupEmptySectionGridWrappers(html: string) {
+  let out = String(html ?? "");
+
+  // Remove section-grid wrappers that no longer contain any card sections
+  out = out.replace(
+    /<section\b[^>]*class=["'][^"']*\bsection-grid\b[^"']*["'][^>]*>\s*<\/section>/gi,
+    ""
+  );
+
+  // Collapse excessive blank lines
+  out = out.replace(/\n{3,}/g, "\n\n");
+
+  return out;
+}
+
+function tryRemoveNamedHtmlSectionsFastPath(
+  content: string,
+  currentPath: string,
+  currentContent: string
+) {
+  if (!/\.html?$/i.test(currentPath)) return null;
+
+  const lower = String(content ?? "").toLowerCase();
+
+    const isDeleteIntent =
+    /\b(delete|remove|removed|strip|drop)\b/.test(lower) &&
+    /\b(section|sections|block|blocks|card|cards)\b/.test(lower);
+
+  const isCompleteRemovalIntent =
+    /\b(delete them completely|remove them completely|delete completely|remove completely|not completely removed|different block was touched)\b/.test(lower);
+
+  const isRetryCorrectionIntent =
+    /\b(retry|try again)\b/.test(lower) &&
+    /\b(block|blocks|section|sections|removed|touched)\b/.test(lower);
+
+  if (!isDeleteIntent && !isCompleteRemovalIntent && !isRetryCorrectionIntent) {
+    return null;
+  }
+
+  const blocks = extractSectionBlocks(currentContent);
+  if (blocks.length === 0) return null;
+
+  const requestedNames = extractRequestedSectionNamesFromPrompt(content);
+
+  let blocksToRemove = new Set<string>();
+
+  // Case A: explicit named block deletion
+  if (requestedNames.length > 0) {
+    for (const block of blocks) {
+      const normalizedHeading = normalizeHeadingText(block.heading);
+      if (requestedNames.includes(normalizedHeading)) {
+        blocksToRemove.add(block.full);
+      }
+    }
+  }
+
+  // Case B: broad removal / retry-correction when multiple blocks are present
+  if (
+    blocksToRemove.size === 0 &&
+    (isCompleteRemovalIntent || isRetryCorrectionIntent)
+  ) {
+    for (const block of blocks) {
+      if (block.heading) {
+        blocksToRemove.add(block.full);
+      }
+    }
+  }
+
+  if (blocksToRemove.size === 0) {
+    return null;
+  }
+
+  let rewritten = String(currentContent ?? "");
+
+  for (const full of blocksToRemove) {
+    rewritten = rewritten.replace(full, "");
+  }
+
+  rewritten = cleanupEmptySectionGridWrappers(rewritten);
+
+  if (rewritten === currentContent) {
+    return null;
+  }
+
+  return {
+    kind: "html_remove_named_sections",
+    rewritten,
+    details: {
+      removedCount: blocksToRemove.size,
+      removedHeadings: blocks
+        .filter((b) => blocksToRemove.has(b.full))
+        .map((b) => b.heading)
+        .filter(Boolean),
+    },
+  };
+}
+
+function extractClassList(fragment: string, regex: RegExp) {
+  const match = String(fragment ?? "").match(regex);
+  const raw = String(match?.[1] ?? "").trim();
+  if (!raw) return [];
+  return raw.split(/\s+/).filter(Boolean);
+}
+
+function mergeClassTokens(existing: string[], next: string[]) {
+  return Array.from(new Set([...existing, ...next]));
+}
+
+function removeClassTokens(existing: string[], toRemove: string[]) {
+  const blocked = new Set(toRemove);
+  return existing.filter((c) => !blocked.has(c));
+}
+
+function trySimplifySingleContentCardFastPath(
+  content: string,
+  currentPath: string,
+  currentContent: string
+) {
+  if (!/\.html?$/i.test(currentPath)) return null;
+
+  const lower = String(content ?? "").toLowerCase();
+
+const wantsSpacing =
+  /\b(add|more|increase)\b.*\bspacing\b/i.test(lower) ||
+  /\bspacing\b.*\babove\b/i.test(lower) ||
+  /\byou removed the spacing\b/i.test(lower);
+
+const wantsAbovePlacement =
+  /\babove\b/i.test(lower) && /\bblock\b/i.test(lower);
+
+const wantsSquare =
+  /\b(square|more a square|make (it|that) square|square shape)\b/i.test(lower);
+
+const wantsTaller =
+  /\b(more height|increase the height|give (it|that|the block) more height|taller|slightly higher|higher)\b/i.test(lower);
+
+const wantsSmaller =
+  /\b(smaller|less wide|narrower|more compact)\b/i.test(lower);
+
+const wantsEmptyContent =
+  !wantsTaller &&
+  !wantsSmaller &&
+  !wantsSquare &&
+  /\b(empty|without any information|no information|no text|blank)\b/i.test(lower);
+
+  if (
+    !wantsSpacing &&
+    !wantsSmaller &&
+    !wantsTaller &&
+    !wantsEmptyContent &&
+    !wantsAbovePlacement
+  ) {
+    return null;
+  }
+
+  const sectionMatch = currentContent.match(
+    /<section\b[^>]*class=["'][^"']*\bcontent\b[^"']*["'][^>]*>[\s\S]*?<\/section>/i
+  );
+
+  if (!sectionMatch) return null;
+
+  const currentSection = String(sectionMatch[0] ?? "");
+  const existingSectionClasses = extractClassList(
+  currentSection,
+  /<section\b[^>]*class=["']([^"']*)["'][^>]*>/i
+);
+
+const existingCardClasses = extractClassList(
+  currentSection,
+  /<div\b[^>]*class=["']([^"']*\bcontent-card\b[^"']*)["'][^>]*>/i
+);
+
+  let sectionClasses = mergeClassTokens(existingSectionClasses, ["content"]);
+let cardClasses = mergeClassTokens(existingCardClasses, ["content-card"]);
+
+if (wantsSpacing || wantsAbovePlacement) {
+  sectionClasses = mergeClassTokens(sectionClasses, ["content--spaced"]);
+}
+
+if (wantsSmaller) {
+  cardClasses = mergeClassTokens(cardClasses, ["content-card--compact"]);
+}
+
+if (wantsTaller) {
+  cardClasses = mergeClassTokens(cardClasses, ["content-card--tall"]);
+}
+
+if (wantsSquare) {
+  cardClasses = mergeClassTokens(cardClasses, [
+    "content-card--compact",
+    "content-card--square",
+  ]);
+}
+
+if (/\bsquare\b/.test(lower)) {
+  cardClasses = mergeClassTokens(cardClasses, ["content-card--square"]);
+}
+
+  const innerHtml = wantsEmptyContent
+    ? `          <div class="content-card-inner"></div>`
+    : `          <div class="content-card-inner"></div>`;
+
+  const rebuiltSection =
+    `    <section class="${sectionClasses.join(" ")}" id="content">\n` +
+    `      <div class="container">\n` +
+    `        <div class="${cardClasses.join(" ")}">\n` +
+    `${innerHtml}\n` +
+    `        </div>\n` +
+    `      </div>\n` +
+    `    </section>`;
+
+  let rewritten = currentContent.replace(currentSection, rebuiltSection);
+
+  if (wantsAbovePlacement) {
+    const heroMatch = rewritten.match(
+      /<section\b[^>]*class=["'][^"']*\bhero\b[^"']*["'][^>]*>[\s\S]*?<\/section>/i
+    );
+
+    if (heroMatch) {
+      const heroSection = String(heroMatch[0] ?? "");
+      const contentSectionMatch = rebuiltSection;
+
+      // Remove the rebuilt section from its original location first
+      rewritten = rewritten.replace(rebuiltSection, "");
+
+      // Reinsert directly after hero with an empty line between for cleaner structure
+      rewritten = rewritten.replace(
+        heroSection,
+        `${heroSection}\n\n${contentSectionMatch}`
+      );
+    }
+  }
+
+  if (rewritten === currentContent) {
+    return null;
+  }
+
+  return {
+    kind: "html_simplify_single_content_card",
+    rewritten,
+    details: {
+      wantsSpacing,
+      wantsSmaller,
+      wantsTaller,
+      wantsEmptyContent,
+      wantsAbovePlacement,
+    },
+  };
+}
+
+function insertAfterMatch(html: string, match: RegExp, insertion: string) {
+  const m = html.match(match);
+  if (!m || !m[0]) return null;
+  return html.replace(m[0], `${m[0]}\n\n${insertion}`);
+}
+
+function insertBeforeMatch(html: string, match: RegExp, insertion: string) {
+  const m = html.match(match);
+  if (!m || !m[0]) return null;
+  return html.replace(m[0], `${insertion}\n\n${m[0]}`);
+}
+
+function tryStructuralInsertFastPath(
+  content: string,
+  currentPath: string,
+  currentContent: string
+) {
+  if (!/\.html?$/i.test(currentPath)) return null;
+
+  const lower = String(content ?? "").toLowerCase();
+
+  const gallerySection = [
+    `    <section class="container section" id="gallery">`,
+    `      <div class="section card content-card--neon-glow">`,
+    `        <h2>Gallery</h2>`,
+    `        <p>A visual collection inspired by the site’s aesthetic and energy.</p>`,
+    `      </div>`,
+    `    </section>`,
+  ].join("\n");
+
+  const introSection = [
+    `    <section class="container section" id="intro">`,
+    `      <div class="section card content-card--neon-glow">`,
+    `        <h2>Welcome</h2>`,
+    `        <p>A new section placed directly below the hero.</p>`,
+    `      </div>`,
+    `    </section>`,
+  ].join("\n");
+
+  const imagesSection = [
+    `  <div class="container section" aria-label="Images above footer">`,
+    `    <div class="section card content-card--neon-glow">`,
+    `      <h2>Images</h2>`,
+    `      <p>Visual highlights placed above the footer.</p>`,
+    `    </div>`,
+    `  </div>`,
+  ].join("\n");
+
+  if (/\bgallery\b/.test(lower) && /\bbelow\b/.test(lower)) {
+    const rewritten = insertAfterMatch(
+      currentContent,
+      /<section\b[^>]*class=["'][^"']*\bhero\b[^"']*["'][^>]*>[\s\S]*?<\/section>/i,
+      gallerySection
+    );
+    if (rewritten && rewritten !== currentContent) {
+      return {
+        kind: "html_insert_gallery_below",
+        rewritten,
+        details: { placement: "below_hero" },
+      };
+    }
+  }
+
+  if (
+    /\b(add|insert|place)\b/.test(lower) &&
+    /\b(something|section|content)\b/.test(lower) &&
+    /\bbelow\b/.test(lower) &&
+    /\bhero\b/.test(lower)
+  ) {
+    const rewritten = insertAfterMatch(
+      currentContent,
+      /<section\b[^>]*class=["'][^"']*\bhero\b[^"']*["'][^>]*>[\s\S]*?<\/section>/i,
+      introSection
+    );
+    if (rewritten && rewritten !== currentContent) {
+      return {
+        kind: "html_insert_section_below_hero",
+        rewritten,
+        details: { placement: "below_hero" },
+      };
+    }
+  }
+
+  if (
+    /\b(insert|add)\b/.test(lower) &&
+    /\b(image|images|pictures)\b/.test(lower) &&
+    /\babove\b/.test(lower) &&
+    /\bfooter\b/.test(lower)
+  ) {
+    const rewritten = insertBeforeMatch(
+      currentContent,
+      /<footer\b[^>]*>[\s\S]*?<\/footer>/i,
+      imagesSection
+    );
+    if (rewritten && rewritten !== currentContent) {
+      return {
+        kind: "html_insert_images_above_footer",
+        rewritten,
+        details: { placement: "above_footer" },
+      };
+    }
+  }
+
+  return null;
+}
+
 function tryDeterministicFastPath(
   content: string,
   currentPath: string,
@@ -371,6 +793,33 @@ function tryDeterministicFastPath(
 
   if (quotedReplace?.kind === "quoted_replace_ambiguous") {
     return quotedReplace;
+  }
+
+  const removeNamedSections = tryRemoveNamedHtmlSectionsFastPath(
+    content,
+    currentPath,
+    currentContent
+  );
+  if (removeNamedSections) {
+    return removeNamedSections;
+  }
+
+  const simplifySingleContentCard = trySimplifySingleContentCardFastPath(
+    content,
+    currentPath,
+    currentContent
+  );
+  if (simplifySingleContentCard) {
+    return simplifySingleContentCard;
+  }
+
+  const structuralInsert = tryStructuralInsertFastPath(
+    content,
+    currentPath,
+    currentContent
+  );
+  if (structuralInsert) {
+    return structuralInsert;
   }
 
   const htmlIntent = tryHtmlIntentFastPath(content, currentPath, currentContent);
@@ -539,6 +988,36 @@ function countInlineStyleBlocks(html: string) {
   return (String(html ?? "").match(/<style\b[^>]*>/gi) ?? []).length;
 }
 
+function rejectUnexpectedInlineStyleBlock(args: {
+  currentPath: string;
+  currentContent: string;
+  rewritten: string;
+}) {
+  const { currentPath, currentContent, rewritten } = args;
+
+  if (!/\.html?$/i.test(currentPath)) return null;
+
+  const originalInlineStyleCount = countInlineStyleBlocks(currentContent);
+  const rewrittenInlineStyleCount = countInlineStyleBlocks(rewritten);
+
+  if (originalInlineStyleCount === 0 && rewrittenInlineStyleCount > 0) {
+    return new Response(
+      "[Observation]\nThe requested surgical edit was blocked before staging.\n\n" +
+        `[Assessment]\nThe generated rewrite for ${currentPath} introduced new inline CSS instead of keeping styling in shared CSS.\n\n` +
+        "[Action]\nRetry with a smaller visual-only change or update shared CSS directly.",
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+        },
+      }
+    );
+  }
+
+  return null;
+}
+
 type SurgicalStrategy =
   | "text_replace"
   | "html_targeted"
@@ -580,6 +1059,38 @@ function resolveSurgicalStrategy(args: {
   return "full_rewrite";
 }
 
+function isCreateTargetRequest(content: string, targetPath: string | null) {
+  const text = String(content ?? "");
+  const normalizedTarget = String(targetPath ?? "").trim().toLowerCase();
+
+  const asksToCreate =
+    /\b(create|make|add|generate)\b/i.test(text) &&
+    /\b(file|page|section)\b/i.test(text);
+
+  const asksForNewFile =
+    /\b(new file|create the new file|make a new file)\b/i.test(text);
+
+  const mentionsAboutPage =
+    /\babout page\b/i.test(text) ||
+    /\babout\.html\b/i.test(text) ||
+    normalizedTarget === "about.html";
+
+  return asksToCreate || asksForNewFile || mentionsAboutPage;
+}
+
+function isImagePopulationRequest(text: string) {
+  const t = String(text ?? "").toLowerCase();
+  return (
+    /\b(add|insert|place)\b/.test(t) &&
+    /\b(image|images|picture|pictures|photo|photos)\b/.test(t)
+  );
+}
+
+function hasImageSourceSpecified(text: string) {
+  const t = String(text ?? "").toLowerCase();
+  return /\b(remote|url|urls|placeholder|local|unsplash)\b/.test(t);
+}
+
 export async function handleSurgicalMode({
   openai,
   supabase,
@@ -592,35 +1103,96 @@ export async function handleSurgicalMode({
   targetPathOverride = null,
   referencePathOverride = null,
 }: SurgicalDeps): Promise<Response | null> {
-  const hintedPaths =
-  baselineVerify?.executionMode?.mentionedPaths ??
-  baselineVerify?.mentionedPaths ??
-  [];
+    const explicitMentionedPaths = extractMentionedPaths(content)
+    .map(normalizeCommonPathVariants)
+    .filter(Boolean);
 
-const resolved = resolveSurgicalTargetAndReferences(content, hintedPaths);
+  const baselineHintedPaths = Array.isArray(baselineVerify?.executionMode?.mentionedPaths)
+    ? baselineVerify.executionMode.mentionedPaths
+    : Array.isArray(baselineVerify?.mentionedPaths)
+      ? baselineVerify.mentionedPaths
+      : [];
 
-const targetPath =
-  targetPathOverride ??
+  const hintedPaths = Array.from(
+    new Set(
+      [
+        targetPathOverride,
+        referencePathOverride,
+        ...explicitMentionedPaths,
+        ...baselineHintedPaths,
+      ]
+        .map((p) => normalizeCommonPathVariants(String(p ?? "").trim()))
+        .filter(Boolean)
+    )
+  );
+
+  const resolved = resolveSurgicalTargetAndReferences(content, hintedPaths);
+
+  const normalizedTargetOverride = targetPathOverride
+    ? normalizeCommonPathVariants(String(targetPathOverride).trim())
+    : null;
+
+  const normalizedReferenceOverride = referencePathOverride
+    ? normalizeCommonPathVariants(String(referencePathOverride).trim())
+    : null;
+
+  let targetPath =
+  normalizedTargetOverride ??
   resolved.targetPath ??
+  hintedPaths[0] ??
   null;
 
-const referencePaths = referencePathOverride
-  ? [referencePathOverride]
-  : resolved.referencePaths;
+// 🔥 STRUCTURAL OVERRIDE
+if (
+  isStructuralHtmlRequest(content) &&
+  !/\b(glow|neon|color|colors|palette|theme|style|styling|background|text shadow|shadow|border)\b/i.test(content)
+) {
+  const htmlCandidate =
+    hintedPaths.find((p) => /\.html?$/i.test(p)) ||
+    "index.html";
 
-const reason = targetPathOverride
-  ? "runtime_target_override"
-  : resolved.reason;
-
-if (!targetPath) {
-  console.log("[surgical] skipped: no resolved surgical target", {
-    reason,
-    mentionedPaths: extractMentionedPaths(content),
-    targetPathOverride,
-    referencePathOverride,
+  console.log("[surgical structural override]", {
+    from: targetPath,
+    to: htmlCandidate,
   });
-  return null;
+
+  targetPath = htmlCandidate;
 }
+
+  const referencePaths = Array.from(
+    new Set(
+      (
+        normalizedReferenceOverride
+          ? [normalizedReferenceOverride]
+          : resolved.referencePaths.length > 0
+            ? resolved.referencePaths
+            : hintedPaths.filter((p) => p !== targetPath).slice(0, 1)
+      )
+        .map((p) => normalizeCommonPathVariants(String(p ?? "").trim()))
+        .filter(Boolean)
+        .filter((p) => p !== targetPath)
+    )
+  );
+
+  const reason =
+    normalizedTargetOverride
+      ? "runtime_target_override"
+      : resolved.reason !== "no_surgical_target"
+        ? resolved.reason
+        : hintedPaths.length > 0
+          ? "hinted_path_fallback"
+          : "no_surgical_target";
+
+  if (!targetPath) {
+    console.log("[surgical] skipped: no resolved surgical target", {
+      reason,
+      explicitMentionedPaths,
+      hintedPaths,
+      targetPathOverride,
+      referencePathOverride,
+    });
+    return null;
+  }
 
   console.log("[surgical] target resolved", {
     repoId,
@@ -629,9 +1201,18 @@ if (!targetPath) {
     reason,
   });
 
-  const fileId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
+  if (referencePaths.length === 0 && hintedPaths.length > 1) {
+    console.log("[surgical] note: multi-path context present but no reference path survived", {
+      hintedPaths,
+      targetPath,
+      content,
+    });
+  }
 
-  if (!fileId) {
+  const fileId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
+  const allowCreateMissing = !fileId && isCreateTargetRequest(content, targetPath);
+
+  if (!fileId && !allowCreateMissing) {
     console.log("[surgical] skipped: target file not found", { targetPath });
 
     return new Response(
@@ -648,16 +1229,29 @@ if (!targetPath) {
     );
   }
 
-  const readOut = await runTool(
-    supabase,
-    repoId,
-    userId,
-    content,
-    "vault_read_text",
-    { path: targetPath }
-  );
+  if (allowCreateMissing) {
+    console.log("[surgical_create_missing] allowing create for missing target", {
+      targetPath,
+    });
+  }
 
-  if (!readOut || typeof readOut !== "object" || "error" in readOut) {
+  const readOut = allowCreateMissing
+    ? {
+        path: targetPath,
+        mime: inferTextMimeFromPath(targetPath),
+        content: "",
+        id: null,
+      }
+    : await runTool(
+        supabase,
+        repoId,
+        userId,
+        content,
+        "vault_read_text",
+        { path: targetPath }
+      );
+
+  if (!allowCreateMissing && (!readOut || typeof readOut !== "object" || "error" in readOut)) {
     console.log("[surgical] read failed", {
       targetPath,
       error: (readOut as any)?.error ?? null,
@@ -680,7 +1274,22 @@ if (!targetPath) {
   const currentPath = String((readOut as any).path ?? targetPath);
   const currentMime = String((readOut as any).mime ?? inferTextMimeFromPath(currentPath));
   const currentContent = String((readOut as any).content ?? "");
-  const currentFileId = String((readOut as any).id ?? fileId);
+  const currentFileId = fileId ? String(fileId) : "";
+
+  if (isImagePopulationRequest(content) && !hasImageSourceSpecified(content)) {
+    return new Response(
+      "[Observation]\nImages were requested for the page.\n\n" +
+        "[Assessment]\nA source for the images was not specified, so Vestaryn cannot safely wire them in yet.\n\n" +
+        "[Action]\nReply with one of: remote URLs, placeholder images, or local assets.",
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+        },
+      }
+    );
+  }
 
   const referenceFiles: Array<{ path: string; mime: string; content: string }> = [];
 
@@ -819,7 +1428,7 @@ function reorderNavLinksToMatchReference(args: {
   }
 
   const fastPath =
-    strategy === "text_replace" && referenceFiles.length === 0
+    referenceFiles.length === 0
       ? tryDeterministicFastPath(content, currentPath, currentContent)
       : null;
 
@@ -874,7 +1483,7 @@ function reorderNavLinksToMatchReference(args: {
     );
   }
 
-  if (fastPath?.rewritten) {
+   if (fastPath?.rewritten) {
     rewritten = fastPath.rewritten;
     rewriteSource = "fast_path";
 
@@ -883,6 +1492,55 @@ function reorderNavLinksToMatchReference(args: {
       kind: fastPath.kind,
       details: fastPath.details,
     });
+  }
+
+  if (!rewritten) {
+    const styleFastPath = applyStyleRecipeFastPath({
+      userText: content,
+      currentPath,
+      currentContent,
+    });
+
+    if (styleFastPath.ok) {
+      rewritten = styleFastPath.nextContent;
+      rewriteSource = "fast_path";
+
+      console.log("[surgical fast-path hit]", {
+        currentPath,
+        kind: styleFastPath.kind,
+        recipeId: styleFastPath.recipeId,
+        className: styleFastPath.className,
+      });
+    } else {
+      console.log("[surgical style fast-path miss]", {
+        currentPath,
+        reason: styleFastPath.reason,
+      });
+    }
+  }
+
+  if (!rewritten) {
+    const layoutFastPath = applyLayoutRecipeFastPath({
+      userText: content,
+      currentPath,
+      currentContent,
+    });
+
+    if (layoutFastPath.ok) {
+      rewritten = layoutFastPath.nextContent;
+      rewriteSource = "fast_path";
+
+      console.log("[surgical fast-path hit]", {
+        currentPath,
+        kind: layoutFastPath.kind,
+        recipeId: layoutFastPath.recipeId,
+      });
+    } else {
+      console.log("[surgical layout fast-path miss]", {
+        currentPath,
+        reason: layoutFastPath.reason,
+      });
+    }
   }
 
   if (!rewritten && strategy === "html_targeted") {
@@ -966,9 +1624,10 @@ function reorderNavLinksToMatchReference(args: {
     `User request: ${content}`,
   ].join("\n");
 
-  const isFragment = isHtmlFragment(currentContent);
+  const isHtmlFile = /\.html?$/i.test(currentPath);
+  const isFragment = isHtmlFile && isHtmlFragment(currentContent);
 
-  if (isFragment && referenceFiles.length > 0) {
+  if (isHtmlFile && isFragment && referenceFiles.length > 0) {
     const primaryReference =
       referenceFiles.find((f) => /(^|\/)index\.html$/i.test(f.path)) ??
       referenceFiles[0] ??
@@ -1005,7 +1664,41 @@ function reorderNavLinksToMatchReference(args: {
   }
 }
 
-  if (typeof rewritten !== "string" || rewritten.trim().length === 0) {
+if (!/\.html?$/i.test(currentPath) && /<html|<head|<body|<nav|<header/i.test(rewritten)) {
+  console.log("[surgical] blocked: html injected into non-html file", {
+    currentPath,
+  });
+
+  return new Response(
+    "[Observation]\nThe requested edit was blocked.\n\n" +
+      `[Assessment]\nGenerated content for ${currentPath} contained HTML markup which is invalid for this file type.\n\n` +
+      "[Action]\nRetry with a request aligned to the file type (e.g. CSS changes for styles.css).",
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    }
+  );
+}
+
+  {
+    const inlineStyleRejection = rejectUnexpectedInlineStyleBlock({
+      currentPath,
+      currentContent,
+      rewritten,
+    });
+
+    if (inlineStyleRejection) {
+      console.log("[surgical] blocked: introduced inline style block", {
+        currentPath,
+      });
+      return inlineStyleRejection;
+    }
+  }
+
+   if (typeof rewritten !== "string" || rewritten.trim().length === 0) {
     console.log("[surgical] generation failed: empty rewrite", {
       currentPath,
       rewriteSource,
@@ -1048,7 +1741,11 @@ function reorderNavLinksToMatchReference(args: {
     );
   }
 
-  if (currentContent.length > 0 && rewritten.length < currentContent.length * 0.7) {
+  if (
+    rewriteSource === "model_path" &&
+    currentContent.length > 0 &&
+    rewritten.length < currentContent.length * 0.7
+  ) {
     console.log("[surgical] rewrite rejected: suspicious truncation", {
       currentPath,
       rewriteSource,
@@ -1056,68 +1753,43 @@ function reorderNavLinksToMatchReference(args: {
       rewrittenLen: rewritten.length,
     });
 
-  if (referenceFiles.length > 0 && /\.html?$/i.test(currentPath)) {
-    const primaryReference = referenceFiles[0];
+    if (referenceFiles.length > 0 && /\.html?$/i.test(currentPath)) {
+      const primaryReference = referenceFiles[0];
 
-    const driftCheck = detectReferenceIdentityDrift({
-      originalContent: currentContent,
-      rewrittenContent: rewritten,
-      referenceContent: primaryReference.content,
-    });
-
-    if (!driftCheck.ok) {
-      console.log("[surgical] rewrite rejected: reference identity drift", {
-        currentPath,
-        referencePath: primaryReference.path,
-        suspiciousTitleCopy: driftCheck.suspiciousTitleCopy,
-        suspiciousH1Copy: driftCheck.suspiciousH1Copy,
-        originalTitle: driftCheck.originalTitle,
-        rewrittenTitle: driftCheck.rewrittenTitle,
-        referenceTitle: driftCheck.referenceTitle,
-        originalH1: driftCheck.originalH1,
-        rewrittenH1: driftCheck.rewrittenH1,
-        referenceH1: driftCheck.referenceH1,
+      const driftCheck = detectReferenceIdentityDrift({
+        originalContent: currentContent,
+        rewrittenContent: rewritten,
+        referenceContent: primaryReference.content,
       });
 
-      return new Response(
-        "[Observation]\nThe requested surgical edit was blocked before staging.\n\n" +
-          `[Assessment]\nThe generated rewrite for ${currentPath} copied identity-level content from the reference page instead of only aligning style/layout.\n\n` +
-          "[Action]\nRetry with a stricter visual-only alignment request.",
-        {
-          status: 200,
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-            "Cache-Control": "no-cache, no-transform",
-          },
-        }
-      );
+      if (!driftCheck.ok) {
+        console.log("[surgical] rewrite rejected: reference identity drift", {
+          currentPath,
+          referencePath: primaryReference.path,
+          suspiciousTitleCopy: driftCheck.suspiciousTitleCopy,
+          suspiciousH1Copy: driftCheck.suspiciousH1Copy,
+          originalTitle: driftCheck.originalTitle,
+          rewrittenTitle: driftCheck.rewrittenTitle,
+          referenceTitle: driftCheck.referenceTitle,
+          originalH1: driftCheck.originalH1,
+          rewrittenH1: driftCheck.rewrittenH1,
+          referenceH1: driftCheck.referenceH1,
+        });
+
+        return new Response(
+          "[Observation]\nThe requested surgical edit was blocked before staging.\n\n" +
+            `[Assessment]\nThe generated rewrite for ${currentPath} copied identity-level content from the reference page instead of only aligning style/layout.\n\n` +
+            "[Action]\nRetry with a stricter visual-only alignment request.",
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "text/plain; charset=utf-8",
+              "Cache-Control": "no-cache, no-transform",
+            },
+          }
+        );
+      }
     }
-
-    const originalInlineStyleCount = countInlineStyleBlocks(currentContent);
-    const rewrittenInlineStyleCount = countInlineStyleBlocks(rewritten);
-
-    if (originalInlineStyleCount === 0 && rewrittenInlineStyleCount > 0) {
-      console.log("[surgical] rewrite rejected: introduced inline style block", {
-        currentPath,
-        referencePath: primaryReference.path,
-        originalInlineStyleCount,
-        rewrittenInlineStyleCount,
-      });
-
-      return new Response(
-        "[Observation]\nThe requested surgical edit was blocked before staging.\n\n" +
-          `[Assessment]\nThe generated rewrite for ${currentPath} introduced new inline CSS instead of staying aligned with the existing shared stylesheet structure.\n\n` +
-          "[Action]\nRetry with a smaller visual-only change or update shared CSS directly.",
-        {
-          status: 200,
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-            "Cache-Control": "no-cache, no-transform",
-          },
-        }
-      );
-    }
-  }
 
     return new Response(
       "[Observation]\nThe requested surgical edit was blocked before staging.\n\n" +
@@ -1148,17 +1820,24 @@ function reorderNavLinksToMatchReference(args: {
     });
   }
 
+  const proposalArgs = allowCreateMissing
+    ? {
+        path: currentPath,
+        content: rewritten,
+      }
+    : {
+        fileId: currentFileId,
+        path: currentPath,
+        content: rewritten,
+      };
+
   const proposal = await runTool(
     supabase,
     repoId,
     userId,
     content,
     "vault_propose_write",
-    {
-      fileId: currentFileId,
-      path: currentPath,
-      content: rewritten,
-    }
+    proposalArgs
   );
 
   if (!proposal || typeof proposal !== "object" || "error" in proposal) {

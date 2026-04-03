@@ -252,7 +252,17 @@ FILE
 }
 
 export type WebsiteSectionBrief = {
-  type: "about" | "features" | "services" | "menu" | "contact";
+  type:
+    | "about"
+    | "features"
+    | "services"
+    | "menu"
+    | "contact"
+    | "destinations"
+    | "food"
+    | "culture"
+    | "travel"
+    | "gallery";
   title: string;
   body?: string;
   items?: string[];
@@ -307,9 +317,14 @@ Return ONLY valid JSON in this exact shape:
 Rules:
 - Do not include markdown fences.
 - Do not include explanation.
-- Keep the result compact.
-- Prefer 1 to 3 sections maximum.
-- Use only section types: about, features, services, menu, contact.
+- Keep the result structured and concise, but rich enough for a strong first website preview.
+- Prefer 4 to 6 sections for broad topics like countries, travel, business, company, or portfolio sites.
+- Prefer 2 to 4 sections only for narrow/small topics.
+- Use only section types: about, features, services, menu, contact, destinations, food, culture, travel, gallery.
+- Avoid repeating generic “About” sections unless the user explicitly wants that emphasis.
+- For country or travel topics, prefer a mix such as: about, destinations, food, culture, travel, gallery.
+- For business topics, prefer a mix such as: about, services, features, contact.
+- For portfolio topics, prefer a mix such as: about, features, contact.
 - Every string must be fully filled.
 - No placeholders.
 - No ellipses.
@@ -362,6 +377,18 @@ ${opts.userRequest}
 
     return fallbackWebsiteBootstrapBrief(opts.userRequest);
   }
+}
+
+function isCountryOrTravelTopic(text: string) {
+  return /\b(italy|netherlands|france|spain|germany|belgium|japan|travel|tourism|destination|destinations|guide|country|cities|culture)\b/i.test(text);
+}
+
+function isBusinessTopic(text: string) {
+  return /\b(business|company|agency|studio|firm|consulting|services)\b/i.test(text);
+}
+
+function isPortfolioTopic(text: string) {
+  return /\b(portfolio|designer|developer|artist|photographer|work|projects)\b/i.test(text);
 }
 
 function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBrief {
@@ -485,6 +512,62 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
     };
   }
 
+  if (topic && isCountryOrTravelTopic(raw)) {
+    return {
+      siteTitle: `Discover ${topicTitle}`,
+      siteType: "travel",
+      tone: "editorial",
+      visualStyle: "clean",
+      heroTitle: `Experience the Beauty of ${topicTitle}`,
+      heroSubtitle: `Explore the culture, landscapes, cuisine, and unforgettable destinations of ${topicTitle}.`,
+      ctaText: "Start Exploring",
+      secondaryCtaText: includeAboutPage ? "About" : "View Highlights",
+      styleMood: "romantic, timeless, and sophisticated",
+      paletteHint: "travel editorial green stone cream",
+      includeAboutPage: true,
+            sections: [
+        {
+          type: "about" as const,
+          title: `About ${topicTitle}`,
+          body: `${topicTitle} offers a rich mix of history, atmosphere, local traditions, and memorable places to discover.`,
+        },
+        {
+          type: "destinations" as const,
+          title: `Top Destinations`,
+          body: `A few iconic places that define the spirit of ${topicTitle}.`,
+          items: ["Capital city", "Historic region", "Scenic coastline", "Hidden local favorite"],
+        },
+        {
+          type: "food" as const,
+          title: `Food & Cuisine`,
+          body: `From regional specialties to everyday classics, food is one of the best ways to experience ${topicTitle}.`,
+          items: ["Signature dishes", "Local markets", "Regional specialties"],
+        },
+        {
+          type: "culture" as const,
+          title: `Culture & History`,
+          body: `${topicTitle} blends local traditions, architecture, art, and everyday life into a distinctive cultural identity.`,
+        },
+        {
+          type: "travel" as const,
+          title: `Travel Tips`,
+          body: `Helpful ideas for planning a smoother and more enjoyable visit.`,
+          items: ["Best time to visit", "How to get around", "What to prioritize first"],
+        },
+        ...(hasPictures
+          ? [
+              {
+                type: "gallery" as const,
+                title: `Gallery Highlights`,
+                body: `A visual preview of landscapes, city scenes, food, and atmosphere.`,
+                items: ["City views", "Landmarks", "Cuisine", "Nature"],
+              },
+            ]
+          : []),
+      ].slice(0, 6),
+    };
+  }
+
   const styleMood = hasGold ? "elegant warm" : "clean modern";
   const paletteHint = hasGold ? "gold black cream" : "blue slate";
 
@@ -524,8 +607,8 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
       : "clean";
 
   const heroTitle = topic
-    ? `${topicTitle}`
-    : "Build Something Clear and Focused";
+  ? `Explore ${topicTitle}`
+  : "Build Something Clear and Focused";
 
   const heroSubtitle = topic
     ? `A simple website focused on ${topic.toLowerCase()}${
@@ -562,27 +645,79 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
     styleMood,
     paletteHint,
     includeAboutPage,
-    sections: [
-      {
-        type: "about" as const,
-        title: sectionTitle,
-        body: sectionBody,
-      },
-      ...(hasPictures
+        sections: (
+      isBusinessTopic(raw)
         ? [
             {
+              type: "about" as const,
+              title: "About",
+              body: sectionBody,
+            },
+            {
+              type: "services" as const,
+              title: "Services",
+              body: "A focused overview of the core services or offerings.",
+              items: ["Primary service", "Secondary service", "Specialized support"],
+            },
+            {
               type: "features" as const,
-              title: "Gallery Highlights",
-              body: "A visual section for featured images and themed highlights.",
-              items: [
-                "Featured image",
-                "Highlighted section",
-                "Visual showcase",
-              ],
+              title: "Why Choose This",
+              body: "A few reasons this offering stands out clearly.",
+              items: ["Clear process", "Reliable delivery", "Strong outcomes"],
+            },
+            {
+              type: "contact" as const,
+              title: "Get in Touch",
+              body: "A simple call to action for the next step.",
             },
           ]
-        : []),
-    ].slice(0, 3),
+        : isPortfolioTopic(raw)
+        ? [
+            {
+              type: "about" as const,
+              title: "About",
+              body: sectionBody,
+            },
+            {
+              type: "features" as const,
+              title: "Selected Work",
+              body: "A small set of featured projects or case studies.",
+              items: ["Project One", "Project Two", "Project Three"],
+            },
+            {
+              type: "contact" as const,
+              title: "Contact",
+              body: "A simple place to invite collaboration or inquiries.",
+            },
+          ]
+        : [
+            {
+              type: "about" as const,
+              title: sectionTitle,
+              body: sectionBody,
+            },
+            {
+              type: "features" as const,
+              title: "Highlights",
+              body: "A few key things worth exploring first.",
+              items: ["Key point one", "Key point two", "Key point three"],
+            },
+            ...(hasPictures
+              ? [
+                  {
+                    type: "gallery" as const,
+                    title: "Gallery Highlights",
+                    body: "A visual section for featured images and themed highlights.",
+                    items: [
+                      "Featured image",
+                      "Highlighted section",
+                      "Visual showcase",
+                    ],
+                  },
+                ]
+              : []),
+          ]
+    ).slice(0, 6),
   };
 }
 

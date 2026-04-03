@@ -33,21 +33,36 @@ function isLikelyImplicitEditRequest(content: string) {
   if (!t) return false;
 
   const hasAction =
-    /\b(change|update|edit|rewrite|rename|replace|make|set|turn|fix|correct|adjust|improve|repair)\b/.test(t);
+    /\b(change|update|edit|rewrite|rename|replace|make|set|turn|fix|correct|adjust|improve|repair|add|give)\b/.test(t);
 
   const hasContinuation =
-    /\b(continue|go ahead|yes|still|again|retry|fix it|do it)\b/.test(t);
+    /\b(continue|go ahead|yes|still|again|retry|fix it|do it|same|same block|that block|this block|to the same block|to that block|and now|also|as well|too)\b/.test(t);
 
   const hasTargetReference =
-    /\b(page|about|index|layout|navbar|nav|header|footer|hero|section|content|chart|macro|formula|sheet|table|graph)\b/.test(t);
+  /\b(page|about|index|layout|navbar|nav|header|footer|hero|section|content|chart|macro|formula|sheet|table|graph|block|card|panel|container|box|row|rows|column|columns|grid|width|height)\b/.test(t);
+
+  const hasLayoutFollowupSignal =
+  /\b(per row|rows?|columns?|below|above|same height|match height|max \d+ blocks per row|directly below|lower \d+ blocks|other \d+ blocks|full width|equal height|align rows?)\b/.test(t);
 
   const hasQualitySignal =
     /\b(wrong|bad|off|not right|broken|issue|error|not working|not linked|linked)\b/.test(t);
 
+  const hasVisualStyleSignal =
+    /\b(glow|glowing|aura|blur|frosted|glass|glassy|shadow|gradient|edge|edges|sharp|rounded|spikes|spiky|neon|ambient|soft|futuristic|polished|modern|corner|corners|border|color|colors|coloring|palette|theme|tones|contrast|vivid|darker|brighter)\b/.test(t);
+
+  const shortStyleFollowup =
+    hasContinuation &&
+    /\b(color|colors|coloring|palette|theme|tones|contrast|vivid|darker|brighter|glow|blur|frosted|glass|sharp|rounded|neon|futuristic)\b/.test(t);
+
   return (
     (hasAction && hasTargetReference) ||
     (hasContinuation && hasTargetReference) ||
-    (hasTargetReference && hasQualitySignal)
+    (hasTargetReference && hasQualitySignal) ||
+    (hasAction && hasVisualStyleSignal) ||
+    (hasContinuation && hasVisualStyleSignal) ||
+    (hasTargetReference && hasVisualStyleSignal) ||
+    shortStyleFollowup ||
+    hasLayoutFollowupSignal
   );
 }
 
@@ -71,7 +86,7 @@ function scoreRecentFile(ref: RecentFileRef, now = Date.now()): number {
 
 function isStyleOnlyRequest(text: string): boolean {
   const hasStyle =
-    /\b(css|styles|styling|theme|colors?|background|shadow|gradient|hover|font|spacing|padding|margin)\b/.test(text);
+    /\b(css|styles|styling|theme|colors?|coloring|palette|tones|background|shadow|gradient|hover|font|spacing|padding|margin|glow|aura|blur|frosted|glass|glassy|edge|edges|sharp|rounded|spikes|spiky|neon|ambient|corner|corners|border|contrast|vivid|darker|brighter)\b/.test(text);
 
   const hasContentOrStructure =
     /\b(title|heading|headline|text|copy|content|label|name|naming|story|mission|team|section|hero|navbar|nav|header|footer|layout|page)\b/.test(text);
@@ -108,14 +123,22 @@ function contentAwarePathBias(content: string, path: string): number {
     );
 
   const layoutRequest =
-    /\b(layout|structure|page|hero|navbar|nav|header|footer|align|match|same|consistent|visually align|visually match)\b/.test(
-      text
-    );
+  /\b(layout|structure|page|hero|navbar|nav|header|footer|align|match|same|consistent|visually align|visually match|row|rows|column|columns|grid|per row|below|above|width|height|equal height|same height|max \d+ per row)\b/.test(
+    text
+  );
+
+const layoutStyleRequest =
+  /\b(row|rows|column|columns|grid|per row|same height|equal height|match height|height doesn'?t match|height does not match|max \d+ per row)\b/.test(
+    text
+  );
+
+const layoutStructureRequest =
+  /\b(add|create|insert).*(block|blocks|card|cards|section|sections)|\b(block|blocks|card|cards).*(below|above)|\bdirectly below\b|\blower \d+ blocks\b|\bother \d+ blocks\b|\bfull width\b|\btotal width\b/.test(
+    text
+  );
 
   const pureStyleRequest =
-    /\b(css|styles|styling|theme|colors?|background|shadow|gradient|hover|font|spacing|padding|margin)\b/.test(
-      text
-    );
+    /\b(css|styles|styling|theme|colors?|background|shadow|gradient|hover|font|spacing|padding|margin|glow|aura|blur|frosted|glass|glassy|edge|edges|sharp|rounded|spikes|spiky|neon|ambient|corner|corners|border)\b/.test(text);
 
   const pageIdentityCorrection =
     /\b(has nothing to do with|wrong page|wrong content|wrong topic|completely different|doesn'?t match the page)\b/.test(
@@ -132,8 +155,21 @@ function contentAwarePathBias(content: string, path: string): number {
   if (mentionsIndex && isIndex) score += 10;
 
   if (textOrContentRequest && isHtml) score += 5;
-  if (layoutRequest && isHtml) score += 4;
+  if (layoutRequest && isHtml) score += 2;
   if (pureStyleRequest && isCss) score += 4;
+
+  if (layoutStyleRequest && isCss) score += 8;
+  if (layoutStyleRequest && isHtml) score -= 2;
+
+  if (layoutStructureRequest && isHtml) score += 8;
+  if (layoutStructureRequest && isCss) score -= 4;
+
+  const shortColorFollowup =
+    /\b(and now|also|too|as well|same)\b/.test(text) &&
+    /\b(color|colors|coloring|palette|theme|tones|contrast|vivid|darker|brighter)\b/.test(text);
+
+  if (shortColorFollowup && isCss) score += 8;
+  if (shortColorFollowup && isHtml) score -= 2;
 
   if (isStyleOnlyRequest(text) && isCss) score += 6;
   if (!isStyleOnlyRequest(text) && isCss) score -= 1;
@@ -147,6 +183,11 @@ function contentAwarePathBias(content: string, path: string): number {
   if (/\bnavbar naming\b/.test(text) && isCss) score -= 2;
 
   if (/\bpokemon\b/.test(text) && isAbout) score += 4;
+
+const strongLayoutStructureSignal = layoutStructureRequest;
+
+if (strongLayoutStructureSignal && isHtml) score += 4;
+if (strongLayoutStructureSignal && isCss) score -= 2;
 
   return score;
 }
@@ -225,6 +266,7 @@ export function resolveImplicitFollowupTarget(args: {
     };
   }
 
+  
   return {
     matched: false,
     confidence: "low",

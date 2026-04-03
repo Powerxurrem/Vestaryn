@@ -8,31 +8,53 @@ function escapeHtml(s: string) {
     .replace(/"/g, "&quot;");
 }
 
+function sectionAnchorId(section: { title?: string; type?: string }) {
+  const raw = String(section?.title ?? section?.type ?? "section")
+    .toLowerCase()
+    .trim();
+
+  return raw
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "section";
+}
+
 function renderSection(section: any) {
   const title = escapeHtml(section?.title ?? "");
   const body = escapeHtml(section?.body ?? "");
   const items = Array.isArray(section?.items) ? section.items : [];
-
-  if (section?.type === "menu" || section?.type === "features" || section?.type === "services") {
-    return `
-      <section class="section card">
-        <h2>${title}</h2>
-        ${body ? `<p>${body}</p>` : ""}
-        ${items.length ? `<ul>${items.map((x: string) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : ""}
-      </section>
-    `.trim();
-  }
+  const anchorId = sectionAnchorId(section);
 
   return `
-    <section class="section card">
+    <section id="${anchorId}" class="section card">
       <h2>${title}</h2>
       ${body ? `<p>${body}</p>` : ""}
+      ${items.length ? `<ul>${items.map((x: string) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>` : ""}
+    </section>
+  `.trim();
+}
+
+function renderHighlightChips(brief: WebsiteBootstrapBrief) {
+  const items = (brief.sections ?? [])
+    .slice(0, 3)
+    .map((section) => {
+      const title = escapeHtml(section?.title ?? "");
+      const anchorId = sectionAnchorId(section);
+      return `<a href="#${anchorId}" class="highlight-chip">${title}</a>`;
+    })
+    .join("\n");
+
+  if (!items) return "";
+
+  return `
+    <section class="container highlights">
+      ${items}
     </section>
   `.trim();
 }
 
 export function renderWebsiteIndexHtml(brief: WebsiteBootstrapBrief) {
-  const sections = (brief.sections ?? []).slice(0, 3).map(renderSection).join("\n");
+  const sections = (brief.sections ?? []).slice(0, 6).map(renderSection).join("\n");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -66,6 +88,8 @@ export function renderWebsiteIndexHtml(brief: WebsiteBootstrapBrief) {
         </div>
       </div>
     </section>
+
+    ${renderHighlightChips(brief)}
 
     <section id="content" class="container section-grid">
       ${sections}
@@ -117,14 +141,94 @@ export function renderWebsiteAboutHtml(brief: WebsiteBootstrapBrief) {
 </html>`;
 }
 
+function resolveBootstrapPalette(brief: WebsiteBootstrapBrief) {
+  const text = `${brief.siteTitle} ${brief.heroTitle} ${brief.heroSubtitle} ${brief.styleMood ?? ""} ${brief.paletteHint ?? ""} ${brief.siteType ?? ""} ${brief.visualStyle ?? ""}`.toLowerCase();
+
+  const looksTravel =
+    /\b(italy|netherlands|travel|guide|explore|destination|tourism|culture|city|cities|country)\b/.test(text);
+
+  const looksFuturistic =
+    /\b(futuristic|cyber|tech|ai|startup|saas|platform|software)\b/.test(text);
+
+const looksArtGallery =
+  /\b(art|gallery|painting|paintings|artist|artists|exhibition|museum|curated|editorial)\b/.test(text);
+
+  const looksLuxury =
+    /\b(luxury|premium|gold|elegant|high-end)\b/.test(text);
+
+if (looksArtGallery) {
+  return {
+    bg: "#f6f1e8",
+    panel: "#fffaf3",
+    text: "#2b2118",
+    muted: "#6f6254",
+    accent: "#8c6a43",
+    border: "rgba(43, 33, 24, 0.12)",
+    buttonText: "#fffaf3",
+    headerBg: "rgba(246, 241, 232, 0.88)",
+  };
+}
+
+  if (looksTravel) {
+    return {
+      bg: "#f8faf5",
+      panel: "#ffffff",
+      text: "#1f2937",
+      muted: "#6b7280",
+      accent: "#008C45",
+      border: "rgba(31, 41, 55, 0.12)",
+      buttonText: "#ffffff",
+      headerBg: "rgba(248, 250, 245, 0.9)",
+    };
+  }
+
+  if (looksLuxury) {
+    return {
+      bg: "#14110f",
+      panel: "#1c1815",
+      text: "#f5efe6",
+      muted: "#c6b9a7",
+      accent: "#d4a84f",
+      border: "rgba(212, 168, 79, 0.18)",
+      buttonText: "#111827",
+      headerBg: "rgba(20, 17, 15, 0.82)",
+    };
+  }
+
+  if (looksFuturistic) {
+    return {
+      bg: "#0b1020",
+      panel: "#111827",
+      text: "#e5f0ff",
+      muted: "#94a3b8",
+      accent: "#38bdf8",
+      border: "rgba(56, 189, 248, 0.18)",
+      buttonText: "#081018",
+      headerBg: "rgba(11, 16, 32, 0.82)",
+    };
+  }
+
+  return {
+    bg: "#0f172a",
+    panel: "#111827",
+    text: "#e5e7eb",
+    muted: "#94a3b8",
+    accent: "#f59e0b",
+    border: "rgba(255,255,255,0.12)",
+    buttonText: "#111827",
+    headerBg: "rgba(15, 23, 42, 0.75)",
+  };
+}
+
 export function renderWebsiteStylesCss(brief: WebsiteBootstrapBrief) {
+  const palette = resolveBootstrapPalette(brief);
   return `:root {
-  --bg: #0f172a;
-  --panel: #111827;
-  --text: #e5e7eb;
-  --muted: #94a3b8;
-  --accent: #f59e0b;
-  --border: rgba(255,255,255,0.12);
+  --bg: ${palette.bg};
+  --panel: ${palette.panel};
+  --text: ${palette.text};
+  --muted: ${palette.muted};
+  --accent: ${palette.accent};
+  --border: ${palette.border};
   --max-width: 1100px;
   --radius: 18px;
 }
@@ -156,7 +260,7 @@ a { color: inherit; text-decoration: none; }
   position: sticky;
   top: 0;
   backdrop-filter: blur(10px);
-  background: rgba(15, 23, 42, 0.75);
+  background: ${palette.headerBg};
   border-bottom: 1px solid var(--border);
 }
 
@@ -213,6 +317,39 @@ h1 {
   margin-top: 1.5rem;
 }
 
+.highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding-bottom: 2rem;
+}
+
+.highlight-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.92rem;
+  transition:
+  transform 140ms ease,
+  border-color 140ms ease,
+  background 140ms ease,
+  box-shadow 140ms ease;
+}
+
+.highlight-chip:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+}
+
+.highlight-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -220,7 +357,7 @@ h1 {
   padding: 0.85rem 1.2rem;
   border-radius: 999px;
   background: var(--accent);
-  color: #111827;
+  color: ${palette.buttonText};
   font-weight: 700;
 }
 
@@ -232,9 +369,21 @@ h1 {
 
 .section-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
   padding-bottom: 3rem;
+}
+
+@media (max-width: 900px) {
+  .section-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .section-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .section,

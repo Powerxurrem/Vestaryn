@@ -103,9 +103,9 @@ export async function prepareChatRuntimeOrchestration({
     recentFiles: continuityRecentFiles,
   });
 
-  const isShortRetryFollowup =
-    /^(yes|yes please|do it|go ahead|apply it|retry|can you retry|try again|please retry|continue)$/i.test(
-      String(text ?? "").trim()
+  const isRetryLikeFollowup =
+    /\b(yes|yes please|do it|go ahead|apply it|retry|can you retry|try again|please retry|continue|redo)\b/i.test(
+      String(text ?? "")
     );
 
   const recentAssistantNeedsNavCleanup = cleanedHistory
@@ -129,7 +129,7 @@ export async function prepareChatRuntimeOrchestration({
   );
 
   const continuityOverride =
-    isShortRetryFollowup &&
+  isRetryLikeFollowup &&
     recentAssistantNeedsNavCleanup &&
     String(inference?.projectType ?? "").toLowerCase() === "static_site" &&
     staticSiteHtmlPaths.length >= 2
@@ -153,6 +153,108 @@ export async function prepareChatRuntimeOrchestration({
     effectiveMentionedPaths = staticSiteHtmlPaths;
   }
   
+  const availableRepoPaths =
+    Array.isArray((inference as any)?.files) &&
+    (inference as any).files.length > 0
+      ? (inference as any).files
+          .map((f: any) => String(f?.path ?? "").trim())
+          .filter(Boolean)
+      : Array.from(
+          new Set(
+            continuityRecentFiles
+              .map((f) => String(f?.path ?? "").trim())
+              .filter(Boolean)
+          )
+        );
+
+  const singlePageHtmlPaths = Array.from(
+    new Set(
+      continuityRecentFiles
+        .filter((f) => ["apply", "proposal", "read"].includes(String(f?.source ?? "")))
+        .map((f) => String(f?.path ?? "").trim().toLowerCase())
+        .filter(Boolean)
+        .filter((p) => /\.html?$/i.test(p))
+        .filter((p) => p === "index.html")
+    )
+  );
+
+  const normalizedText = String(text ?? "");
+
+  const isRelativeSinglePageFollowup =
+    /\b(opposite|instead of|above it|below it|move it|move that|right above|right below)\b/i.test(
+      normalizedText
+    ) ||
+    /\b(add|create|insert).*(block|blocks|card|cards|section|sections)\b/i.test(
+      normalizedText
+    ) ||
+    /\b(block|blocks|card|cards|section|sections).*(below|above)\b/i.test(
+      normalizedText
+    );
+
+  const isLayoutStyleFollowup =
+    /\b(row|rows|column|columns|grid|per row|same height|equal height|match height|height doesn'?t match|height does not match|max \d+ per row|spacing|gap)\b/i.test(
+      normalizedText
+    );
+
+  const recentAssistantTouchedSinglePageHtml = cleanedHistory
+    .slice(-6)
+    .some(
+      (m: any) =>
+        m?.role === "assistant" &&
+        /\b(index\.html|single content card|content-card|hero card|staged change to index\.html|confirmed and the file version advanced)\b/i.test(
+          String(m?.content ?? "")
+        )
+    );
+
+    const recentAssistantNeedsSinglePageContentRetry = cleanedHistory
+      .slice(-6)
+      .some(
+        (m: any) =>
+          m?.role === "assistant" &&
+          /\b(section|sections|block|blocks|content|remove|removed|hide|hidden|styles\.css|only hid|wrong file|html sections still exist|still exist in index\.html|delete them completely|remove the blocks completely)\b/i.test(
+            String(m?.content ?? "")
+          )
+      );
+
+  let forceSinglePageSurgicalResume = false;
+
+      if (
+    String(inference?.projectType ?? "").toLowerCase() === "static_site" &&
+    (
+      availableRepoPaths.includes("index.html") ||
+      singlePageHtmlPaths.includes("index.html")
+    ) &&
+    (
+      (isRetryLikeFollowup && recentAssistantNeedsSinglePageContentRetry) ||
+      (isRelativeSinglePageFollowup && recentAssistantTouchedSinglePageHtml) ||
+      isLayoutStyleFollowup
+    )
+  ) {
+    if (isLayoutStyleFollowup && availableRepoPaths.includes("styles.css")) {
+      console.log("[retry_resume_single_page] redirected to styles.css (layout-style request)", {
+        repoId,
+        availableRepoPaths,
+        isRetryLikeFollowup,
+        isRelativeSinglePageFollowup,
+        isLayoutStyleFollowup,
+      });
+
+      effectiveMentionedPaths = ["styles.css"];
+      forceSinglePageSurgicalResume = true;
+    } else {
+      console.log("[retry_resume_single_page] forcing index.html surgical", {
+        repoId,
+        availableRepoPaths,
+        isRetryLikeFollowup,
+        isRelativeSinglePageFollowup,
+        isLayoutStyleFollowup,
+      });
+
+      effectiveMentionedPaths = ["index.html"];
+      forceSinglePageSurgicalResume = true;
+    }
+  }
+
   // 1) explicit artifact inference from the current prompt
   if (effectiveMentionedPaths.length === 0) {
     const inferredPath = inferArtifactPath(text);
@@ -176,24 +278,60 @@ export async function prepareChatRuntimeOrchestration({
     }
   }
 
-    let executionMode =
-    continuityOverride.matched &&
-    (continuityOverride.confidence === "high" || continuityOverride.confidence === "medium")
+  // 2.5) final CSS preference override (post-continuity, pre-execution-mode)
+  const prefersStylesCss =
+    /\b(row|rows|column|columns|grid|per row|max \d+ per row|same height|equal height|match height|height doesn'?t match|height does not match|spacing|gap|padding|margin|background|glow|neon|futuristic|palette|color|colors|coloring|theme)\b/i.test(
+      normalizedText
+    );
+
+  const hasStylesCss = availableRepoPaths.includes("styles.css");
+
+  if (
+    prefersStylesCss &&
+    hasStylesCss &&
+    effectiveMentionedPaths.length === 1 &&
+    effectiveMentionedPaths[0] === "index.html"
+  ) {
+    console.log("[final_target_override] index.html -> styles.css", {
+      repoId,
+      reason: "layout_or_style_css_preference",
+    });
+
+    effectiveMentionedPaths = ["styles.css"];
+    forceSinglePageSurgicalResume = true;
+  }
+
+      let executionMode =
+    forceSinglePageSurgicalResume
       ? {
           ...rawExecutionMode,
           mode: "surgical" as const,
-          confidence: continuityOverride.confidence,
+          confidence: "high" as const,
           reasons: [
             ...(rawExecutionMode.reasons ?? []),
-            `implicit_followup:${continuityOverride.reason}`,
+            "single_page_followup_resume_override",
           ],
           mentionedPaths: effectiveMentionedPaths,
-          hasExplicitPaths: effectiveMentionedPaths.length > 0,
+          hasExplicitPaths: true,
         }
-      : {
-          ...rawExecutionMode,
-          mentionedPaths: effectiveMentionedPaths,
-        };
+      : continuityOverride.matched &&
+        (continuityOverride.confidence === "high" ||
+          continuityOverride.confidence === "medium")
+        ? {
+            ...rawExecutionMode,
+            mode: "surgical" as const,
+            confidence: continuityOverride.confidence,
+            reasons: [
+              ...(rawExecutionMode.reasons ?? []),
+              `implicit_followup:${continuityOverride.reason}`,
+            ],
+            mentionedPaths: effectiveMentionedPaths,
+            hasExplicitPaths: effectiveMentionedPaths.length > 0,
+          }
+        : {
+            ...rawExecutionMode,
+            mentionedPaths: effectiveMentionedPaths,
+          };
 
   // 3) advisory -> surgical when artifact inference produced a file path
   if (

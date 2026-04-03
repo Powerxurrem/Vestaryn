@@ -86,7 +86,7 @@ function isImplicitFollowupEditIntent(text: string) {
 
 function isVisualRefinementIntent(text: string) {
   return hasAny(text, [
-    /\bmake (it|this) look\b/i,
+    /\bmake (it|this|that) look\b/i,
     /\blook more\b/i,
     /\bmore premium\b/i,
     /\bmore modern\b/i,
@@ -99,6 +99,29 @@ function isVisualRefinementIntent(text: string) {
     /\bstyle it\b/i,
     /\bpolish the design\b/i,
     /\brefresh the design\b/i,
+
+    // new style language
+    /\bglow\b/i,
+    /\bglowing\b/i,
+    /\bneon\b/i,
+    /\baura\b/i,
+    /\bambient\b/i,
+    /\bblur\b/i,
+    /\bfrosted\b/i,
+    /\bglass\b/i,
+    /\bglassy\b/i,
+    /\bshadow\b/i,
+    /\bgradient\b/i,
+    /\bsharp\b/i,
+    /\bfuturistic\b/i,
+    /\brounded\b/i,
+    /\bcorner\b/i,
+    /\bcorners\b/i,
+    /\bedge\b/i,
+    /\bedges\b/i,
+    /\bborder\b/i,
+    /\bspikes\b/i,
+    /\bspiky\b/i,
   ]);
 }
 
@@ -552,6 +575,24 @@ if (isImplicitEdit) {
   };
 }
 
+  // 🔥 STYLE FOLLOW-UP EXECUTION PATCH
+  const styleFollowupSignal =
+    /\b(glow|glowing|neon|aura|ambient|blur|frosted|glass|glassy|shadow|gradient|sharp|futuristic|rounded|corner|corners|edge|edges|border|spikes|spiky)\b/i.test(text);
+
+  const styleTargetSignal =
+    /\b(block|card|panel|container|box|section|hero|navbar|header|footer|it|this|that)\b/i.test(text);
+
+  if (styleFollowupSignal && (styleTargetSignal || isFollowupReferenceIntent(text))) {
+    return {
+      mode: "incremental",
+      confidence: "high",
+      reasons: ["style_followup_execution_intent"],
+      mentionedPaths,
+      hasExplicitPaths,
+    };
+  }
+
+  // default fallback
   return {
     mode: "advisory",
     confidence: "medium",

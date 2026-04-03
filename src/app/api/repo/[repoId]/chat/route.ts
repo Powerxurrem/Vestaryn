@@ -346,15 +346,22 @@ function isStaticSiteStyleFollowup(args: {
   availableFiles: string[];
   effectiveMentionedPaths: string[];
 }) {
-  const intent = classifyEditIntent(args.content);
+  const t = String(args.content ?? "").toLowerCase();
   const projectType = String(args.inference?.projectType ?? "").toLowerCase();
   const hasStylesCss = args.availableFiles.some((p) => /(^|\/)styles\.css$/i.test(p));
   const hasHtml = args.availableFiles.some((p) => /\.html?$/i.test(p));
   const hasExplicitPaths = args.effectiveMentionedPaths.length > 0;
 
+  const styleOnlyIntent =
+    /\b(color|colors|background|theme|style|styling|shade|shadow|blur|transparent|glass|border|glow|spacing|padding|margin|font|visual|look|feel)\b/.test(t);
+
+  const structuralOrContentIntent =
+    /\b(remove|delete|hide|replace|rewrite|change the contents|content|text|section|sections|block|blocks|left|right|middle|hero|card|cards)\b/.test(t);
+
   return (
     projectType === "static_site" &&
-    (intent === "style" || intent === "structure") &&
+    styleOnlyIntent &&
+    !structuralOrContentIntent &&
     !hasExplicitPaths &&
     hasStylesCss &&
     hasHtml

@@ -92,7 +92,7 @@ early_access: {
   label: "Early Access",
   isTemporary: true,
   isInviteOnly: true,
-  model: "gpt-5-mini",
+  model: "gpt-5.4-mini",
   modelClass: "mini",
   output: {
     maxOutputTokens: 4200,

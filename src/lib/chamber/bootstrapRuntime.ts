@@ -40,9 +40,15 @@ function resolveBootstrapPathsFromUserRequest(text: string) {
     return ["index.html", "about.html", "styles.css"];
   }
 
-  if (s.includes("website") || s.includes("site")) {
-    return ["index.html", "styles.css"];
-  }
+  if (
+  s.includes("website") ||
+  s.includes("site") ||
+  s.includes("guide") ||
+  s.includes("travel") ||
+  s.includes("portfolio")
+) {
+  return ["index.html", "about.html", "styles.css"];
+}
 
   return [];
 }
