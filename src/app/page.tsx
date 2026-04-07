@@ -61,7 +61,7 @@ export default async function Home({
         .select("id,name,created_at")
         .eq("workspace_id", workspaceId)
         .order("created_at", { ascending: false })
-        .limit(6);
+        .limit(50);
 
       repos = data;
     }
@@ -204,7 +204,7 @@ export default async function Home({
                 Repos
               </div>
 
-              <div className="mt-4 space-y-2">
+              <div className="mt-4 max-h-[420px] space-y-2 overflow-y-auto pr-1">
                 {repos?.length ? (
                   repos.map((repo) => (
                     <Link

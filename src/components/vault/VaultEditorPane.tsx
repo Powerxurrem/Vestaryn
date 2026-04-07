@@ -67,15 +67,20 @@ export default function VaultEditorPane({
       appendPreview?: string | null;
     }
   >;
-  fileStatusById: Record<
+    fileStatusById: Record<
     string,
-    
-    { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
+    {
+      status: "ok" | "warn" | "error" | "pending";
+      reason: string | null;
+      source: "preverify" | "verify" | "manual" | "scan" | null;
+      updated_at: string | null;
+    }
   >;
   onFileStatus: (
     fileId: string,
     status: "ok" | "warn" | "error" | "pending",
-    reason?: string
+    reason?: string,
+    source?: "preverify" | "verify" | "manual" | "scan"
   ) => void;
     rightChamber?: ReactNode;
     rightChamberWidth?: number;
@@ -589,11 +594,11 @@ return (
               const active = t.fileId === activeFileId;
               const isDirty = active && dirty;
               const st = fileStatusById?.[t.fileId];
-              const isRecent = st?.ts && Date.now() - st.ts < 15000;
+              const updatedAtMs = st?.updated_at ? new Date(st.updated_at).getTime() : null;
+              const isRecent = !!updatedAtMs && Date.now() - updatedAtMs < 15000;
               const status = st?.status ?? null;
               const reason = st?.reason ?? "";
               
-
               return (
                 <div
                   key={t.fileId}

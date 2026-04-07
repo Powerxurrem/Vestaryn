@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
 import ChatFrame from "@/components/chat/ChatFrame";
 import RepoVault from "@/components/RepoVault";
 import type { OpenTab } from "@/components/FileOverlay";
@@ -8,15 +7,16 @@ import VaultEditorPane from "@/components/vault/VaultEditorPane";
 import { VestarynFrame } from "@/components/dev/RepoHud";
 import type { RepoVaultHandle } from "@/components/RepoVault"; // adjust path if needed
 import RunConsolePanel from "@/components/chamber/RunConsolePanel";
-
+import { useEffect, useMemo, useRef,useState, useCallback } from "react";
 
 type RepoFile = { id: string; path: string; mime: string };
 const storageKeyFor = (repoId: string) => `vestaryn:split:${repoId}`;
 
 type FileStatus = {
-  ts: number;
   status: "ok" | "warn" | "error" | "pending";
-  reason?: string;
+  reason: string | null;
+  source: "preverify" | "verify" | "manual" | "scan" | null;
+  updated_at: string | null;
 };
 
 export default function ChamberWithVault({
@@ -66,6 +66,28 @@ export default function ChamberWithVault({
   const [maintenance, setMaintenance] = useState<any>(null);
   const [fileStatusById, setFileStatusById] = useState<Record<string, FileStatus>>({});
 
+  const [isScanningVault, setIsScanningVault] = useState(false);
+
+const reloadFileStatuses = useCallback(async () => {
+  if (!repoId) return;
+
+  try {
+    const res = await fetch(`/api/repo/${repoId}/file-status`, {
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      console.log("[scan_vault] status fetch failed", await res.text());
+      return;
+    }
+
+    const json = await res.json();
+    setFileStatusById(json?.statuses ?? {});
+  } catch (e) {
+    console.log("[scan_vault] reloadFileStatuses failed", e);
+  }
+}, [repoId]);
+
   type FileIssue = {
   line: number;
   column?: number | null;
@@ -104,28 +126,39 @@ useEffect(() => {
       }));
     }, []);
     const onFileStatus = useCallback(
-      (fileId: string, status: FileStatus["status"], reason?: string) => {
-        const ts = Date.now();
-        setFileStatusById((prev) => {
-          const cur = prev[fileId];
-          console.log("[fileStatus]", { fileId, status, reason });
+  (
+    fileId: string,
+    status: FileStatus["status"],
+    reason?: string,
+    source: FileStatus["source"] = "manual"
+  ) => {
+    setFileStatusById((prev) => {
+      const cur = prev[fileId];
 
+      console.log("[fileStatus]", { fileId, status, reason, source });
 
-          // Pending is "stronger" than a generic Updated ok.
-          if (cur?.status === "pending") {
-            const canResolvePending =
-              status === "ok" || status === "warn" || status === "error";
+      if (cur?.status === "pending") {
+        const canResolvePending =
+          status === "ok" || status === "warn" || status === "error";
 
-            if (!canResolvePending) {
-              return prev;
-            }
-          }
+        if (!canResolvePending) {
+          return prev;
+        }
+      }
 
-          return { ...prev, [fileId]: { ts, status, reason } };
-        });
-      },
-      []
-    );
+      return {
+        ...prev,
+        [fileId]: {
+          status,
+          reason: reason ?? null,
+          source,
+          updated_at: new Date().toISOString(),
+        },
+      };
+    });
+  },
+  []
+);
 
   // files touched since last verify started
   const pendingTouchedRef = useRef<Set<string>>(new Set());
@@ -161,6 +194,32 @@ const [artifactPreview, setArtifactPreview] = useState<ArtifactPreview | null>(n
 
 const [isPreviewResizing, setIsPreviewResizing] = useState(false);
 const [blockPreviewInteraction, setBlockPreviewInteraction] = useState(false);
+
+const handleScanVault = useCallback(async () => {
+  if (!repoId || isScanningVault) return;
+
+  try {
+    setIsScanningVault(true);
+
+    const res = await fetch(`/api/repo/${repoId}/scan`, {
+      method: "POST",
+    });
+
+    if (!res.ok) {
+      console.log("[scan_vault] scan failed", await res.text());
+      return;
+    }
+
+    const json = await res.json();
+    console.log("[scan_vault] result", json);
+
+    await reloadFileStatuses();
+  } catch (e) {
+    console.log("[scan_vault] request failed", e);
+  } finally {
+    setIsScanningVault(false);
+  }
+}, [repoId, isScanningVault, reloadFileStatuses]);
 
 const previewResizeActiveRef = useRef(false);
 
@@ -212,6 +271,8 @@ useEffect(() => {
     });
   }
 
+
+  
   function stopPreviewResize() {
     if (!previewResizeActiveRef.current) return;
 
@@ -244,6 +305,12 @@ useEffect(() => {
     }
   };
 }, []);
+
+useEffect(() => {
+  if (!repoId) return;
+  void reloadFileStatuses();
+}, [repoId, reloadFileStatuses]);
+
 const previewResizeRafRef = useRef<number | null>(null);
   const chamberOpen = chamberMode !== null;
   const [chatReloadToken, setChatReloadToken] = useState(0);
@@ -352,7 +419,7 @@ const resolvePreferredPreviewPath = useCallback(
 const markFileUpdated = useCallback(
   (fileId: string) => {
     bumpFileReload(fileId);
-    onFileStatus(fileId, "pending", "Verifying…");
+    onFileStatus(fileId, "pending", "Verifying…", "manual");
   },
   [onFileStatus, bumpFileReload]
 );
@@ -597,6 +664,8 @@ onPreviewRefresh={() => {
             onToggleMode={toggleMode}
             fileStatusById={fileStatusById}
             maintenance={effectiveMaintenance}
+            isScanningVault={isScanningVault}
+            onScanVault={handleScanVault}
             onResummarizeDone={() => {
               setMaintenance(null);
               setChatReloadToken((v) => v + 1);
@@ -809,9 +878,14 @@ function HiddenChamber(props: {
   mode: "vault" | "memory" | "console" | "handover" | "sql" | null;
   onToggleMode: (m: "vault" | "memory" | "console" | "handover" | "sql") => void;
   fileStatusById: Record<
-    string,
-    { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
-  >;
+  string,
+  {
+    status: "ok" | "warn" | "error" | "pending";
+    reason: string | null;
+    source: "preverify" | "verify" | "manual" | "scan" | null;
+    updated_at: string | null;
+  }
+>;
   maintenance?: any;
   onArtifactPreview?: (
   preview: {
@@ -824,8 +898,19 @@ function HiddenChamber(props: {
   } | null
 ) => void;
   onResummarizeDone?: () => void;
+    isScanningVault?: boolean;
+  onScanVault?: () => void;
 }) {
-  const { repoId, mode, onToggleMode, fileStatusById, maintenance,onResummarizeDone, } = props;
+const {
+  repoId,
+  mode,
+  onToggleMode,
+  fileStatusById,
+  maintenance,
+  onResummarizeDone,
+  isScanningVault = false,
+  onScanVault,
+} = props;
 
   // debug: confirm mode actually changes and chamber renders
   useEffect(() => {
@@ -1012,6 +1097,15 @@ return (
             <div className="mt-3 text-[11px] text-white/45">
               {allGreen ? "Ready to commit." : "Waiting for verify to finish / pass."}
             </div>
+
+            <button
+              type="button"
+              onClick={onScanVault}
+              disabled={isScanningVault}
+              className="mt-3 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isScanningVault ? "Scanning..." : "Scan Vault"}
+            </button>
 
             <button
               className={[

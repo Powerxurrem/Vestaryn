@@ -9,9 +9,9 @@ const openai = new OpenAI({
 });
 
 const SUMMARY_KEEP_LAST = 40;
-const SUMMARY_TARGET_MSGS = 200;
+const SUMMARY_TARGET_MSGS = 120;
 
-function clip(s: string, n = 700) {
+function clip(s: string, n = 350) {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
@@ -49,6 +49,23 @@ function parseMemorySections(responseText: string) {
   }
 
   return sections;
+}
+
+function ensureLedgerFallback(ledger: string) {
+  const text = String(ledger ?? "").trim();
+
+  if (!text) {
+    return "# Engineering Ledger\n\n## Earlier Milestones\n- Not yet confirmed.";
+  }
+
+  if (
+    /## Earlier Milestones\s*$/m.test(text) ||
+    !/## Earlier Milestones[\s\S]*-\s+/m.test(text)
+  ) {
+    return `${text}\n- Not yet confirmed.`;
+  }
+
+  return text;
 }
 
 export async function POST(
@@ -273,8 +290,18 @@ ${chatContext}
   const resp = await openai.responses.create({
     model: "gpt-5-mini",
     input: prompt,
-    max_output_tokens: 900,
+    max_output_tokens: 2700,
   });
+
+console.log("[resummarize] openai raw", {
+  hasOutputText: Boolean(resp.output_text),
+  outputTextLen: String(resp.output_text ?? "").length,
+  finishReason: (resp as any)?.status ?? null,
+  usage: (resp as any)?.usage ?? null,
+  outputCount: Array.isArray((resp as any)?.output)
+    ? (resp as any).output.length
+    : 0,
+});
 
   const responseText = (resp.output_text || "").trim();
   const sections = parseMemorySections(responseText);
@@ -307,6 +334,16 @@ ${chatContext}
       updated_at: nowForRows,
     },
   ];
+
+console.log("[resummarize] parsed sections", {
+  masterLen: sections.master.length,
+  chamberLen: sections.chamber.length,
+  treeLen: sections.tree.length,
+  ledgerLen: sections.ledger.length,
+  responseHead: responseText.slice(0, 500),
+});
+
+sections.ledger = ensureLedgerFallback(sections.ledger);
 
   const { error: upsertErr } = await supabase
     .from("repo_memory_docs")

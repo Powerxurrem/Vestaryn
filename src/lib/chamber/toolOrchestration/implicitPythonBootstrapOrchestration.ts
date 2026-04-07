@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { inferTextMimeFromPath } from "@/lib/vault/utils";
 import { generateNewFileContent } from "@/lib/chamber/generation";
 import { runTool } from "@/lib/vault/toolRuntime";
+import { fileExistsByPath, resolveFileIdByPathOrName } from "@/lib/vault/tools";
 
 type ImplicitPythonBootstrapOrchestrationArgs = {
   openai: OpenAI;
@@ -63,13 +64,13 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
     hasWorkbookSpecContext(cleanedHistory);
 
   const shouldRunImplicitPythonBootstrap =
-    explicitPythonScriptRequest ||
-    (isExplicitPythonScriptFollowup(content) && workbookSpecContext);
+  executionMode?.mode === "bootstrap" &&
+  executionMode?.mentionedPaths?.includes("script.py");
 
   if (
     requestHandledByOrchestration ||
-    !inference?.needsBootstrap ||
-    executionMode?.hasExplicitPaths ||
+    executionMode?.mode !== "bootstrap" ||
+    executionMode?.hasExplicitPaths && executionMode?.mode !== "bootstrap" ||
     !shouldRunImplicitPythonBootstrap
   ) {
     return null;
@@ -132,7 +133,13 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
     });
   }
 
-  const proposal = await runTool(
+let proposal;
+
+const exists = await fileExistsByPath(supabase, repoId, createPath);
+
+if (!exists) {
+  // 🟢 create new file
+  proposal = await runTool(
     supabase,
     repoId,
     userId,
@@ -144,6 +151,30 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
       mime,
     }
   );
+} else {
+  // 🔥 overwrite existing file
+  const fileId = await resolveFileIdByPathOrName(
+    supabase,
+    repoId,
+    createPath
+  );
+
+  if (!fileId) {
+    throw new Error(`Failed to resolve fileId for ${createPath}`);
+  }
+
+  proposal = await runTool(
+    supabase,
+    repoId,
+    userId,
+    content,
+    "vault_propose_write",
+    {
+      fileId,
+      content: newContent,
+    }
+  );
+}
 
   console.log("[implicit_python_bootstrap] proposal result", {
     repoId,

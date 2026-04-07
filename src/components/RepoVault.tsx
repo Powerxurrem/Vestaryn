@@ -75,9 +75,14 @@ const RepoVault = forwardRef<RepoVaultHandle, {
   repoId: string;
   onOpenFile: (file: RepoFile) => void;
   fileStatusById?: Record<
-    string,
-    { ts: number; status: "ok" | "warn" | "error" | "pending"; reason?: string }
-  >;
+  string,
+  {
+    status: "ok" | "warn" | "error" | "pending";
+    reason: string | null;
+    source: "preverify" | "verify" | "manual" | "scan" | null;
+    updated_at: string | null;
+  }
+>;
 }>(function RepoVault({ repoId, onOpenFile, fileStatusById }, ref) {
   // ─────────────────────────────────────────────────────────────
   // State

@@ -17,6 +17,20 @@ export function inferArtifactPath(content: string): string | null {
     return "macro.bas";
   }
 
+// Excel (implicit → Python generator)
+const mentionsExcel =
+  /\b(excel|workbook|spreadsheet)\b/.test(s);
+
+if (mentionsExcel && asksToCreateCode) {
+  return "script.py";
+}
+
+const isExplain =
+  /\b(explain|how|what|why)\b/.test(s);
+
+if (mentionsExcel && asksToCreateCode && !isExplain) {
+  return "script.py";
+}
   // Python
   const mentionsPython =
     /\b(python|\.py|openpyxl|pandas)\b/.test(s) ||

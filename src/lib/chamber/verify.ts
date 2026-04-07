@@ -5,6 +5,26 @@ import { runnerRun } from "@/lib/runner/client";
 import { stripCodeFences } from "@/lib/vault/utils";
 import { persistRunConsoleLog } from "@/lib/chamber/persistRunConsoleLog";
 
+function extractPythonError(stderr?: string) {
+  if (!stderr) return null;
+
+  const lineMatch = stderr.match(/line (\d+)/i);
+  const msgMatch = stderr.match(/SyntaxError: (.+)/i);
+
+  if (!lineMatch) return null;
+
+  return {
+    line: Number(lineMatch[1]),
+    message: msgMatch?.[1] ?? "unknown error",
+  };
+}
+
+function applyLinePatch(content: string, lineNumber: number, newLine: string) {
+  const lines = content.split("\n");
+  if (lineNumber < 1 || lineNumber > lines.length) return content;
+  lines[lineNumber - 1] = newLine;
+  return lines.join("\n");
+}
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -542,6 +562,102 @@ export async function attemptRepairProposalSet(opts: {
     failureKind?: string | null;
   };
 }) {
+  function extractPythonError(stderr?: string) {
+    if (!stderr) return null;
+
+    const lineMatch = stderr.match(/line (\d+)/i);
+    const msgMatch = stderr.match(/SyntaxError: (.+)/i);
+
+    if (!lineMatch) return null;
+
+    return {
+      line: Number(lineMatch[1]),
+      message: msgMatch?.[1] ?? "unknown error",
+    };
+  }
+
+  function applyLinePatch(
+    content: string,
+    lineNumber: number,
+    newLine: string
+  ) {
+    const lines = content.split("\n");
+    if (lineNumber < 1 || lineNumber > lines.length) return content;
+    lines[lineNumber - 1] = newLine;
+    return lines.join("\n");
+  }
+
+  const errorInfo = extractPythonError(opts.preverify.stderr);
+
+  let repairMode: "line_patch" | "full_rewrite" = "full_rewrite";
+
+  if (
+    opts.preverify.failureKind === "python_compile_failed" &&
+    errorInfo?.line
+  ) {
+    repairMode = "line_patch";
+  }
+
+  console.log("[repair_mode]", { repairMode, errorInfo });
+
+  // 🔥 LINE PATCH FIRST
+  if (repairMode === "line_patch" && errorInfo) {
+    const proposal = opts.proposals[0]; // assume single file
+    const originalContent = proposal.content;
+
+    const lines = originalContent.split("\n");
+    const currentLine = lines[errorInfo.line - 1];
+
+    try {
+      const patchResp = await opts.openai.responses.create({
+        model: opts.model,
+        input: `
+Fix this Python line.
+
+Error:
+${errorInfo.message}
+
+Line:
+${currentLine}
+
+Return ONLY the corrected line.
+No explanation.
+`,
+        max_output_tokens: 200,
+      });
+
+      const fixedLine = (patchResp.output_text || "").trim();
+
+      if (
+        fixedLine &&
+        fixedLine.length < 300 &&
+        !fixedLine.includes("\n") &&
+        !fixedLine.includes("```")
+      ) {
+        const patchedContent = applyLinePatch(
+          originalContent,
+          errorInfo.line,
+          fixedLine
+        );
+
+        console.log("[repair] line_patch applied");
+
+        return [
+          {
+            ...proposal,
+            content: patchedContent,
+          },
+        ];
+      } else {
+        console.log("[repair] line_patch rejected, fallback");
+      }
+    } catch (e) {
+      console.log("[repair] line_patch failed", e);
+    }
+  }
+
+  // 🔁 FALLBACK: FULL REWRITE (your existing logic)
+
   const prompt = `
 You are repairing a staged repository proposal that failed verification.
 
@@ -614,17 +730,12 @@ ${opts.preverify.error ?? ""}
 
   const repairs = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
 
-  const repairMap = new Map<
-    string,
-    {
-      fileId: string;
-      path: string;
-      content: string;
-      mime?: string;
-    }
-  >(
+  const repairMap = new Map(
     repairs
-      .filter((p: any) => typeof p?.fileId === "string" && typeof p?.content === "string")
+      .filter(
+        (p: any) =>
+          typeof p?.fileId === "string" && typeof p?.content === "string"
+      )
       .map((p: any) => [
         String(p.fileId),
         {
@@ -637,7 +748,13 @@ ${opts.preverify.error ?? ""}
   );
 
   return opts.proposals.map((p) => {
-    const repair = repairMap.get(String(p.fileId));
+    const repair = repairMap.get(String(p.fileId)) as
+  | {
+      content: string;
+      path?: string;
+      mime?: string;
+    }
+  | undefined;
     if (!repair) return p;
 
     return {

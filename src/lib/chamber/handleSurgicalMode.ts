@@ -11,6 +11,39 @@ import { normalizeCommonPathVariants } from "@/lib/chamber/pathNormalization";
 import { applyStyleRecipeFastPath } from "@/lib/chamber/style/styleFastPath";
 import { applyLayoutRecipeFastPath } from "@/lib/chamber/layout/layoutFastPath";
 
+function extractMentionedLineNumber(text: string): number | null {
+  const s = String(text ?? "");
+  const m =
+    s.match(/\baround\s+line\s+(\d+)\b/i) ||
+    s.match(/\bline\s+(\d+)\b/i) ||
+    s.match(/\bon\s+line\s+(\d+)\b/i);
+
+  if (!m) return null;
+
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function looksLikeVerifyErrorFollowup(text: string): boolean {
+  const s = String(text ?? "").toLowerCase();
+
+  return (
+    /\b(last verify|verify|verification|preverify|compile|typecheck|syntax error|syntax issue|failed verify|failed verification)\b/.test(s) ||
+    /\bsyntaxerror\b/.test(s)
+  );
+}
+
+function applyLinePatch(content: string, lineNumber: number, newLine: string) {
+  const lines = String(content ?? "").split("\n");
+
+  if (lineNumber < 1 || lineNumber > lines.length) {
+    return content;
+  }
+
+  lines[lineNumber - 1] = newLine;
+  return lines.join("\n");
+}
+
 type SurgicalDeps = {
   openai: OpenAI;
   supabase: any;
@@ -1327,6 +1360,195 @@ if (
     });
   }
 
+  const mentionedLineNumber = extractMentionedLineNumber(content);
+  const verifyErrorFollowup = looksLikeVerifyErrorFollowup(content);
+
+  const shouldUseManualLinePatch =
+    !!currentFileId &&
+    /\.py$/i.test(currentPath) &&
+    verifyErrorFollowup &&
+    !!mentionedLineNumber;
+
+  if (shouldUseManualLinePatch && mentionedLineNumber) {
+    const lines = currentContent.split("\n");
+
+    if (mentionedLineNumber >= 1 && mentionedLineNumber <= lines.length) {
+      const currentLine = lines[mentionedLineNumber - 1];
+
+      console.log("[surgical] line_patch selected", {
+        currentPath,
+        lineNumber: mentionedLineNumber,
+        currentLine,
+      });
+
+      try {
+        const patchResp = await openai.responses.create({
+          model,
+          input: `
+You are fixing a single line in a Python file.
+
+User request:
+${content}
+
+Target file:
+${currentPath}
+
+Line number:
+${mentionedLineNumber}
+
+Current line:
+${currentLine}
+
+Rules:
+- Return ONLY the corrected replacement line.
+- Do not include explanation.
+- Do not include markdown fences.
+- Keep the fix as small as possible.
+- Preserve indentation unless the fix requires changing it.
+`,
+          max_output_tokens: 200,
+        });
+
+        const fixedLine = String(patchResp.output_text ?? "").trim();
+
+        const validSingleLine =
+          !!fixedLine &&
+          fixedLine.length < 400 &&
+          !fixedLine.includes("\n") &&
+          !fixedLine.includes("```");
+
+        if (validSingleLine) {
+          const patchedContent = applyLinePatch(
+            currentContent,
+            mentionedLineNumber,
+            fixedLine
+          );
+
+          const proposal = await runTool(
+            supabase,
+            repoId,
+            userId,
+            content,
+            "vault_propose_write",
+            {
+              fileId: currentFileId,
+              path: currentPath,
+              content: patchedContent,
+            }
+          );
+
+          if (proposal && typeof proposal === "object" && !("error" in proposal)) {
+            console.log("[surgical] line_patch proposal success", {
+              repoId,
+              targetPath: currentPath,
+              proposedFileId: (proposal as any)?.fileId ?? null,
+              lineNumber: mentionedLineNumber,
+            });
+
+            const canonicalProposal: CanonicalProposal = {
+              fileId: String((proposal as any).fileId),
+              content: String((proposal as any).content ?? patchedContent),
+              prevHash: String((proposal as any).prevHash ?? ""),
+              nextHash: String((proposal as any).nextHash ?? ""),
+              confirm: String((proposal as any).confirm ?? ""),
+              path: (proposal as any).path ?? currentPath,
+              name: (proposal as any).name ?? null,
+              mime: (proposal as any).mime ?? currentMime,
+              meta: (proposal as any).meta ?? null,
+            };
+
+            let finalProposal = canonicalProposal;
+            let preverifyPayload: any = null;
+            const proposals: CanonicalProposal[] = [canonicalProposal];
+
+            if (shouldPreVerifyProposalSet(proposals)) {
+              try {
+                const result = await finalizeProposalSet({
+                  openai,
+                  model,
+                  repoId,
+                  userRequest: content,
+                  baselineVerifyPayload: baselineVerify.verifyPayload,
+                  verifyCmd: inferredVerifyCmd,
+                  proposals,
+                });
+
+                preverifyPayload = result.preverifyPayload;
+
+                if (
+                  result.repaired &&
+                  Array.isArray(result.finalProposals) &&
+                  result.finalProposals.length === 1
+                ) {
+                  finalProposal = {
+                    fileId: String(result.finalProposals[0].fileId),
+                    content: String(result.finalProposals[0].content),
+                    prevHash: String((result.finalProposals[0] as any).prevHash ?? canonicalProposal.prevHash),
+                    nextHash: String((result.finalProposals[0] as any).nextHash ?? canonicalProposal.nextHash),
+                    confirm: String((result.finalProposals[0] as any).confirm ?? canonicalProposal.confirm),
+                    path: result.finalProposals[0].path ?? currentPath,
+                    name: (result.finalProposals[0] as any).name ?? canonicalProposal.name ?? null,
+                    mime: result.finalProposals[0].mime ?? currentMime,
+                    meta: result.finalProposals[0].meta ?? null,
+                  };
+                }
+              } catch (e: any) {
+                console.log("[surgical] line_patch preverify failed", {
+                  message: e?.message,
+                  currentPath,
+                });
+
+                preverifyPayload = {
+                  ok: false,
+                  error: e?.message ?? "Pre-verify failed",
+                  failedStep: "preverify_boot",
+                  failureKind: "internal_error",
+                  baseline: false,
+                  paths: [currentPath],
+                };
+              }
+            }
+
+            const body =
+              "[Observation]\nRequired repository changes were staged.\n\n" +
+              "[Assessment]\nA surgical single-line repair was prepared for one file.\n\n" +
+              "[Action]\nA staged change is ready. Confirm to apply." +
+              `\n\n__PROPOSAL__:${JSON.stringify(finalProposal)}\n` +
+              (preverifyPayload
+                ? `__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
+                : "");
+
+            return new Response(body, {
+              status: 200,
+              headers: {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Cache-Control": "no-cache, no-transform",
+              },
+            });
+          }
+
+          console.log("[surgical] line_patch proposal failed, falling back", {
+            currentPath,
+            lineNumber: mentionedLineNumber,
+            proposal,
+          });
+        } else {
+          console.log("[surgical] line_patch rejected, falling back", {
+            currentPath,
+            lineNumber: mentionedLineNumber,
+            fixedLine,
+          });
+        }
+      } catch (e: any) {
+        console.log("[surgical] line_patch failed, falling back", {
+          currentPath,
+          lineNumber: mentionedLineNumber,
+          message: e?.message ?? String(e),
+        });
+      }
+    }
+  }
+  
   let rewritten = "";
   let rewriteSource: "fast_path" | "model_path" = "model_path";
 

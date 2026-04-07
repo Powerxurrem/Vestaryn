@@ -139,6 +139,36 @@ export async function ensureUserProfileFile(supabase: any, repoId: string, userI
   return { id: fileId, path: USER_PROFILE_PATH, storage_key: storageKey, version: 1 };
 }
 
+export async function upsertRepoMemoryDoc(
+  supabase: any,
+  repoId: string,
+  key: "master-summary" | "path-tree" | "chamber-state" | "ledger",
+  content: string
+) {
+  const body = String(content ?? "").trim();
+
+  const { error } = await supabase
+    .from("repo_memory_docs")
+    .upsert(
+      {
+        repo_id: repoId,
+        key,
+        content: body,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "repo_id,key" }
+    );
+
+  if (error) {
+    console.log("[memory-doc] upsert failed", {
+      repoId,
+      key,
+      message: error.message,
+    });
+    throw new Error(`repo_memory_docs upsert failed for ${key}: ${error.message}`);
+  }
+}
+
 export async function updateChamberStateDoc(
   supabase: any,
   repoId: string,
@@ -290,46 +320,60 @@ export async function maybeSummarizeAndEngraveProposal(
     .map((m: { role: string; content: string }) => `${m.role.toUpperCase()}: ${clip(m.content)}`)
     .join("\n\n");
 
-const summaryPrompt = `
-You are updating the repository's sacred memory file: memory/chamber-state.md.
+const engravingPrompt = `
+You are generating repository memory docs for Vestaryn.
 
-This file represents LONG-TERM PROJECT STATE, not temporary user tasks.
-
-Rewrite it as STRICT markdown using exactly this structure:
-
-# Handover Summary
-## Current Focus
-## Architectural Decisions / Invariants
-## Confirmed Working Systems
-## Active Problems
-## Next Engineering Actions
-## Risk Surface
+Return ONLY valid JSON with exactly this shape:
+{
+  "master-summary": "...markdown...",
+  "path-tree": "...markdown...",
+  "chamber-state": "...markdown...",
+  "ledger": "...markdown..."
+}
 
 Rules:
-- Capture durable project state (architecture, runner behavior, UI markers, vault rules).
-- Ignore short-lived user tasks unless they affect core system design.
-- Prefer concrete references (routes, markers, runner behavior, invariants).
-- Be concise but specific.
-- Do NOT include raw logs or conversational fluff.
-- Do NOT invent features that were not discussed.
-- If something was confirmed working, mark it clearly.
-- If something was experimental, mark it clearly.
+- Each value must be markdown text.
+- Do not include markdown fences.
+- Do not include explanation outside the JSON.
+- Prefer durable engineering state over conversational fluff.
+- Be concrete and specific.
+- If path tree information is not available, write "No path tree produced."
+- If a section truly has no signal, write a minimal placeholder instead of inventing facts.
+
+Meaning of the docs:
+- master-summary: broad project handover and current state
+- path-tree: important files / subsystem map / where logic lives
+- chamber-state: active engineering area, recent changes, next steps
+- ledger: engineering decisions, fixes, regressions, notable changes
 
 CHAT CONTEXT:
 ${toSummarize}
 `.trim();
 
-  const resp = await openai.responses.create({
-    model: "gpt-5-mini",
-    input: summaryPrompt,
-    max_output_tokens: 1900,
-  });
+const resp = await openai.responses.create({
+  model: "gpt-5-mini",
+  input: engravingPrompt,
+  max_output_tokens: 2600,
+});
 
-  const summaryText = (resp.output_text || "").trim() || "# Handover Summary\n\n(Empty summary produced)";
+let engravingDocs: Record<string, string> | null = null;
 
-  // OPTIONAL: keep your summary table insert (fine), but this should NOT prune.
-  // If you want engraving to replace summaries entirely, you can delete this block later.
+try {
+  engravingDocs = JSON.parse((resp.output_text || "").trim());
+} catch (e: any) {
+  console.log("[engraving] JSON parse failed:", e?.message);
+  return null;
+}
+
+const masterSummary = String(engravingDocs?.["master-summary"] ?? "").trim() || "# Master Summary\n\nNo summary produced.";
+const pathTree = String(engravingDocs?.["path-tree"] ?? "").trim() || "# Path Tree\n\nNo path tree produced.";
+const chamberState = String(engravingDocs?.["chamber-state"] ?? "").trim() || "# Chamber State\n\nNo chamber state produced.";
+const ledger = String(engravingDocs?.["ledger"] ?? "").trim() || "# Engineering Ledger\n\nNo ledger produced.";
+
+
 const supabaseAdmin = createSupabaseAdmin();
+
+const summaryText = masterSummary;
 
 const { data: inserted, error: insErr } = await supabaseAdmin
   .from(SUMMARY_TABLE)
@@ -369,11 +413,24 @@ const { data: inserted, error: insErr } = await supabaseAdmin
 const sacred = await ensureSacredMemoryFile(supabase, repoId, userId);
 const sacredFileId = sacred.id;
 
-// Make a normal vault proposal (contains fileId/prevHash/nextHash/confirm/content)
-const proposal = await vault_propose_write(supabase, repoId, sacredFileId, summaryText);
+// keep a normal proposal so APPLY has something concrete to confirm/prune against
+const proposal = await vault_propose_write(
+  supabase,
+  repoId,
+  sacredFileId,
+  masterSummary
+);
 
-// Attach prune plan into proposal.meta so APPLY can prune after success
-(proposal as any).meta = { kind: "engraving", keepIds };
+(proposal as any).meta = {
+  kind: "engraving",
+  keepIds,
+  engravingDocs: {
+    "master-summary": masterSummary,
+    "path-tree": pathTree,
+    "chamber-state": chamberState,
+    "ledger": ledger,
+  },
+};
 
 const marker = {
   kind: "engraving",

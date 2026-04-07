@@ -217,6 +217,7 @@ export async function prepareChatRuntimeOrchestration({
       );
 
   let forceSinglePageSurgicalResume = false;
+  let forceArtifactBootstrap = false;
 
       if (
     String(inference?.projectType ?? "").toLowerCase() === "static_site" &&
@@ -257,14 +258,17 @@ export async function prepareChatRuntimeOrchestration({
 
   // 1) explicit artifact inference from the current prompt
   if (effectiveMentionedPaths.length === 0) {
-    const inferredPath = inferArtifactPath(text);
+  const inferredArtifactPath = inferArtifactPath(text);
 
-    if (inferredPath) {
-      console.log("[artifact_inference.inject]", inferredPath);
-      effectiveMentionedPaths = [inferredPath];
-    }
+  if (inferredArtifactPath) {
+    console.log("[artifact_inference.force_execution]", inferredArtifactPath);
+
+    effectiveMentionedPaths = [inferredArtifactPath];
+
+    // 👇 DO NOT set executionMode here
+    forceArtifactBootstrap = true;
   }
-
+}
   // 2) recent-artifact follow-up inference
   if (
     effectiveMentionedPaths.length === 0 &&
@@ -302,60 +306,72 @@ export async function prepareChatRuntimeOrchestration({
   }
 
       let executionMode =
-    forceSinglePageSurgicalResume
-      ? {
-          ...rawExecutionMode,
-          mode: "surgical" as const,
-          confidence: "high" as const,
-          reasons: [
-            ...(rawExecutionMode.reasons ?? []),
-            "single_page_followup_resume_override",
-          ],
-          mentionedPaths: effectiveMentionedPaths,
-          hasExplicitPaths: true,
-        }
-      : continuityOverride.matched &&
-        (continuityOverride.confidence === "high" ||
-          continuityOverride.confidence === "medium")
-        ? {
-            ...rawExecutionMode,
-            mode: "surgical" as const,
-            confidence: continuityOverride.confidence,
-            reasons: [
-              ...(rawExecutionMode.reasons ?? []),
-              `implicit_followup:${continuityOverride.reason}`,
-            ],
-            mentionedPaths: effectiveMentionedPaths,
-            hasExplicitPaths: effectiveMentionedPaths.length > 0,
-          }
-        : {
-            ...rawExecutionMode,
-            mentionedPaths: effectiveMentionedPaths,
-          };
+  forceArtifactBootstrap
+    ? {
+        ...rawExecutionMode,
+        mode: "bootstrap",
+        confidence: "high",
+        reasons: [
+          ...(rawExecutionMode.reasons ?? []),
+          "artifact_inference_forced_bootstrap",
+        ],
+        mentionedPaths: effectiveMentionedPaths,
+        hasExplicitPaths: true,
+      }
+    : forceSinglePageSurgicalResume
+    ? {
+        ...rawExecutionMode,
+        mode: "surgical",
+        confidence: "high",
+        reasons: [
+          ...(rawExecutionMode.reasons ?? []),
+          "single_page_followup_resume_override",
+        ],
+        mentionedPaths: effectiveMentionedPaths,
+        hasExplicitPaths: true,
+      }
+    : continuityOverride.matched &&
+      (continuityOverride.confidence === "high" ||
+        continuityOverride.confidence === "medium")
+    ? {
+        ...rawExecutionMode,
+        mode: "surgical",
+        confidence: continuityOverride.confidence,
+        reasons: [
+          ...(rawExecutionMode.reasons ?? []),
+          `implicit_followup:${continuityOverride.reason}`,
+        ],
+        mentionedPaths: effectiveMentionedPaths,
+        hasExplicitPaths: effectiveMentionedPaths.length > 0,
+      }
+    : {
+        ...rawExecutionMode,
+        mentionedPaths: effectiveMentionedPaths,
+      };
 
-  // 3) advisory -> surgical when artifact inference produced a file path
-  if (
-    rawExecutionMode.mode === "advisory" &&
-    effectiveMentionedPaths.length > 0
-  ) {
-    console.log("[execution_mode.upgrade_from_inference]", {
-      from: rawExecutionMode.mode,
-      to: "surgical",
-      paths: effectiveMentionedPaths,
+  // 3) advisory -> bootstrap when artifact inference produced a file path
+if (effectiveMentionedPaths.length > 0) {
+  const inferredArtifactPath = inferArtifactPath(text);
+
+  if (inferredArtifactPath) {
+    console.log("[execution_mode.force_bootstrap_from_artifact]", {
+      path: inferredArtifactPath,
+      previousMode: rawExecutionMode.mode,
     });
 
     executionMode = {
       ...executionMode,
-      mode: "surgical",
+      mode: "bootstrap",
       confidence: "high",
       reasons: [
         ...(executionMode.reasons ?? []),
-        "artifact_inference_override",
+        "artifact_inference_override_bootstrap",
       ],
-      mentionedPaths: effectiveMentionedPaths,
+      mentionedPaths: [inferredArtifactPath],
       hasExplicitPaths: true,
     };
   }
+}
 
   // 4) incremental/rewrite -> surgical for single-file editable artifact edits
   const shouldForceSingleFileSurgical =

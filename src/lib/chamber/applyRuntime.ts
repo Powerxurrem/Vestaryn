@@ -7,7 +7,6 @@ import {
   buildPendingVerifyPayload,
   buildFinalVerifyPayload,
 } from "@/lib/chamber/verify";
-import { updateChamberStateDoc } from "@/lib/chamber/memory";
 import { buildSuggestedPromptsFromAppliedFiles } from "@/lib/chamber/suggestions";
 import {
   findLatestGoalPlan,
@@ -18,6 +17,8 @@ import {
 import { resolveVerifyCommand } from "@/lib/chamber/verifyRuntime";
 import { loadRepoInference } from "@/lib/chamber/repoContext";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
+import { updateChamberStateDoc, upsertRepoMemoryDoc } from "@/lib/chamber/memory";
+
 
 function shouldAdvanceGoal(args: {
   appliedPaths: string[];
@@ -558,6 +559,65 @@ export async function handleApplyCommand(args: {
             after: afterCount ?? null,
           });
         }
+
+                  const engravingDocs = proposal?.meta?.engravingDocs ?? null;
+
+          if (engravingDocs && typeof engravingDocs === "object") {
+            try {
+              await upsertRepoMemoryDoc(
+                supabase,
+                repoId,
+                "master-summary",
+                String(
+                  engravingDocs["master-summary"] ??
+                    "# Master Summary\n\nNo summary produced."
+                )
+              );
+
+              await upsertRepoMemoryDoc(
+                supabase,
+                repoId,
+                "path-tree",
+                String(
+                  engravingDocs["path-tree"] ??
+                    "# Path Tree\n\nNo path tree produced."
+                )
+              );
+
+              await upsertRepoMemoryDoc(
+                supabase,
+                repoId,
+                "chamber-state",
+                String(
+                  engravingDocs["chamber-state"] ??
+                    "# Chamber State\n\nNo chamber state produced."
+                )
+              );
+
+              await upsertRepoMemoryDoc(
+                supabase,
+                repoId,
+                "ledger",
+                String(
+                  engravingDocs["ledger"] ??
+                    "# Engineering Ledger\n\nNo ledger produced."
+                )
+              );
+
+              console.log("[engraving] memory docs upserted", {
+                repoId,
+                keys: [
+                  "master-summary",
+                  "path-tree",
+                  "chamber-state",
+                  "ledger",
+                ],
+              });
+            } catch (e: any) {
+              console.log("[engraving] memory docs upsert failed:", e?.message);
+            }
+          }
+
       }
     }
 
