@@ -2230,39 +2230,45 @@ if (shouldHideEmptyAssistantBubble) {
   <VerifyCard v={turnState.verify} />
 )}
 
-{lastPreverify &&
-  !thinking &&
-  lastPreverifyMsgId === msg.id && (
-    <div
-      className={`mt-3 rounded-lg border p-3 text-xs ${
-        !lastVerify
-          ? "border-white/10 bg-white/5 text-white/70"
-          : lastVerify.skipped
-          ? "border-amber-400/25 bg-amber-500/10 text-amber-100/90"
-          : lastVerify.ok
-          ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
-          : "border-rose-400/25 bg-rose-500/10 text-rose-100/90"
-      }`}
-    >
+{turnState?.preverify && !thinking && (() => {
+  const pre = turnState.preverify;
+  const verify = turnState.verify;
+
+  const preBody = String(
+    pre?.error || pre?.stderr || pre?.stdout || ""
+  ).trim();
+
+  const preReason =
+    pre?.failureKind ||
+    pre?.failedStep ||
+    pre?.error ||
+    "preverify_failed";
+
+  const cardTone = pre?.ok
+    ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
+    : "border-rose-400/25 bg-rose-500/10 text-rose-100/90";
+
+  return (
+    <div className={`mt-3 rounded-lg border p-3 text-xs ${cardTone}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-widest opacity-80">
             Pre-verify
           </div>
           <div className="mt-1 truncate">
-            {!lastVerify
-              ? "No verification result yet"
-              : lastVerify.skipped
-              ? "SKIPPED · Static site preview only"
-              : `${lastVerify.ok ? "PASS" : "FAIL"} · ${String(lastVerify.command ?? "")}`}
+            {pre.ok
+              ? "PASS · proposal verified before apply"
+              : `FAIL · ${String(preReason)}`}
           </div>
         </div>
 
         <button
           type="button"
           onClick={() => {
-            setLastPreverify(null);
-            setLastPreverifyMsgId(null);
+            patchActiveTurn(msg.id, (prev) => ({
+              ...prev,
+              preverify: null,
+            }));
           }}
           className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
         >
@@ -2270,62 +2276,88 @@ if (shouldHideEmptyAssistantBubble) {
         </button>
       </div>
 
-      <div className="mt-2 text-[11px] opacity-80 flex flex-wrap gap-x-3 gap-y-1">
-        {!lastVerify ? (
-          <span>No verification details yet.</span>
-        ) : lastVerify.skipped ? (
-          <>
-            <span>{String(lastVerify.reason ?? "static site (no verify pipeline)")}</span>
-            {Array.isArray(lastVerify.fileIds) ? (
-              <span>{lastVerify.fileIds.length} file(s)</span>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <span>exit {Number(lastVerify.exitCode ?? -1)}</span>
-            <span>{Number(lastVerify.durationMs ?? 0)}ms</span>
-            {lastVerify.failureKind ? (
-              <span>{String(lastVerify.failureKind)}</span>
-            ) : null}
-            {lastVerify.failedStep ? (
-              <span>({String(lastVerify.failedStep)})</span>
-            ) : null}
-            {lastVerify.fingerprint ? (
-              <span>{String(lastVerify.fingerprint)}</span>
-            ) : null}
-          </>
-        )}
-      </div>
+      <div className="mt-2 flex flex-wrap gap-2 text-[11px] opacity-80">
+  {typeof pre?.exitCode === "number" ? (
+    <span className="rounded bg-black/20 px-2 py-0.5">
+      exit {Number(pre.exitCode)}
+    </span>
+  ) : null}
 
-          {!lastPreverify.ok ? (
-            <div className="mt-2 space-y-2 text-[11px] opacity-80">
-              {lastPreverify.baseline ? (
-                <div className="rounded-md border border-amber-300/20 bg-black/20 px-2 py-2">
-                  <div className="font-medium text-amber-100/90">
-                    Baseline repository issue detected
-                  </div>
-                  <div className="mt-1 text-amber-100/70">
-                    This failure appears unrelated to only the staged change.
-                  </div>
-                </div>
-              ) : null}
+  {typeof pre?.durationMs === "number" ? (
+    <span className="rounded bg-black/20 px-2 py-0.5">
+      {Number(pre.durationMs)}ms
+    </span>
+  ) : null}
 
-              <div className="whitespace-pre-wrap">
-                {String(
-                  lastPreverify.error ||
-                    lastPreverify.stderr ||
-                    lastPreverify.stdout ||
-                    "Pre-verify failed."
-                ).slice(0, 600)}
+  {pre?.failureKind ? (
+    <span className="rounded bg-black/20 px-2 py-0.5">
+      {String(pre.failureKind)}
+    </span>
+  ) : null}
+
+  {pre?.failedStep ? (
+    <span className="rounded bg-black/20 px-2 py-0.5">
+      {String(pre.failedStep)}
+    </span>
+  ) : null}
+
+  {pre?.fingerprint ? (
+    <span className="rounded bg-black/20 px-2 py-0.5">
+      runner: {String(pre.fingerprint)}
+    </span>
+  ) : null}
+
+  {typeof pre?.errorLine === "number" ? (
+    <span className="rounded bg-black/20 px-2 py-0.5">
+      line {pre.errorLine}
+    </span>
+  ) : null}
+</div>
+
+      {!pre.ok ? (
+        <div className="mt-2 space-y-2 text-[11px] opacity-90">
+          {pre?.baseline ? (
+            <div className="rounded-md border border-amber-300/20 bg-black/20 px-2 py-2">
+              <div className="font-medium text-amber-100/90">
+                Baseline repository issue detected
+              </div>
+              <div className="mt-1 text-amber-100/70">
+                This failure appears unrelated to only the staged change.
               </div>
             </div>
-          ) : (
-            <div className="mt-2 text-[11px] opacity-80">
-              Proposal passes sandbox verification before apply.
+          ) : null}
+
+          {pre?.chamberAssessment ? (
+            <div>
+              <span className="text-white/60">Assessment:</span>{" "}
+              {String(pre.chamberAssessment)}
             </div>
+          ) : null}
+
+          {pre?.escalationSuggested ? (
+            <div>
+              <span className="text-white/60">Suggested repair:</span>{" "}
+              {String(pre.escalationSuggested)}
+            </div>
+          ) : null}
+
+          {preBody ? (
+            <div className="whitespace-pre-wrap">
+              {preBody.slice(0, 600)}
+            </div>
+          ) : (
+            <div>Pre-verify failed.</div>
           )}
+        </div>
+      ) : (
+        <div className="mt-2 text-[11px] opacity-80">
+          Proposal passes sandbox verification before apply.
+          {verify?.ok === true ? " Final verify also passed after apply." : ""}
+        </div>
+      )}
     </div>
-  )}
+  );
+})()}
 
 {(() => {
 console.log("[proposal render gate]", {

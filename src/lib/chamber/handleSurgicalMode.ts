@@ -1518,6 +1518,14 @@ Rules:
                 ) {
                   const failureLine = extractFirstPythonErrorLineFromPayload(preverifyPayload);
 
+                  preverifyPayload = {
+                    ...preverifyPayload,
+                    errorLine: failureLine,
+                    escalationSuggested: "block_rewrite",
+                    chamberAssessment:
+                      "structural Python failure; single-line repair is insufficient",
+                  };
+
                   return new Response(
                     "[Observation]\nA surgical single-line repair was prepared.\n\n" +
                       "[Assessment]\nThe file still fails Python verification and now appears to require a broader structural repair rather than another one-line patch." +
@@ -2212,6 +2220,14 @@ if (!/\.html?$/i.test(currentPath) && /<html|<head|<body|<nav|<header/i.test(rew
               looksLikeStructuralPythonFailure(preverifyPayload)
             ) {
               const failureLine = extractFirstPythonErrorLineFromPayload(preverifyPayload);
+
+              preverifyPayload = {
+                ...preverifyPayload,
+                errorLine: failureLine,
+                escalationSuggested: "block_rewrite",
+                chamberAssessment:
+                  "structural Python failure; remaining failure is broader than one tiny edit",
+              };
 
               return new Response(
                 "[Observation]\nA surgical repair candidate was prepared.\n\n" +

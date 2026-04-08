@@ -132,6 +132,12 @@ export default function VerifyCard({ v }: { v: VerifyMeta }) {
         {v.jobId ? <span>job: {v.jobId}</span> : null}
       </div>
 
+      {!v.ok && !isSkipped && (v.error || v.stderr) ? (
+        <div className="mt-2 rounded-md bg-black/20 px-2 py-2 text-xs text-white/80 whitespace-pre-wrap">
+          {String(v.error || v.stderr).slice(0, 220)}
+        </div>
+      ) : null}
+
       {!isSkipped && (
         <>
           <details className="mt-2">
