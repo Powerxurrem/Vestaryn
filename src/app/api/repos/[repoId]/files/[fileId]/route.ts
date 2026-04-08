@@ -3,6 +3,7 @@ import { supabaseRouteHandler } from "@/lib/supabase/server";
 import { resolveTierPolicyWithMeta } from "@/lib/membership/tiers";
 import crypto from "crypto";
 import { VAULT_BUCKET, SNAPSHOTS_BUCKET } from "@/lib/vault/buckets";
+import { createSupabaseAdmin } from "@/lib/supabase/admin";
 
 /**
  * @file app/api/repos/[repoId]/files/[fileId]/route.ts
@@ -75,6 +76,8 @@ export async function PUT(req: Request, ctx: Ctx) {
   // Auth (keeps behavior consistent; RLS still enforces access)
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) return json({ error: "unauthorized" }, 401);
+
+const supabaseAdmin = createSupabaseAdmin();
 
 // ─────────────────────────────────────────────────────────────
 // Tier clamp: exporting/downloading requires allowExport
@@ -184,6 +187,28 @@ if (dl.data) {
     .eq("repo_id", repoId);
 
   if (updErr) return json({ error: updErr.message }, 400);
+
+   const { error: statusErr } = await supabaseAdmin
+    .from("repo_file_status")
+    .upsert(
+      {
+        repo_id: repoId,
+        file_id: fileId,
+        status: "pending",
+        reason: "modified_since_verify",
+        source: "manual",
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "repo_id,file_id" }
+    );
+
+  if (statusErr) {
+    console.log("[file_put] status invalidate failed", {
+      repoId,
+      fileId,
+      message: statusErr.message,
+    });
+  }
 
   // Read back canonical metadata and return it (locks UI to DB truth)
   const { data: updated, error: readErr } = await supabase

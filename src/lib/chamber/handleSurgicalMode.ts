@@ -33,6 +33,42 @@ function looksLikeVerifyErrorFollowup(text: string): boolean {
   );
 }
 
+function extractFirstPythonErrorLineFromPayload(payload: any): number | null {
+  const text = [
+    String(payload?.stderr ?? ""),
+    String(payload?.stdout ?? ""),
+    String(payload?.error ?? ""),
+  ].join("\n");
+
+  const m =
+    text.match(/File\s+"[^"]+",\s+line\s+(\d+)/i) ||
+    text.match(/\bline\s+(\d+)\b/i);
+
+  if (!m) return null;
+
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function looksLikeStructuralPythonFailure(payload: any): boolean {
+  const text = [
+    String(payload?.stderr ?? ""),
+    String(payload?.stdout ?? ""),
+    String(payload?.error ?? ""),
+    String(payload?.failureKind ?? ""),
+  ]
+    .join("\n")
+    .toLowerCase();
+
+  return (
+    /\bsyntaxerror\b/.test(text) ||
+    /\bindentationerror\b/.test(text) ||
+    /\bunterminated string literal\b/.test(text) ||
+    /\bexpected an indented block\b/.test(text) ||
+    /\bpython_compile_failed\b/.test(text)
+  );
+}
+
 function applyLinePatch(content: string, lineNumber: number, newLine: string) {
   const lines = String(content ?? "").split("\n");
 
@@ -1473,7 +1509,31 @@ Rules:
                   proposals,
                 });
 
-                preverifyPayload = result.preverifyPayload;
+              preverifyPayload = result.preverifyPayload;
+
+                if (
+                  /\.py$/i.test(currentPath) &&
+                  preverifyPayload?.ok === false &&
+                  looksLikeStructuralPythonFailure(preverifyPayload)
+                ) {
+                  const failureLine = extractFirstPythonErrorLineFromPayload(preverifyPayload);
+
+                  return new Response(
+                    "[Observation]\nA surgical single-line repair was prepared.\n\n" +
+                      "[Assessment]\nThe file still fails Python verification and now appears to require a broader structural repair rather than another one-line patch." +
+                      (failureLine != null ? ` The current surfaced failure is around line ${failureLine}.` : "") +
+                      "\n\n" +
+                      "[Action]\nRetry with a broader or more precise repair. A block-level or function-level rewrite is likely required.\n" +
+                      `\n__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`,
+                    {
+                      status: 200,
+                      headers: {
+                        "Content-Type": "text/plain; charset=utf-8",
+                        "Cache-Control": "no-cache, no-transform",
+                      },
+                    }
+                  );
+                }
 
                 if (
                   result.repaired &&
@@ -1510,13 +1570,18 @@ Rules:
             }
 
             const body =
-              "[Observation]\nRequired repository changes were staged.\n\n" +
-              "[Assessment]\nA surgical single-line repair was prepared for one file.\n\n" +
-              "[Action]\nA staged change is ready. Confirm to apply." +
-              `\n\n__PROPOSAL__:${JSON.stringify(finalProposal)}\n` +
-              (preverifyPayload
-                ? `__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
-                : "");
+              preverifyPayload?.ok === false
+                ? "[Observation]\nA surgical single-line repair was prepared.\n\n" +
+                  "[Assessment]\nIt still fails pre-verify, so no staged change will be exposed.\n\n" +
+                  "[Action]\nReview the verification failure and retry with a broader or more precise repair.\n" +
+                  `\n__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
+                : "[Observation]\nRequired repository changes were staged.\n\n" +
+                  "[Assessment]\nA surgical single-line repair was prepared for one file.\n\n" +
+                  "[Action]\nA staged change is ready. Confirm to apply." +
+                  `\n\n__PROPOSAL__:${JSON.stringify(finalProposal)}\n` +
+                  (preverifyPayload
+                    ? `__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
+                    : "");
 
             return new Response(body, {
               status: 200,
@@ -2139,13 +2204,37 @@ if (!/\.html?$/i.test(currentPath) && /<html|<head|<body|<nav|<header/i.test(rew
         proposals,
       });
 
-      preverifyPayload = result.preverifyPayload;
+          preverifyPayload = result.preverifyPayload;
 
-      if (
-        result.repaired &&
-        Array.isArray(result.finalProposals) &&
-        result.finalProposals.length === 1
-      ) {
+            if (
+              /\.py$/i.test(currentPath) &&
+              preverifyPayload?.ok === false &&
+              looksLikeStructuralPythonFailure(preverifyPayload)
+            ) {
+              const failureLine = extractFirstPythonErrorLineFromPayload(preverifyPayload);
+
+              return new Response(
+                "[Observation]\nA surgical repair candidate was prepared.\n\n" +
+                  "[Assessment]\nThe file still fails Python verification and the remaining failure looks structural rather than isolated to one tiny edit." +
+                  (failureLine != null ? ` The current surfaced failure is around line ${failureLine}.` : "") +
+                  "\n\n" +
+                  "[Action]\nNo staged change will be exposed. Retry with a broader repair request, such as fixing the affected block or function.\n" +
+                  `\n__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`,
+                {
+                  status: 200,
+                  headers: {
+                    "Content-Type": "text/plain; charset=utf-8",
+                    "Cache-Control": "no-cache, no-transform",
+                  },
+                }
+              );
+            }
+
+            if (
+              result.repaired &&
+              Array.isArray(result.finalProposals) &&
+              result.finalProposals.length === 1
+            ) {
         finalProposal = {
           fileId: String(result.finalProposals[0].fileId),
           content: String(result.finalProposals[0].content),
@@ -2176,17 +2265,22 @@ if (!/\.html?$/i.test(currentPath) && /<html|<head|<body|<nav|<header/i.test(rew
   }
 
   const body =
-    "[Observation]\nRequired repository changes were staged.\n\n" +
-    `[Assessment]\nA surgical edit was prepared for one file using ${
-      rewriteSource === "fast_path"
-        ? "a deterministic fast path"
-        : "the surgical rewrite path"
-    }.\n\n` +
-    "[Action]\nA staged change is ready. Confirm to apply." +
-    `\n\n__PROPOSAL__:${JSON.stringify(finalProposal)}\n` +
-    (preverifyPayload
-      ? `__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
-      : "");
+    preverifyPayload?.ok === false
+      ? "[Observation]\nA surgical edit candidate was prepared.\n\n" +
+        `[Assessment]\nThe edit for ${currentPath} still fails pre-verify, so no staged change will be exposed.\n\n` +
+        "[Action]\nReview the verification failure and retry with a more precise or broader repair.\n" +
+        `\n__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
+      : "[Observation]\nRequired repository changes were staged.\n\n" +
+        `[Assessment]\nA surgical edit was prepared for one file using ${
+          rewriteSource === "fast_path"
+            ? "a deterministic fast path"
+            : "the surgical rewrite path"
+        }.\n\n` +
+        "[Action]\nA staged change is ready. Confirm to apply." +
+        `\n\n__PROPOSAL__:${JSON.stringify(finalProposal)}\n` +
+        (preverifyPayload
+          ? `__PREVERIFY__:${JSON.stringify(preverifyPayload)}\n`
+          : "");
 
   return new Response(body, {
     status: 200,

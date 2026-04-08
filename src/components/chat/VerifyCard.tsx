@@ -16,6 +16,9 @@ export type VerifyMeta = {
   timedOut?: boolean;
   skipped?: boolean;
   reason?: string | null;
+  errorLine?: number | null;
+  escalationSuggested?: "line_patch" | "block_rewrite" | "function_rewrite" | null;
+  chamberAssessment?: string | null;
 };
 
 function formatVerifySummary(v: VerifyMeta): string {
@@ -30,8 +33,12 @@ function formatVerifySummary(v: VerifyMeta): string {
     parts.push(v.failedStep);
   }
 
-  if (typeof v.exitCode === "number") {
-    parts.push(`exit ${v.exitCode}`);
+  if (!v.ok && v.failureKind) {
+    parts.push(v.failureKind);
+  }
+
+  if (!v.ok && typeof v.errorLine === "number") {
+    parts.push(`line ${v.errorLine}`);
   }
 
   const safeDuration =
@@ -85,14 +92,32 @@ export default function VerifyCard({ v }: { v: VerifyMeta }) {
         </div>
       </div>
 
-      {!v.ok && !isSkipped && (
-        <div className="mt-2 text-xs text-white/75">
+            {!v.ok && !isSkipped && (
+        <div className="mt-2 space-y-1 text-xs text-white/75">
           <div>
             <span className="text-white/50">Failure:</span>{" "}
             {v.failureKind ?? "unknown"}
             {v.failedStep ? ` (${v.failedStep})` : ""}
             {v.timedOut ? " · timed out" : ""}
           </div>
+
+          {typeof v.errorLine === "number" ? (
+            <div>
+              <span className="text-white/50">Surfaced line:</span> {v.errorLine}
+            </div>
+          ) : null}
+
+          {v.chamberAssessment ? (
+            <div>
+              <span className="text-white/50">Assessment:</span> {v.chamberAssessment}
+            </div>
+          ) : null}
+
+          {v.escalationSuggested ? (
+            <div>
+              <span className="text-white/50">Suggested repair:</span> {v.escalationSuggested}
+            </div>
+          ) : null}
         </div>
       )}
 

@@ -1,7 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+  useImperativeHandle,
+  forwardRef,
+  type ReactNode,
+} from "react";
 import type { OpenTab } from "@/components/FileOverlay";
+
+export type VaultEditorPaneHandle = {
+  saveActiveIfDirty: () => Promise<boolean>;
+};
 
 function isTextLike(mime: string) {
   return (
@@ -32,23 +44,7 @@ function inferPreviewMimeFromPath(path: string) {
   return "text/plain";
 }
 
-export default function VaultEditorPane({
-  repoId,
-  tabs,
-  activeFileId,
-  onActivate,
-  onClose,
-  sidebar,
-  fileStatusById,
-  errorLinesByFileId = {},
-  proposalPreviewByFileId = {},
-  onFileStatus,
-  rightChamber,
-  rightChamberWidth,
-  rightChamberOpen,
-  fileReloadTokenById,
-}: {
-
+const VaultEditorPane = forwardRef<VaultEditorPaneHandle, {
   repoId: string;
   tabs: OpenTab[];
   activeFileId: string | null;
@@ -56,8 +52,7 @@ export default function VaultEditorPane({
   onClose: (fileId: string) => void;
   sidebar: ReactNode;
   fileReloadTokenById?: Record<string, number>;
-   proposalPreviewByFileId?: Record<
-   
+  proposalPreviewByFileId?: Record<
     string,
     {
       fileId: string;
@@ -67,7 +62,7 @@ export default function VaultEditorPane({
       appendPreview?: string | null;
     }
   >;
-    fileStatusById: Record<
+  fileStatusById: Record<
     string,
     {
       status: "ok" | "warn" | "error" | "pending";
@@ -82,11 +77,29 @@ export default function VaultEditorPane({
     reason?: string,
     source?: "preverify" | "verify" | "manual" | "scan"
   ) => void;
-    rightChamber?: ReactNode;
-    rightChamberWidth?: number;
-    rightChamberOpen?: boolean;
-    errorLinesByFileId?: Record<string, number[]>;
-}) {
+  rightChamber?: ReactNode;
+  rightChamberWidth?: number;
+  rightChamberOpen?: boolean;
+  errorLinesByFileId?: Record<string, number[]>;
+}>(function VaultEditorPane(
+  {
+    repoId,
+    tabs,
+    activeFileId,
+    onActivate,
+    onClose,
+    sidebar,
+    fileStatusById,
+    errorLinesByFileId = {},
+    proposalPreviewByFileId = {},
+    onFileStatus,
+    rightChamber,
+    rightChamberWidth,
+    rightChamberOpen,
+    fileReloadTokenById,
+  },
+  ref
+) {
   const activeTab = useMemo(
     () => tabs.find((t) => t.fileId === activeFileId) ?? null,
     [tabs, activeFileId]
@@ -310,32 +323,13 @@ const inlineDiff =
     : [];
 
   useEffect(() => {
-    if (!editorScrollRef.current) return;
-    if (!hasProposalForActiveFile) return;
-    if (mode !== "read") return;
-    if (loading) return;
-    if (!displayContent) return;
-    if (changedLines.size === 0) return;
-  useEffect(() => {
-    if (!editorScrollRef.current) return;
-    if (activeErrorLines.size === 0) return;
-    if (loading) return;
+  if (!editorScrollRef.current) return;
+  if (!hasProposalForActiveFile) return;
+  if (mode !== "read") return;
+  if (loading) return;
+  if (!displayContent) return;
+  if (changedLines.size === 0) return;
 
-    const firstError = Math.min(...Array.from(activeErrorLines));
-    if (!Number.isFinite(firstError)) return;
-
-    const id = window.setTimeout(() => {
-      const lineHeight = 20;
-      const targetTop = Math.max(0, firstError * lineHeight - 40);
-
-      editorScrollRef.current?.scrollTo({
-        top: targetTop,
-        behavior: "smooth",
-      });
-    }, 30);
-
-  return () => window.clearTimeout(id);
-}, [activeErrorLines, loading, activeFileId]);
   const firstChanged = Math.min(...Array.from(changedLines));
   if (!Number.isFinite(firstChanged)) return;
 
@@ -349,16 +343,37 @@ const inlineDiff =
     });
   }, 30);
 
-    return () => window.clearTimeout(id);
-  }, [
-    hasProposalForActiveFile,
-    activeFileId,
-    activeProposal,
-    mode,
-    loading,
-    displayContent,
-    changedLines,
-  ]);
+  return () => window.clearTimeout(id);
+}, [
+  hasProposalForActiveFile,
+  activeFileId,
+  activeProposal,
+  mode,
+  loading,
+  displayContent,
+  changedLines,
+]);
+
+useEffect(() => {
+  if (!editorScrollRef.current) return;
+  if (activeErrorLines.size === 0) return;
+  if (loading) return;
+
+  const firstError = Math.min(...Array.from(activeErrorLines));
+  if (!Number.isFinite(firstError)) return;
+
+  const id = window.setTimeout(() => {
+    const lineHeight = 20;
+    const targetTop = Math.max(0, firstError * lineHeight - 40);
+
+    editorScrollRef.current?.scrollTo({
+      top: targetTop,
+      behavior: "smooth",
+    });
+  }, 30);
+
+  return () => window.clearTimeout(id);
+}, [activeErrorLines, loading, activeFileId]);
 
 function computeChangedLineSet(oldText: string, newText: string) {
   const oldLines = oldText.split("\n");
@@ -449,10 +464,21 @@ function computeChangedLineSet(oldText: string, newText: string) {
       onFileStatus(activeTab.fileId, "ok", "Saved from editor");
     } catch (e: any) {
       setError(e?.message ?? "Save failed");
+      throw e;
     } finally {
       setSaving(false);
     }
   }
+
+useImperativeHandle(ref, () => ({
+  async saveActiveIfDirty() {
+    if (!activeTab) return false;
+    if (!dirty) return false;
+
+    await save();
+    return true;
+  },
+}));
 
 const containerRef = useRef<HTMLDivElement | null>(null);
 const draggingRef = useRef(false);
@@ -829,4 +855,7 @@ return (
       </main>
     </div>
   );
-}
+});
+
+VaultEditorPane.displayName = "VaultEditorPane";
+export default VaultEditorPane;

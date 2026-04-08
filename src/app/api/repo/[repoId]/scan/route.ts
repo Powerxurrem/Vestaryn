@@ -2,8 +2,197 @@ import { NextResponse } from "next/server";
 import { supabaseServerComponent } from "@/lib/supabase/server";
 import { VAULT_BUCKET } from "@/lib/vault/buckets";
 import { setRepoFileStatus, getRepoFileStatus } from "@/lib/vault/fileStatus";
+import { createSupabaseAdmin } from "@/lib/supabase/admin";
+import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
+import { runnerRun } from "@/lib/runner/client";
+import { persistRunConsoleLog } from "@/lib/chamber/persistRunConsoleLog";
 
 export const runtime = "nodejs";
+
+function mapRunnerResultToFileStatus(result: {
+  ok?: boolean;
+  failedStep?: string | null;
+  failureKind?: string | null;
+  timedOut?: boolean | null;
+  error?: string | null;
+  stderr?: string | null;
+  stdout?: string | null;
+}) {
+  const ok = Boolean(result?.ok);
+  const timedOut = Boolean(result?.timedOut);
+
+  const rawReason =
+    result?.failureKind ||
+    result?.error ||
+    String(result?.stderr ?? "").trim() ||
+    String(result?.stdout ?? "").trim() ||
+    null;
+
+  const reason =
+    rawReason && rawReason.length > 300
+      ? rawReason.slice(0, 300)
+      : rawReason;
+
+  if (ok) {
+    return {
+      status: "ok" as const,
+      reason: "python_verify_ok",
+    };
+  }
+
+  if (timedOut) {
+    return {
+      status: "warn" as const,
+      reason: reason || "python_verify_timed_out",
+    };
+  }
+
+  return {
+    status: "error" as const,
+    reason:
+      reason ||
+      (result?.failedStep ? `python_verify_failed_${result.failedStep}` : "python_verify_failed"),
+  };
+}
+
+function shouldPreserveExistingVerifiedStatus(existing: {
+  status: "ok" | "warn" | "error" | "pending";
+  source: "preverify" | "verify" | "manual" | "scan" | null;
+} | null) {
+  if (!existing) return false;
+  if (existing.source !== "verify" && existing.source !== "preverify") return false;
+
+  return (
+    existing.status === "ok" ||
+    existing.status === "error" ||
+    existing.status === "warn"
+  );
+}
+
+async function runPythonScanViaRunner(args: {
+  repoId: string;
+  path: string;
+}) {
+  const { repoId, path } = args;
+
+  const supabaseAdmin = createSupabaseAdmin();
+  const jobId = `scan-python-${repoId}-${Date.now()}`;
+
+  const snap = await buildRepoSnapshotSignedUrl(supabaseAdmin, repoId, jobId, {
+    signedUrlTtlSec: 600,
+  });
+
+  const result = await runnerRun({
+    jobId,
+    commandId: "python_verify",
+    snapshotUrl: snap.snapshotSignedUrl,
+    timeoutMs: 120_000,
+  });
+
+  console.log("[scan_python]", {
+    repoId,
+    path,
+    jobId,
+    command: "python_verify",
+    ok: result?.ok ?? null,
+    failedStep: result?.failedStep ?? null,
+    failureKind: result?.failureKind ?? null,
+    timedOut: result?.timedOut ?? null,
+    exitCode: result?.exitCode ?? null,
+    error: result?.error ?? null,
+    stdoutHead: String(result?.stdout ?? "").slice(0, 240),
+    stderrHead: String(result?.stderr ?? "").slice(0, 240),
+  });
+
+  if (!result?.ok) {
+    try {
+      await persistRunConsoleLog({
+        supabase: supabaseAdmin,
+        bucket: "vestaryn-files",
+        repoId,
+        runId: jobId,
+        runKind: "scan_python",
+        createdAt: new Date().toISOString(),
+        failedStep: result?.failedStep ?? null,
+        durationMs: Number(result?.durationMs ?? 0),
+        stdout: String(result?.stdout ?? ""),
+        stderr: String(result?.stderr ?? ""),
+      });
+    } catch (e: any) {
+      console.log("[scan_python persistRunConsoleLog failed]", {
+        repoId,
+        path,
+        jobId,
+        message: e?.message ?? "unknown error",
+      });
+    }
+  }
+
+const createdAt = new Date().toISOString();
+
+try {
+  const persisted = await persistRunConsoleLog({
+    supabase: supabaseAdmin,
+    bucket: "vestaryn-files",
+    repoId,
+    runId: jobId,
+    runKind: "scan_python",
+    createdAt,
+    failedStep: result?.failedStep ?? null,
+    durationMs: Number(result?.durationMs ?? 0),
+    stdout: String(result?.stdout ?? ""),
+    stderr: String(result?.stderr ?? ""),
+  });
+
+  const { error: runErr } = await supabaseAdmin
+    .from("repo_runs")
+    .insert({
+      id: crypto.randomUUID(),
+      repo_id: repoId,
+      change_id: null,
+      command: "python_verify",
+      ok: Boolean(result?.ok),
+      exit_code: Number(result?.exitCode ?? 0),
+      duration_ms: Number(result?.durationMs ?? 0),
+      stdout: String(result?.stdout ?? ""),
+      stderr: String(result?.stderr ?? ""),
+      created_at: createdAt,
+      job_id: jobId,
+      runner_fingerprint: result?.fingerprint ?? null,
+      failed_step: result?.failedStep ?? null,
+      failure_kind: result?.failureKind ?? null,
+      timed_out: Boolean(result?.timedOut),
+      status: result?.ok ? "ok" : "failed",
+      actor_user_id: null,
+      touched_file_ids: [],
+      summary: path,
+      updated_at: createdAt,
+      stdout_preview: persisted.stdoutPreview,
+      stderr_preview: persisted.stderrPreview,
+      log_storage_key: persisted.logStorageKey,
+      log_size_bytes: persisted.logSizeBytes,
+      run_kind: "scan_python",
+    });
+
+  if (runErr) {
+    console.log("[scan_python repo_runs insert failed]", {
+      repoId,
+      path,
+      jobId,
+      message: runErr.message,
+    });
+  }
+} catch (e: any) {
+  console.log("[scan_python persist failed]", {
+    repoId,
+    path,
+    jobId,
+    message: e?.message ?? "unknown error",
+  });
+}
+
+  return result;
+}
 
 function extOf(path: string) {
   const p = String(path ?? "").toLowerCase().trim();
@@ -218,25 +407,6 @@ export async function POST(
   if (!fileId || !path) continue;
 
   scanned += 1;
-
-const existing = await getRepoFileStatus(repoId, fileId);
-
-const hasStrongerVerifiedOk =
-  existing &&
-  (existing.source === "verify" || existing.source === "preverify") &&
-  existing.status === "ok";
-
-if (hasStrongerVerifiedOk) {
-  console.log("[scan_vault] keeping stronger verified status", {
-    repoId,
-    fileId,
-    path,
-    existing,
-  });
-
-  okCount += 1;
-  continue;
-}
   
   try {
     if (!isTextScannableExt(ext)) {
@@ -268,16 +438,21 @@ if (!readOut.ok) {
 const content = readOut.content;
 
     let result:
-      | { status: "ok" | "warn" | "error"; reason: string }
-      | null = null;
+  | { status: "ok" | "warn" | "error"; reason: string }
+  | null = null;
 
-    if (ext === ".py") {
-      result = scanPythonText(content);
-    } else if (ext === ".bas" || ext === ".vba") {
-      result = scanMacroText(content);
-    } else {
-      result = scanGenericText(content);
-    }
+if (ext === ".py") {
+  const runnerResult = await runPythonScanViaRunner({
+    repoId,
+    path,
+  });
+
+  result = mapRunnerResultToFileStatus(runnerResult);
+} else if (ext === ".bas" || ext === ".vba") {
+  result = scanMacroText(content);
+} else {
+  result = scanGenericText(content);
+}
 
     await setRepoFileStatus(
       repoId,

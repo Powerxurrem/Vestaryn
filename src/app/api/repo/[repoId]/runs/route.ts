@@ -43,7 +43,10 @@ export async function GET(
       stderr_preview,
       log_storage_key,
       log_size_bytes,
-      run_kind
+      run_kind,
+      summary,
+      stdout,
+      stderr
     `)
     .eq("repo_id", repoId)
     .order("created_at", { ascending: false })

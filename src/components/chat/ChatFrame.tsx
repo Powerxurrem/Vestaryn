@@ -100,6 +100,8 @@ type Props = {
         >
       | null
   ) => void;
+  externalPrompt?: string | null;
+  externalPromptNonce?: number;
 };
 
 type ChamberState = "stable" | "analyzing" | "deep" | "archive";
@@ -118,6 +120,8 @@ export default function ChatFrame({
   onProposalPreview,
   onPreviewRefresh,
   onArtifactPreview,
+  externalPrompt,
+  externalPromptNonce,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -185,6 +189,7 @@ const [lastProposalSet, setLastProposalSet] = useState<
 useEffect(() => {
   messagesRef.current = messages;
 
+  
   
 }, [messages]);
   const [lastVerify, setLastVerify] = useState<any | null>(null);
@@ -681,6 +686,8 @@ useEffect(() => {
     }
   }
 
+
+
   setGoalPlan((prev) => {
     if (!latestPlan) {
       console.log("[goalPlan derived from messages] no latest plan found");
@@ -755,6 +762,9 @@ useEffect(() => {
   // ─────────────────────────────────────────────────────────────
   // Effects: load history
   // ─────────────────────────────────────────────────────────────
+
+
+  
 useEffect(() => {
   if (!repoId || repoId === "undefined") return;
 
@@ -841,7 +851,9 @@ useEffect(() => {
   // ─────────────────────────────────────────────────────────────
   // Effects: autoscroll
   // ─────────────────────────────────────────────────────────────
-useEffect(() => {
+
+
+  useEffect(() => {
   const id = window.setTimeout(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, 20);
@@ -868,13 +880,11 @@ useEffect(() => {
   onMessageStats({ total: messages.length, user, assistant, system });
 }, [messages, onMessageStats]);
 
-
+const handleSend = async (text: string) => {
 
   // ─────────────────────────────────────────────────────────────
   // Action: send message + stream assistant response
   // ─────────────────────────────────────────────────────────────
-
-const handleSend = async (text: string) => {
   
 const trimmed = text.trim();
 console.log("[handleSend] sending:", trimmed);
@@ -959,9 +969,7 @@ if (!isControlCommand) {
     createdAt: Date.now(),
   };
 
-  flushSync(() => {
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
-  });
+setMessages((prev) => [...prev, userMsg, assistantMsg]);
 
   console.log("[messages inserted atomically]", {
     userId: userMsg.id,
@@ -1899,6 +1907,11 @@ if (sawGoalInTurnRef.current || containsGoalMarker(rawAccumulated)) {
   }
 };
 
+useEffect(() => {
+  if (!externalPrompt) return;
+  void handleSend(externalPrompt);
+}, [externalPromptNonce]);
+
 // ─────────────────────────────────────────────────────────────
 // Marker dedupe (prevents double-trigger on reconnect / chunk replay)
 // ─────────────────────────────────────────────────────────────
@@ -1928,6 +1941,10 @@ function onceMarker(key: string, fn: () => void) {
   fn();
   return true;
 }
+
+useEffect(() => {
+  console.log("[chat] mount sanity check");
+}, []);
 
  // ─────────────────────────────────────────────────────────────
 // Render

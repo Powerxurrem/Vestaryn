@@ -69,125 +69,163 @@ export async function handleProposalPreverify({
   // SINGLE PROPOSAL
   // ─────────────────────────────────────────────
   if (pendingProposalOuts.length === 1) {
-    hadAnyProposalSet = true;
+  hadAnyProposalSet = true;
 
-    const proposal = pendingProposalOuts[0];
+  const proposal = pendingProposalOuts[0];
 
+  try {
+    if (shouldPreVerifyProposalSet([proposal])) {
+      const result = await finalizeProposalSet({
+        openai,
+        model: runtimePolicy.model,
+        repoId,
+        userRequest: content,
+        baselineVerifyPayload: baselineVerify.verifyPayload,
+        verifyCmd: inferredVerifyCmd ?? null,
+        proposals: [proposal],
+      });
+
+            controller.enqueue(
+        encoder.encode(
+          `\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`
+        )
+      );
+
+      if (result.preverifyPayload?.ok) {
+        const finalProposal = result.repaired
+          ? result.finalProposals[0]
+          : proposal;
+
+        assertCanonicalProposal(finalProposal);
+
+        controller.enqueue(
+          encoder.encode(`\n__PROPOSAL__:${JSON.stringify(finalProposal)}\n`)
+        );
+      } else {
+        controller.enqueue(
+          encoder.encode(
+            "\n[Observation]\nA repair candidate was prepared.\n\n" +
+              "[Assessment]\nIt still fails pre-verify, so no staged change will be exposed.\n\n" +
+              "[Action]\nReview the verification failure and retry with a broader or more precise repair.\n"
+          )
+        );
+      }
+
+      return {
+        pendingProposalOuts: [],
+        hadAnyProposalSet,
+      };
+    }
+
+    // no preverify required -> emit directly
     controller.enqueue(
       encoder.encode(`\n__PROPOSAL__:${JSON.stringify(proposal)}\n`)
     );
 
-    try {
-      if (shouldPreVerifyProposalSet([proposal])) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          verifyCmd: inferredVerifyCmd ?? null,
-          proposals: [proposal],
-        });
-
-        if (result.repaired) {
-          for (const p of result.finalProposals) {
-            assertCanonicalProposal(p);
-          }
-
-          controller.enqueue(
-            encoder.encode(
-              `\n__PROPOSAL__:${JSON.stringify(result.finalProposals[0])}\n`
-            )
-          );
-        }
-
-        controller.enqueue(
-          encoder.encode(
-            `\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`
-          )
-        );
-      }
-    } catch (e: any) {
-      controller.enqueue(
-        encoder.encode(
-          `\n__PREVERIFY__:${JSON.stringify({
-            ok: false,
-            error: e?.message ?? "Pre-verify failed",
-            failedStep: "preverify_boot",
-          })}\n`
-        )
-      );
-    }
+    return {
+      pendingProposalOuts: [],
+      hadAnyProposalSet,
+    };
+  } catch (e: any) {
+    controller.enqueue(
+      encoder.encode(
+        `\n__PREVERIFY__:${JSON.stringify({
+          ok: false,
+          error: e?.message ?? "Pre-verify failed",
+          failedStep: "preverify_boot",
+        })}\n`
+      )
+    );
 
     return {
       pendingProposalOuts: [],
       hadAnyProposalSet,
     };
   }
+}
 
   // ─────────────────────────────────────────────
   // MULTI PROPOSAL
   // ─────────────────────────────────────────────
   if (pendingProposalOuts.length > 1) {
-    hadAnyProposalSet = true;
+  hadAnyProposalSet = true;
 
-    const proposals = [...pendingProposalOuts];
+  const proposals = [...pendingProposalOuts];
 
+  try {
+    if (shouldPreVerifyProposalSet(proposals)) {
+      const result = await finalizeProposalSet({
+        openai,
+        model: runtimePolicy.model,
+        repoId,
+        userRequest: content,
+        baselineVerifyPayload: baselineVerify.verifyPayload,
+        verifyCmd: inferredVerifyCmd ?? null,
+        proposals,
+      });
+
+      controller.enqueue(
+        encoder.encode(
+          `\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`
+        )
+      );
+
+      if (result.preverifyPayload?.ok) {
+        for (const p of result.finalProposals) {
+          assertCanonicalProposal(p);
+        }
+
+        controller.enqueue(
+          encoder.encode(
+            `\n__PROPOSAL_SET__:${JSON.stringify({
+              proposals: result.finalProposals,
+            })}\n`
+          )
+        );
+      } else {
+        controller.enqueue(
+          encoder.encode(
+            "\n[Observation]\nA repair candidate set was prepared.\n\n" +
+              "[Assessment]\nIt still fails pre-verify, so no staged multi-file change will be exposed.\n\n" +
+              "[Action]\nReview the verification failure and retry with a more targeted change.\n"
+          )
+        );
+      }
+
+      return {
+        pendingProposalOuts: [],
+        hadAnyProposalSet,
+      };
+    }
+
+    // no preverify required -> emit directly
     controller.enqueue(
       encoder.encode(
         `\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`
       )
     );
 
-    try {
-      if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          verifyCmd: inferredVerifyCmd ?? null,
-          proposals,
-        });
-
-        if (result.repaired) {
-          for (const p of result.finalProposals) {
-            assertCanonicalProposal(p);
-          }
-
-          controller.enqueue(
-            encoder.encode(
-              `\n__PROPOSAL_SET__:${JSON.stringify({
-                proposals: result.finalProposals,
-              })}\n`
-            )
-          );
-        }
-
-        controller.enqueue(
-          encoder.encode(
-            `\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`
-          )
-        );
-      }
-    } catch (e: any) {
-      controller.enqueue(
-        encoder.encode(
-          `\n__PREVERIFY__:${JSON.stringify({
-            ok: false,
-            error: e?.message ?? "Pre-verify failed",
-            failedStep: "preverify_boot",
-          })}\n`
-        )
-      );
-    }
+    return {
+      pendingProposalOuts: [],
+      hadAnyProposalSet,
+    };
+  } catch (e: any) {
+    controller.enqueue(
+      encoder.encode(
+        `\n__PREVERIFY__:${JSON.stringify({
+          ok: false,
+          error: e?.message ?? "Pre-verify failed",
+          failedStep: "preverify_boot",
+        })}\n`
+      )
+    );
 
     return {
       pendingProposalOuts: [],
       hadAnyProposalSet,
     };
   }
+}
 
   return {
     pendingProposalOuts,

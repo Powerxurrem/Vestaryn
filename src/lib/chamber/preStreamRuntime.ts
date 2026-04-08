@@ -18,6 +18,54 @@ import { finalizeProposalSet } from "@/lib/chamber/proposalFlow";
 import { resolveVerifyCommand } from "@/lib/chamber/verifyRuntime";
 import { loadRepoInference } from "@/lib/chamber/repoContext";
 
+function buildPreverifyAwareProposalResponse(args: {
+  visible?: string;
+  proposals: any[];
+  result: {
+    repaired?: boolean;
+    finalProposals?: any[];
+    preverifyPayload?: any;
+  };
+}) {
+  const { visible, proposals, result } = args;
+
+  if (!result?.preverifyPayload?.ok) {
+    return new Response(
+      "[Observation]\nA repository change candidate was prepared.\n\n" +
+        "[Assessment]\nIt still fails pre-verify, so no staged change will be exposed.\n\n" +
+        "[Action]\nReview the verification failure and retry with a more targeted change.\n" +
+        `\n__PREVERIFY__:${JSON.stringify(result?.preverifyPayload ?? {
+          ok: false,
+          error: "Pre-verify failed",
+          failedStep: "preverify_boot",
+        })}\n`,
+      {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }
+    );
+  }
+
+  const finalProposalSet =
+    result.repaired && Array.isArray(result.finalProposals)
+      ? result.finalProposals
+      : proposals;
+
+  const safeVisible =
+    visible ??
+    "[Observation]\nRequired repository changes were staged.\n\n" +
+      "[Assessment]\nThe requested operation completed and a proposal was prepared.\n\n" +
+      "[Action]\nA staged change is ready. Confirm to apply.";
+
+  return new Response(
+    `${safeVisible}\n\n__PROPOSAL_SET__:${JSON.stringify({
+      proposals: finalProposalSet,
+    })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
+    {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }
+  );
+}
+
 export async function tryHandlePreStreamRepoOps(args: {
   openai: OpenAI;
   supabase: any;
@@ -134,14 +182,11 @@ export async function tryHandlePreStreamRepoOps(args: {
             proposals,
           });
 
-          const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-          return new Response(
-            `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-            {
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
+          return buildPreverifyAwareProposalResponse({
+            visible,
+            proposals,
+            result,
+          });
         }
 
         return new Response(
@@ -158,12 +203,20 @@ export async function tryHandlePreStreamRepoOps(args: {
       return null;
     }
 
-  if (createModifyPaths) {
+    if (createModifyPaths) {
     try {
       const { createPath, modifyPath } = createModifyPaths;
 
-      const createExists = await resolveFileIdByPathOrName(supabase, repoId, createPath);
-      const modifyExists = await resolveFileIdByPathOrName(supabase, repoId, modifyPath);
+      const createExists = await resolveFileIdByPathOrName(
+        supabase,
+        repoId,
+        createPath
+      );
+      const modifyExists = await resolveFileIdByPathOrName(
+        supabase,
+        repoId,
+        modifyPath
+      );
 
       console.log("[create_modify_short_circuit]", {
         createPath,
@@ -186,15 +239,11 @@ export async function tryHandlePreStreamRepoOps(args: {
           mime: inferTextMimeFromPath(createPath),
         });
 
-        const createProposal = await vault_propose_create(
-          supabase,
-          repoId,
-          {
-            path: createPath,
-            content: newFileContent,
-            mime: inferTextMimeFromPath(createPath),
-          }
-        );
+        const createProposal = await vault_propose_create(supabase, repoId, {
+          path: createPath,
+          content: newFileContent,
+          mime: inferTextMimeFromPath(createPath),
+        });
 
         const proposals: any[] = [];
         if (createProposal) proposals.push(createProposal);
@@ -208,18 +257,19 @@ export async function tryHandlePreStreamRepoOps(args: {
             mime: inferTextMimeFromPath(modifyPath),
           });
 
-          const modifyProposal = await vault_propose_create(
-            supabase,
-            repoId,
-            {
-              path: modifyPath,
-              content: modifyContent,
-              mime: inferTextMimeFromPath(modifyPath),
-            }
-          );
+          const modifyProposal = await vault_propose_create(supabase, repoId, {
+            path: modifyPath,
+            content: modifyContent,
+            mime: inferTextMimeFromPath(modifyPath),
+          });
 
           if (modifyProposal) proposals.push(modifyProposal);
         }
+
+        const visible =
+          "[Observation]\nRequired repository changes were staged.\n\n" +
+          "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
+          "[Action]\nA staged change is ready. Confirm to apply.";
 
         if (shouldPreVerifyProposalSet(proposals)) {
           const result = await finalizeProposalSet({
@@ -232,27 +282,12 @@ export async function tryHandlePreStreamRepoOps(args: {
             proposals,
           });
 
-          const finalProposalSet = result.repaired
-            ? result.finalProposals
-            : proposals;
-
-          const visible =
-            "[Observation]\nRequired repository changes were staged.\n\n" +
-            "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-            "[Action]\nA staged change is ready. Confirm to apply.";
-
-          return new Response(
-            `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-            {
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
+          return buildPreverifyAwareProposalResponse({
+            visible,
+            proposals,
+            result,
+          });
         }
-
-        const visible =
-          "[Observation]\nRequired repository changes were staged.\n\n" +
-          "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-          "[Action]\nA staged change is ready. Confirm to apply.";
 
         return new Response(
           `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
@@ -274,12 +309,16 @@ export async function tryHandlePreStreamRepoOps(args: {
           /\.html?$/i.test(modifyPath);
 
         if (!modifyLooksBootstrapable) {
-          console.log("[create_modify_short_circuit] refusing bootstrap for non-page modify target", {
-            createPath,
-            modifyPath,
-          });
+          console.log(
+            "[create_modify_short_circuit] refusing bootstrap for non-page modify target",
+            {
+              createPath,
+              modifyPath,
+            }
+          );
           return null;
         }
+
         const newModifyContent = await generateNewFileContent({
           openai,
           model: runtimePolicy.model,
@@ -288,48 +327,36 @@ export async function tryHandlePreStreamRepoOps(args: {
           mime: inferTextMimeFromPath(modifyPath),
         });
 
-        const modifyProposal = await vault_propose_create(
-          supabase,
-          repoId,
-          {
-            path: modifyPath,
-            content: newModifyContent,
-            mime: inferTextMimeFromPath(modifyPath),
-          }
-        );
-
-        const proposals = [modifyProposal].filter(Boolean);
-
-        if (shouldPreVerifyProposalSet(proposals)) {
-        const result = await finalizeProposalSet({
-          openai,
-          model: runtimePolicy.model,
-          repoId,
-          userRequest: content,
-          baselineVerifyPayload: baselineVerify.verifyPayload,
-          verifyCmd: inferredVerifyCmd,
-          proposals,
+        const modifyProposal = await vault_propose_create(supabase, repoId, {
+          path: modifyPath,
+          content: newModifyContent,
+          mime: inferTextMimeFromPath(modifyPath),
         });
 
-          const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-          const visible =
-            "[Observation]\nRequired repository changes were staged.\n\n" +
-            "[Assessment]\nThe missing bootstrap file was prepared and staged.\n\n" +
-            "[Action]\nA staged change is ready. Confirm to apply.";
-
-          return new Response(
-            `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-            {
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
-        }
+        const proposals = [modifyProposal].filter(Boolean);
 
         const visible =
           "[Observation]\nRequired repository changes were staged.\n\n" +
           "[Assessment]\nThe missing bootstrap file was prepared and staged.\n\n" +
           "[Action]\nA staged change is ready. Confirm to apply.";
+
+        if (shouldPreVerifyProposalSet(proposals)) {
+          const result = await finalizeProposalSet({
+            openai,
+            model: runtimePolicy.model,
+            repoId,
+            userRequest: content,
+            baselineVerifyPayload: baselineVerify.verifyPayload,
+            verifyCmd: inferredVerifyCmd,
+            proposals,
+          });
+
+          return buildPreverifyAwareProposalResponse({
+            visible,
+            proposals,
+            result,
+          });
+        }
 
         return new Response(
           `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
@@ -350,15 +377,11 @@ export async function tryHandlePreStreamRepoOps(args: {
           mime: inferTextMimeFromPath(createPath),
         });
 
-        const createProposal = await vault_propose_create(
-          supabase,
-          repoId,
-          {
-            path: createPath,
-            content: newFileContent,
-            mime: inferTextMimeFromPath(createPath),
-          }
-        );
+        const createProposal = await vault_propose_create(supabase, repoId, {
+          path: createPath,
+          content: newFileContent,
+          mime: inferTextMimeFromPath(createPath),
+        });
 
         const rewritten = await generateRewrittenFileContent({
           openai,
@@ -378,6 +401,11 @@ export async function tryHandlePreStreamRepoOps(args: {
 
         const proposals = [createProposal, writeProposal].filter(Boolean);
 
+        const visible =
+          "[Observation]\nRequired repository changes were staged.\n\n" +
+          "[Assessment]\nThe requested operation completed and a proposal was prepared.\n\n" +
+          "[Action]\nA staged change is ready. Confirm to apply.";
+
         if (shouldPreVerifyProposalSet(proposals)) {
           const result = await finalizeProposalSet({
             openai,
@@ -389,25 +417,12 @@ export async function tryHandlePreStreamRepoOps(args: {
             proposals,
           });
 
-          const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-          const visible =
-            "[Observation]\nRequired repository changes were staged.\n\n" +
-            "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-            "[Action]\nA staged change is ready. Confirm to apply.";
-
-          return new Response(
-            `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-            {
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
+          return buildPreverifyAwareProposalResponse({
+            visible,
+            proposals,
+            result,
+          });
         }
-
-        const visible =
-          "[Observation]\nRequired repository changes were staged.\n\n" +
-          "[Assessment]\nThe requested file operations completed and proposals were prepared.\n\n" +
-          "[Action]\nA staged change is ready. Confirm to apply.";
 
         return new Response(
           `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals })}\n`,
@@ -499,14 +514,11 @@ export async function tryHandlePreStreamRepoOps(args: {
             proposals,
           });
 
-          const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-          return new Response(
-            `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-            {
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
+          return buildPreverifyAwareProposalResponse({
+            visible,
+            proposals,
+            result,
+          });
         }
 
         return new Response(
@@ -530,8 +542,16 @@ export async function tryHandlePreStreamRepoOps(args: {
     try {
       const { sourcePath, targetPath } = extractToModulePaths;
 
-      const sourceId = await resolveFileIdByPathOrName(supabase, repoId, sourcePath);
-      const targetId = await resolveFileIdByPathOrName(supabase, repoId, targetPath);
+      const sourceId = await resolveFileIdByPathOrName(
+        supabase,
+        repoId,
+        sourcePath
+      );
+      const targetId = await resolveFileIdByPathOrName(
+        supabase,
+        repoId,
+        targetPath
+      );
 
       console.log("[extract_to_module_short_circuit]", {
         sourcePath,
@@ -560,7 +580,9 @@ export async function tryHandlePreStreamRepoOps(args: {
         );
 
         if (normalizedOriginalSource === normalizedGeneratedSource) {
-          throw new Error("Generated source rewrite is identical to the current source file");
+          throw new Error(
+            "Generated source rewrite is identical to the current source file"
+          );
         }
 
         if (!generated.targetContent.trim() || !generated.sourceContent.trim()) {
@@ -610,15 +632,11 @@ export async function tryHandlePreStreamRepoOps(args: {
               targetId,
               generated.targetContent
             )
-          : await vault_propose_create(
-              supabase,
-              repoId,
-              {
-                path: targetPath,
-                content: generated.targetContent,
-                mime: inferTextMimeFromPath(targetPath),
-              }
-            );
+          : await vault_propose_create(supabase, repoId, {
+              path: targetPath,
+              content: generated.targetContent,
+              mime: inferTextMimeFromPath(targetPath),
+            });
 
         const proposals = [sourceProposal, targetProposal].filter(Boolean);
 
@@ -638,14 +656,11 @@ export async function tryHandlePreStreamRepoOps(args: {
             proposals,
           });
 
-          const finalProposalSet = result.repaired ? result.finalProposals : proposals;
-
-          return new Response(
-            `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: finalProposalSet })}\n__PREVERIFY__:${JSON.stringify(result.preverifyPayload)}\n`,
-            {
-              headers: { "Content-Type": "text/plain; charset=utf-8" },
-            }
-          );
+          return buildPreverifyAwareProposalResponse({
+            visible,
+            proposals,
+            result,
+          });
         }
 
         return new Response(

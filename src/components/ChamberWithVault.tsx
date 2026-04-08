@@ -3,7 +3,9 @@
 import ChatFrame from "@/components/chat/ChatFrame";
 import RepoVault from "@/components/RepoVault";
 import type { OpenTab } from "@/components/FileOverlay";
-import VaultEditorPane from "@/components/vault/VaultEditorPane";
+import VaultEditorPane, {
+  type VaultEditorPaneHandle,
+} from "@/components/vault/VaultEditorPane";
 import { VestarynFrame } from "@/components/dev/RepoHud";
 import type { RepoVaultHandle } from "@/components/RepoVault"; // adjust path if needed
 import RunConsolePanel from "@/components/chamber/RunConsolePanel";
@@ -60,6 +62,7 @@ export default function ChamberWithVault({
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const vaultRef = useRef<RepoVaultHandle | null>(null);
+  const editorRef = useRef<VaultEditorPaneHandle | null>(null);
   // ✅ splitter percent (left = chat)
   const [leftPct, setLeftPct] = useState(50);
   // near top of file
@@ -167,10 +170,15 @@ useEffect(() => {
   const CHAMBER_WIDTH = 360; // px
   const [chamberMode, setChamberMode] = useState<ChamberMode | null>("vault");
   const [previewOpen, setPreviewOpen] = useState(false);
-const [previewHeight, setPreviewHeight] = useState(320);
-const [previewRevision, setPreviewRevision] = useState(0);
-const [previewPath, setPreviewPath] = useState<string | null>(null);
-
+  const [previewHeight, setPreviewHeight] = useState(320);
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [externalPrompt, setExternalPrompt] = useState<string | null>(null);
+  const [externalPromptNonce, setExternalPromptNonce] = useState(0);
+  const handleRepairPrompt = useCallback((prompt: string) => {
+  setExternalPrompt(prompt);
+  setExternalPromptNonce((n) => n + 1);
+  }, []);
 type ArtifactPreview = {
   type: "xlsx";
   path: string;
@@ -201,6 +209,17 @@ const handleScanVault = useCallback(async () => {
   try {
     setIsScanningVault(true);
 
+    // 1) flush dirty editor state first
+    try {
+      await editorRef.current?.saveActiveIfDirty?.();
+      console.log("[scan_vault] dirty tabs flushed before scan");
+    } catch (e) {
+      console.log("[scan_vault] saveAllDirtyTabs failed", e);
+      // optional: return early if you want strict behavior
+      // return;
+    }
+
+    // 2) then run scan on persisted latest content
     const res = await fetch(`/api/repo/${repoId}/scan`, {
       method: "POST",
     });
@@ -213,6 +232,7 @@ const handleScanVault = useCallback(async () => {
     const json = await res.json();
     console.log("[scan_vault] result", json);
 
+    // 3) refresh status after scan
     await reloadFileStatuses();
   } catch (e) {
     console.log("[scan_vault] request failed", e);
@@ -535,20 +555,22 @@ function formatValidation(v: {
     repoName={repoName}
     messageCount={msgStats.total}
   >
-    <div className="w-full h-[70vh] flex min-w-0">
-      {/* Left: Chat */}
-<div className="min-w-0" style={{ width: `${leftPct}%` }}>
-  <ChatFrame
-    repoId={repoId}
-    reloadToken={chatReloadToken}
-    onFileUpdated={markFileUpdated}
-    onFileStatus={onFileStatus}
-    onFileIssues={(fileId, issues) => {
-    setIssuesByFileId((prev) => ({
-      ...prev,
-      [fileId]: issues,
-    }));
-  }}
+      <div className="w-full h-[70vh] flex min-w-0">
+        {/* Left: Chat */}
+  <div className="min-w-0" style={{ width: `${leftPct}%` }}>
+    <ChatFrame
+      repoId={repoId}
+      reloadToken={chatReloadToken}
+      onFileUpdated={markFileUpdated}
+      onFileStatus={onFileStatus}
+      externalPrompt={externalPrompt}
+      externalPromptNonce={externalPromptNonce}
+      onFileIssues={(fileId, issues) => {
+      setIssuesByFileId((prev) => ({
+        ...prev,
+        [fileId]: issues,
+      }));
+    }}
 
     refreshFiles={() => vaultRef.current?.refresh()}
     openFileById={(id) => vaultRef.current?.openFileById(id)}
@@ -640,6 +662,7 @@ onPreviewRefresh={() => {
 </button>
 </div>
       <VaultEditorPane
+        ref={editorRef}
         repoId={repoId}
         tabs={tabs}
         activeFileId={activeFileId}
@@ -670,6 +693,7 @@ onPreviewRefresh={() => {
               setMaintenance(null);
               setChatReloadToken((v) => v + 1);
             }}
+            onRepairPrompt={handleRepairPrompt}
           />
         }
         rightChamberWidth={CHAMBER_WIDTH}
@@ -878,28 +902,29 @@ function HiddenChamber(props: {
   mode: "vault" | "memory" | "console" | "handover" | "sql" | null;
   onToggleMode: (m: "vault" | "memory" | "console" | "handover" | "sql") => void;
   fileStatusById: Record<
-  string,
-  {
-    status: "ok" | "warn" | "error" | "pending";
-    reason: string | null;
-    source: "preverify" | "verify" | "manual" | "scan" | null;
-    updated_at: string | null;
-  }
->;
+    string,
+    {
+      status: "ok" | "warn" | "error" | "pending";
+      reason: string | null;
+      source: "preverify" | "verify" | "manual" | "scan" | null;
+      updated_at: string | null;
+    }
+  >;
   maintenance?: any;
   onArtifactPreview?: (
-  preview: {
-    type: "xlsx";
-    path: string;
-    sheets: Array<{
-      name: string;
-      rows: Array<Array<string | number | boolean | null>>;
-    }>;
-  } | null
-) => void;
+    preview: {
+      type: "xlsx";
+      path: string;
+      sheets: Array<{
+        name: string;
+        rows: Array<Array<string | number | boolean | null>>;
+      }>;
+    } | null
+  ) => void;
   onResummarizeDone?: () => void;
-    isScanningVault?: boolean;
+  isScanningVault?: boolean;
   onScanVault?: () => void;
+  onRepairPrompt?: (prompt: string) => void;
 }) {
 const {
   repoId,
@@ -910,6 +935,7 @@ const {
   onResummarizeDone,
   isScanningVault = false,
   onScanVault,
+  onRepairPrompt,
 } = props;
 
   // debug: confirm mode actually changes and chamber renders
@@ -1207,8 +1233,11 @@ return (
         )}
 
         {mode === "console" && (
-          <RunConsolePanel repoId={repoId} />
-        )}
+  <RunConsolePanel
+    repoId={repoId}
+    onRepairPrompt={onRepairPrompt}
+  />
+)}
 
         {mode === "sql" && (
           <div className="text-sm text-white/70">

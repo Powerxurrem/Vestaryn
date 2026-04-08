@@ -16,15 +16,50 @@ type RunRow = {
   log_storage_key?: string | null;
   log_size_bytes?: number | null;
   run_kind?: string | null;
+  summary?: string | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  
 };
 
-export default function RunConsolePanel({ repoId }: { repoId: string }) {
+export default function RunConsolePanel({
+  repoId,
+  onRepairPrompt,
+}: {
+  repoId: string;
+  onRepairPrompt?: (prompt: string) => void;
+}) {
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [fullLog, setFullLog] = useState<string>("");
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [loadingLog, setLoadingLog] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"verify" | "scan">("verify");
+
+function handleRepair(run: RunRow) {
+  console.log("[repair] clicked", run);
+
+  const filePath = String(run.summary ?? "unknown_file");
+  const stderr = String(run.stderr ?? "");
+  const failedStep = String(run.failed_step ?? "");
+  const failureKind = String(run.failure_kind ?? "");
+
+  const prompt = `
+Repair "${filePath}" based on the latest scan failure.
+
+Fix ONLY the verified issue and keep the rest of the file unchanged.
+
+Failure details:
+- failed_step: ${failedStep}
+- failure_kind: ${failureKind}
+
+Error output:
+${stderr}
+`.trim();
+
+  onRepairPrompt?.(prompt);
+}
 
   async function loadRuns() {
     setLoadingRuns(true);
@@ -81,12 +116,75 @@ export default function RunConsolePanel({ repoId }: { repoId: string }) {
     loadLog(selectedRunId);
   }, [selectedRunId]);
 
-  const selectedRun = runs.find((r) => r.id === selectedRunId) ?? null;
+
+  
+  const isScanRun = (run: RunRow) =>
+    String(run.run_kind ?? "").toLowerCase().startsWith("scan");
+
+const isFailingScanRun = (run: RunRow) =>
+  isScanRun(run) && run.ok === false;
+
+  const isVerifyRun = (run: RunRow) =>
+    !isScanRun(run);
+
+  const visibleRuns = runs.filter((run) => {
+    if (activeTab === "verify") {
+      return isVerifyRun(run);
+    }
+
+    // scan tab: only show meaningful findings
+    return isScanRun(run) && run.ok !== true;
+  });
+
+useEffect(() => {
+  if (visibleRuns.length === 0) {
+    setSelectedRunId(null);
+    setFullLog("");
+    return;
+  }
+
+  const stillVisible = visibleRuns.some((r) => r.id === selectedRunId);
+  if (!stillVisible) {
+    setSelectedRunId(visibleRuns[0].id);
+  }
+}, [activeTab, selectedRunId, visibleRuns]);
+
+  const selectedRun =
+    visibleRuns.find((r) => r.id === selectedRunId) ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 text-sm text-white/80">
-      <div className="flex items-center justify-between">
-        <div className="text-white/90 font-medium">Run Console</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="text-white/90 font-medium">Run Console</div>
+
+          <div className="flex items-center gap-1 rounded-md border border-white/10 bg-white/5 p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab("verify")}
+              className={`rounded px-2 py-1 text-xs ${
+                activeTab === "verify"
+                  ? "bg-white/10 text-white"
+                  : "text-white/60 hover:text-white/80"
+              }`}
+            >
+              Verify
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("scan")}
+              className={`rounded px-2 py-1 text-xs ${
+                activeTab === "scan"
+                  ? "bg-white/10 text-white"
+                  : "text-white/60 hover:text-white/80"
+              }`}
+            >
+              Scan
+            </button>
+          </div>
+        </div>
+
         <button
           type="button"
           onClick={loadRuns}
@@ -106,41 +204,62 @@ export default function RunConsolePanel({ repoId }: { repoId: string }) {
         <div className="overflow-auto rounded-xl border border-white/10 bg-black/20">
           {loadingRuns ? (
             <div className="p-3 text-xs text-white/50">Loading runs…</div>
-          ) : runs.length === 0 ? (
-            <div className="p-3 text-xs text-white/50">No runs yet.</div>
-          ) : (
-            <div className="divide-y divide-white/10">
-              {runs.map((run) => {
+          ) : visibleRuns.length === 0 ? (
+          <div className="p-3 text-xs text-white/50">
+            {activeTab === "verify" ? "No verify runs yet." : "No scan findings."}
+          </div>
+        ) : (
+          <div className="divide-y divide-white/10">
+            {visibleRuns.map((run) => {
                 const active = run.id === selectedRunId;
 
                 return (
-                  <button
-                    key={run.id}
-                    type="button"
-                    onClick={() => setSelectedRunId(run.id)}
-                    className={`w-full px-3 py-2 text-left hover:bg-white/5 ${
-                      active ? "bg-white/10" : ""
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="truncate text-white/90">
-                        {run.run_kind || "run"} · {run.command || "no command"}
-                      </div>
-                      <div className="text-[11px] text-white/50">
-                        {run.duration_ms ?? 0}ms
-                      </div>
-                    </div>
+                  <div
+  key={run.id}
+  className={`w-full px-3 py-2 text-left ${
+    active ? "bg-white/10" : "hover:bg-white/5"
+  }`}
+>
+  <div className="flex items-center justify-between gap-2">
+    <button
+      type="button"
+      onClick={() => setSelectedRunId(run.id)}
+      className="min-w-0 flex-1 text-left"
+    >
+      <div className="truncate text-white/90">
+        {run.run_kind || "run"} · {run.command || "no command"}
+      </div>
 
-                    <div className="mt-1 text-[11px] text-white/55">
-                      {run.ok === true
-                        ? "PASS"
-                        : run.ok === false
-                        ? "FAIL"
-                        : "UNKNOWN"}
-                      {run.failed_step ? ` · ${run.failed_step}` : ""}
-                      {run.failure_kind ? ` · ${run.failure_kind}` : ""}
-                    </div>
-                  </button>
+      <div className="mt-1 text-[11px] text-white/55">
+        {run.ok === true
+          ? "PASS"
+          : run.ok === false
+          ? "FAIL"
+          : "UNKNOWN"}
+        {run.failed_step ? ` · ${run.failed_step}` : ""}
+        {run.failure_kind ? ` · ${run.failure_kind}` : ""}
+      </div>
+    </button>
+
+    <div className="flex items-center gap-2 shrink-0">
+      <div className="text-[11px] text-white/50">
+        {run.duration_ms ?? 0}ms
+      </div>
+
+      {isFailingScanRun(run) && (
+        <button
+          type="button"
+          onClick={() => {
+            handleRepair(run);
+          }}
+          className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] hover:bg-white/10"
+        >
+          Repair
+        </button>
+      )}
+    </div>
+  </div>
+</div>
                 );
               })}
             </div>
