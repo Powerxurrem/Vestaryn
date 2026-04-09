@@ -65,11 +65,14 @@ export default function VerifyCard({ v }: { v: VerifyMeta }) {
     ? "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/30"
     : "bg-rose-500/15 text-rose-200 ring-1 ring-rose-500/30";
 
+  const labelPrefix =
+    v.command === "preverify" ? "PREVERIFY" : "VERIFIED";
+
   const badgeLabel = isSkipped
-    ? "VERIFIED: SKIPPED"
+    ? `${labelPrefix}: SKIPPED`
     : v.ok
-    ? "VERIFIED: PASS"
-    : "VERIFIED: FAIL";
+    ? `${labelPrefix}: PASS`
+    : `${labelPrefix}: FAIL`;
 
   const summary = formatVerifySummary(v);
   const commandLabel = formatCommandLabel(v);

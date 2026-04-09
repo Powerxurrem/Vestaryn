@@ -26,6 +26,7 @@
 *.pem
 package-lock.json
 pnpm README.md
+cheat_sheet.md
 # debug
 npm-debug.log*
 yarn-debug.log*

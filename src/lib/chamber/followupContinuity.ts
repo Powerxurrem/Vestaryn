@@ -117,6 +117,8 @@ function contentAwarePathBias(content: string, path: string): number {
     /\bhomepage\b/.test(text) ||
     /\bindex\b/.test(text);
 
+
+    
   const textOrContentRequest =
     /\b(title|heading|headline|text|copy|wording|content|label|name|naming|story|mission|team|paragraph|section)\b/.test(
       text
@@ -199,6 +201,24 @@ function isPlanningOrSpecPrompt(content: string) {
   return /\b(design|structure|schema|workbook|dashboard|formula|formulas|logic|plan|planning|analysis|spec|specification|refine|refinement|python generation|direct python generation|openpyxl|scaffold|automation opportunities|implementation-ready)\b/i.test(t);
 }
 
+function isAffirmativeFollowupToSuggestion(content: string) {
+  const t = String(content ?? "").toLowerCase().trim();
+  if (!t) return false;
+
+  return (
+    /^(yes|yeah|yep|sure|ok|okay|please|go ahead|do it|do that|apply it)\b/.test(t) &&
+    /\b(add|use|apply|that|it|file)\b/.test(t)
+  );
+}
+
+function extractSuggestedFilePathFromRecentFiles(recentFiles: RecentFileRef[]) {
+  const ranked = [...recentFiles]
+    .filter((ref) => !!normalizeCommonPathVariants(ref.path))
+    .sort((a, b) => scoreRecentFile(b) - scoreRecentFile(a));
+
+  return ranked[0]?.path ?? null;
+}
+
 export function resolveImplicitFollowupTarget(args: {
   content: string;
   mentionedPaths: string[];
@@ -224,13 +244,28 @@ export function resolveImplicitFollowupTarget(args: {
     };
   }
   
-  if (!isLikelyImplicitEditRequest(content)) {
+  const affirmativeFollowup = isAffirmativeFollowupToSuggestion(content);
+
+  if (!isLikelyImplicitEditRequest(content) && !affirmativeFollowup) {
     return {
       matched: false,
       confidence: "low",
       targetPath: null,
       reason: "not_implicit_edit_request",
     };
+  }
+
+  if (affirmativeFollowup) {
+    const suggestedPath = extractSuggestedFilePathFromRecentFiles(recentFiles);
+
+    if (suggestedPath) {
+      return {
+        matched: true,
+        confidence: "medium",
+        targetPath: suggestedPath,
+        reason: "affirmative_followup_to_suggestion",
+      };
+    }
   }
 
   const deduped = new Map<string, RecentFileRef & { score: number }>();

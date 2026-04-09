@@ -69,6 +69,75 @@ function looksLikeStructuralPythonFailure(payload: any): boolean {
   );
 }
 
+function classifyPythonRepairStrategy(args: {
+  payload: any;
+  mentionedLineNumber?: number | null;
+  userRequest?: string;
+}) {
+  const text = [
+    String(args.payload?.stderr ?? ""),
+    String(args.payload?.stdout ?? ""),
+    String(args.payload?.error ?? ""),
+    String(args.payload?.failureKind ?? ""),
+  ]
+    .join("\n")
+    .toLowerCase();
+
+  const surfacedErrorLine = extractFirstPythonErrorLineFromPayload(args.payload);
+
+  const retrySignals =
+    (String(args.userRequest ?? "").toLowerCase().match(/\bretry\b/g) ?? []).length +
+    (String(args.userRequest ?? "").toLowerCase().match(/\btry again\b/g) ?? []).length +
+    (String(args.userRequest ?? "").toLowerCase().match(/\brepair\b/g) ?? []).length;
+
+  const isIndentation =
+    /\bindentationerror\b/.test(text) ||
+    /\bexpected an indented block\b/.test(text);
+
+  const isSyntax =
+    /\bsyntaxerror\b/.test(text) ||
+    /\bunterminated string literal\b/.test(text) ||
+    /\bpython_compile_failed\b/.test(text);
+
+  if (isIndentation) {
+    return {
+      strategy: "block_rewrite" as const,
+      surfacedErrorLine,
+      reason: "indentation_structural",
+    };
+  }
+
+  if (retrySignals >= 2) {
+    return {
+      strategy: "block_rewrite" as const,
+      surfacedErrorLine,
+      reason: "repeat_repair_attempts",
+    };
+  }
+
+  if (isSyntax && !args.mentionedLineNumber) {
+    return {
+      strategy: "block_rewrite" as const,
+      surfacedErrorLine,
+      reason: "syntax_without_precise_target",
+    };
+  }
+
+  if (isSyntax && surfacedErrorLine) {
+    return {
+      strategy: "line_patch" as const,
+      surfacedErrorLine,
+      reason: "localized_python_compile_failure",
+    };
+  }
+
+  return {
+    strategy: "function_rewrite" as const,
+    surfacedErrorLine,
+    reason: "default_broader_repair",
+  };
+}
+
 function applyLinePatch(content: string, lineNumber: number, newLine: string) {
   const lines = String(content ?? "").split("\n");
 
@@ -91,6 +160,7 @@ type SurgicalDeps = {
   inferredVerifyCmd: VerifyCommand | null;
   targetPathOverride?: string | null;
   referencePathOverride?: string | null;
+  recentMessages?: Array<{ role?: string; content?: string }>;
 };
 
 type CanonicalProposal = {
@@ -1165,6 +1235,37 @@ function hasImageSourceSpecified(text: string) {
   return /\b(remote|url|urls|placeholder|local|unsplash)\b/.test(t);
 }
 
+function extractLatestAssistantSuggestionFromMessages(messages: Array<{ role?: string; content?: string }>) {
+  const items = Array.isArray(messages) ? messages : [];
+
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i];
+    if (m?.role !== "assistant") continue;
+
+    const text = String(m?.content ?? "").trim();
+    if (!text) continue;
+
+    if (
+      /\btry adding:\b/i.test(text) ||
+      /\bi prepared the excel enhancement\b/i.test(text) ||
+      /\bthe update would add\b/i.test(text)
+    ) {
+      return text;
+    }
+  }
+
+  return null;
+}
+
+function isAffirmativeCarryForwardRequest(text: string) {
+  const t = String(text ?? "").toLowerCase().trim();
+
+  return (
+    /^(yes|yeah|yep|sure|ok|okay|please)\b/.test(t) &&
+    /\b(add|apply|use|that|it|file)\b/.test(t)
+  );
+}
+
 export async function handleSurgicalMode({
   openai,
   supabase,
@@ -1176,6 +1277,7 @@ export async function handleSurgicalMode({
   inferredVerifyCmd,
   targetPathOverride = null,
   referencePathOverride = null,
+  recentMessages = [],
 }: SurgicalDeps): Promise<Response | null> {
     const explicitMentionedPaths = extractMentionedPaths(content)
     .map(normalizeCommonPathVariants)
@@ -1217,21 +1319,29 @@ export async function handleSurgicalMode({
   null;
 
 // 🔥 STRUCTURAL OVERRIDE
+const hasExplicitOrResolvedNonHtmlTarget =
+  !!targetPath && !/\.html?$/i.test(String(targetPath));
+
+const hasAnyHtmlCandidate = hintedPaths.some((p) => /\.html?$/i.test(p));
+
 if (
   isStructuralHtmlRequest(content) &&
   !isNonWebPlanningContext(content) &&
+  !hasExplicitOrResolvedNonHtmlTarget &&
+  hasAnyHtmlCandidate &&
   !/\b(glow|neon|color|colors|palette|theme|style|styling|background|text shadow|shadow|border)\b/i.test(content)
 ) {
   const htmlCandidate =
-    hintedPaths.find((p) => /\.html?$/i.test(p)) ||
-    "index.html";
+    hintedPaths.find((p) => /\.html?$/i.test(p)) || null;
 
-  console.log("[surgical structural override]", {
-    from: targetPath,
-    to: htmlCandidate,
-  });
+  if (htmlCandidate) {
+    console.log("[surgical structural override]", {
+      from: targetPath,
+      to: htmlCandidate,
+    });
 
-  targetPath = htmlCandidate;
+    targetPath = htmlCandidate;
+  }
 }
 
   const referencePaths = Array.from(
@@ -1265,6 +1375,7 @@ if (
       hintedPaths,
       targetPathOverride,
       referencePathOverride,
+      
     });
     return null;
   }
@@ -1399,21 +1510,40 @@ if (
   const mentionedLineNumber = extractMentionedLineNumber(content);
   const verifyErrorFollowup = looksLikeVerifyErrorFollowup(content);
 
+  const pythonRepairDecision = classifyPythonRepairStrategy({
+    payload: baselineVerify?.verifyPayload ?? baselineVerify,
+    mentionedLineNumber,
+    userRequest: content,
+  });
+
+  console.log("[surgical.python_repair_decision]", {
+    currentPath,
+    mentionedLineNumber,
+    verifyErrorFollowup,
+    strategy: pythonRepairDecision.strategy,
+    surfacedErrorLine: pythonRepairDecision.surfacedErrorLine,
+    reason: pythonRepairDecision.reason,
+  });
+
+  const manualLinePatchLineNumber =
+    mentionedLineNumber ?? pythonRepairDecision.surfacedErrorLine ?? null;
+
   const shouldUseManualLinePatch =
     !!currentFileId &&
     /\.py$/i.test(currentPath) &&
     verifyErrorFollowup &&
-    !!mentionedLineNumber;
+    pythonRepairDecision.strategy === "line_patch" &&
+    typeof manualLinePatchLineNumber === "number";
 
-  if (shouldUseManualLinePatch && mentionedLineNumber) {
+  if (shouldUseManualLinePatch && manualLinePatchLineNumber) {
     const lines = currentContent.split("\n");
 
-    if (mentionedLineNumber >= 1 && mentionedLineNumber <= lines.length) {
-      const currentLine = lines[mentionedLineNumber - 1];
+    if (manualLinePatchLineNumber >= 1 && manualLinePatchLineNumber <= lines.length) {
+      const currentLine = lines[manualLinePatchLineNumber - 1];
 
       console.log("[surgical] line_patch selected", {
         currentPath,
-        lineNumber: mentionedLineNumber,
+        lineNumber: manualLinePatchLineNumber,
         currentLine,
       });
 
@@ -1430,7 +1560,7 @@ Target file:
 ${currentPath}
 
 Line number:
-${mentionedLineNumber}
+${manualLinePatchLineNumber}
 
 Current line:
 ${currentLine}
@@ -1456,7 +1586,7 @@ Rules:
         if (validSingleLine) {
           const patchedContent = applyLinePatch(
             currentContent,
-            mentionedLineNumber,
+            manualLinePatchLineNumber,
             fixedLine
           );
 
@@ -1478,7 +1608,7 @@ Rules:
               repoId,
               targetPath: currentPath,
               proposedFileId: (proposal as any)?.fileId ?? null,
-              lineNumber: mentionedLineNumber,
+              lineNumber: manualLinePatchLineNumber,
             });
 
             const canonicalProposal: CanonicalProposal = {
@@ -1954,10 +2084,34 @@ function reorderNavLinksToMatchReference(args: {
       rewrittenLen: rewritten.length,
     });
   } else {
+    const carryForwardSuggestion =
+      isAffirmativeCarryForwardRequest(content)
+        ? extractLatestAssistantSuggestionFromMessages(recentMessages)
+        : null;
+
+    const effectiveRewriteRequest = carryForwardSuggestion
+      ? `${content}
+
+    Prior assistant suggestion to apply:
+    ${carryForwardSuggestion}
+
+    Hard rule:
+    - Treat the user's message as approval to implement the prior assistant suggestion into the target file.
+    - Make the requested repository change directly in this file.
+    - Do not reply with explanation only.
+    - Return the rewritten full file content.`
+      : content;
+
+    console.log("[surgical.rewrite_request_context]", {
+      currentPath,
+      usedCarryForwardSuggestion: Boolean(carryForwardSuggestion),
+      suggestionHead: carryForwardSuggestion?.slice(0, 200) ?? null,
+    });
+
     rewritten = await generateRewrittenFileContent({
       openai,
       model,
-      userRequest: surgicalPrompt,
+      userRequest: effectiveRewriteRequest,
       path: currentPath,
       mime: currentMime,
       currentContent,

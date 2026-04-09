@@ -63,6 +63,10 @@ function isUuid(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 }
 
+function isExecutableArtifactFile(path: string) {
+  return /\.py$/i.test(String(path ?? "").trim());
+}
+
 // ─────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────
@@ -315,6 +319,64 @@ async function exportFile(f: RepoFile) {
     URL.revokeObjectURL(url);
   } catch (e: any) {
     setError(e?.message ?? "Export failed");
+  }
+}
+
+async function executeAndDownloadFile(f: RepoFile) {
+  if (!validRepoId) {
+    setError(`invalid repoId: ${repoId}`);
+    return;
+  }
+
+  setError(null);
+
+  try {
+    const r = await fetch(
+      `/api/repo/${repoId}/files/${f.id}/execute-download`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+
+    const j = await r.json().catch(() => ({}));
+
+    if (!r.ok) {
+      throw new Error(j?.error ?? `Execute failed (${r.status})`);
+    }
+
+    const downloadUrl = String(j?.downloadUrl ?? "").trim();
+    const filename = String(j?.filename ?? "artifact.xlsx").trim();
+
+    if (!downloadUrl) {
+      throw new Error("Missing downloadUrl");
+    }
+
+    const fileRes = await fetch(downloadUrl, { cache: "no-store" });
+    if (!fileRes.ok) {
+      throw new Error(`Artifact download failed (${fileRes.status})`);
+    }
+
+    const blob = await fileRes.blob();
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(url);
+
+    console.log("[RepoVault] executeAndDownloadFile success", {
+      fileId: f.id,
+      path: f.path,
+      filename,
+    });
+  } catch (e: any) {
+    console.error("[RepoVault] executeAndDownloadFile failed", e);
+    setError(e?.message ?? "Execute & Download failed");
   }
 }
 
@@ -717,7 +779,17 @@ async function handleCopyFile(file: { id: string; path: string; name?: string })
                 </button>
               );
             })()}
-
+{isExecutableArtifactFile(menu.file.path) && (
+  <button
+    className="w-full text-left px-3 py-2 text-sm text-white/80 hover:bg-white/10"
+    onClick={async () => {
+      await executeAndDownloadFile(menu.file!);
+      setMenu({ open: false, x: 0, y: 0, file: null });
+    }}
+  >
+    Execute & Download
+  </button>
+)}
             <div className="h-px bg-white/10" />
 
             <button

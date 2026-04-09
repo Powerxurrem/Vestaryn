@@ -4,7 +4,8 @@ export type RunnerCommandId =
   | "node_lint"
   | "node_typecheck"
   | "node_verify"
-  | "python_verify";
+  | "python_verify"
+  | "python_execute_artifact";
 
 export type RunnerFailedStep =
   | "profile"
@@ -54,6 +55,15 @@ export type RunnerResult = {
       name: string;
       rows: Array<Array<string | number | boolean | null>>;
     }>;
+  };
+
+    // ✅ ADD THIS BLOCK
+  artifactFile?: {
+    path: string;
+    filename: string;
+    base64: string;
+    mime: string;
+    bytes: number;
   };
 };
 
@@ -226,6 +236,32 @@ export async function runnerRun(args: {
                       : [],
                   }))
                 : [],
+            }
+          : undefined,
+
+      artifactFile:
+        data.artifactFile && typeof data.artifactFile === "object"
+          ? {
+              path:
+                typeof data.artifactFile.path === "string"
+                  ? data.artifactFile.path
+                  : "",
+              filename:
+                typeof data.artifactFile.filename === "string"
+                  ? data.artifactFile.filename
+                  : "artifact.xlsx",
+              base64:
+                typeof data.artifactFile.base64 === "string"
+                  ? data.artifactFile.base64
+                  : "",
+              mime:
+                typeof data.artifactFile.mime === "string"
+                  ? data.artifactFile.mime
+                  : "",
+              bytes:
+                typeof data.artifactFile.bytes === "number"
+                  ? data.artifactFile.bytes
+                  : 0,
             }
           : undefined,
     };

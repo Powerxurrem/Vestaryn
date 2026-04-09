@@ -2226,138 +2226,40 @@ if (shouldHideEmptyAssistantBubble) {
                         )}
 
                         {/* ✅ Anchored VERIFY (inside the bubble) */}
+
+
 {turnState?.verify && !thinking && (
   <VerifyCard v={turnState.verify} />
 )}
 
-{turnState?.preverify && !thinking && (() => {
-  const pre = turnState.preverify;
-  const verify = turnState.verify;
-
-  const preBody = String(
-    pre?.error || pre?.stderr || pre?.stdout || ""
-  ).trim();
-
-  const preReason =
-    pre?.failureKind ||
-    pre?.failedStep ||
-    pre?.error ||
-    "preverify_failed";
-
-  const cardTone = pre?.ok
-    ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90"
-    : "border-rose-400/25 bg-rose-500/10 text-rose-100/90";
-
-  return (
-    <div className={`mt-3 rounded-lg border p-3 text-xs ${cardTone}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-widest opacity-80">
-            Pre-verify
-          </div>
-          <div className="mt-1 truncate">
-            {pre.ok
-              ? "PASS · proposal verified before apply"
-              : `FAIL · ${String(preReason)}`}
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            patchActiveTurn(msg.id, (prev) => ({
-              ...prev,
-              preverify: null,
-            }));
-          }}
-          className="shrink-0 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
-        >
-          Dismiss
-        </button>
-      </div>
-
-      <div className="mt-2 flex flex-wrap gap-2 text-[11px] opacity-80">
-  {typeof pre?.exitCode === "number" ? (
-    <span className="rounded bg-black/20 px-2 py-0.5">
-      exit {Number(pre.exitCode)}
-    </span>
-  ) : null}
-
-  {typeof pre?.durationMs === "number" ? (
-    <span className="rounded bg-black/20 px-2 py-0.5">
-      {Number(pre.durationMs)}ms
-    </span>
-  ) : null}
-
-  {pre?.failureKind ? (
-    <span className="rounded bg-black/20 px-2 py-0.5">
-      {String(pre.failureKind)}
-    </span>
-  ) : null}
-
-  {pre?.failedStep ? (
-    <span className="rounded bg-black/20 px-2 py-0.5">
-      {String(pre.failedStep)}
-    </span>
-  ) : null}
-
-  {pre?.fingerprint ? (
-    <span className="rounded bg-black/20 px-2 py-0.5">
-      runner: {String(pre.fingerprint)}
-    </span>
-  ) : null}
-
-  {typeof pre?.errorLine === "number" ? (
-    <span className="rounded bg-black/20 px-2 py-0.5">
-      line {pre.errorLine}
-    </span>
-  ) : null}
-</div>
-
-      {!pre.ok ? (
-        <div className="mt-2 space-y-2 text-[11px] opacity-90">
-          {pre?.baseline ? (
-            <div className="rounded-md border border-amber-300/20 bg-black/20 px-2 py-2">
-              <div className="font-medium text-amber-100/90">
-                Baseline repository issue detected
-              </div>
-              <div className="mt-1 text-amber-100/70">
-                This failure appears unrelated to only the staged change.
-              </div>
-            </div>
-          ) : null}
-
-          {pre?.chamberAssessment ? (
-            <div>
-              <span className="text-white/60">Assessment:</span>{" "}
-              {String(pre.chamberAssessment)}
-            </div>
-          ) : null}
-
-          {pre?.escalationSuggested ? (
-            <div>
-              <span className="text-white/60">Suggested repair:</span>{" "}
-              {String(pre.escalationSuggested)}
-            </div>
-          ) : null}
-
-          {preBody ? (
-            <div className="whitespace-pre-wrap">
-              {preBody.slice(0, 600)}
-            </div>
-          ) : (
-            <div>Pre-verify failed.</div>
-          )}
-        </div>
-      ) : (
-        <div className="mt-2 text-[11px] opacity-80">
-          Proposal passes sandbox verification before apply.
-          {verify?.ok === true ? " Final verify also passed after apply." : ""}
-        </div>
-      )}
-    </div>
-  );
-})()}
+{turnState?.preverify && !thinking && (
+  <VerifyCard
+    v={{
+      command: "preverify",
+      ok: Boolean(turnState.preverify?.ok),
+      exitCode: Number(turnState.preverify?.exitCode ?? -1),
+      durationMs: Number(turnState.preverify?.durationMs ?? 0),
+      stdout: String(turnState.preverify?.stdout ?? ""),
+      stderr: String(turnState.preverify?.stderr ?? ""),
+      error: turnState.preverify?.error ?? null,
+      jobId: turnState.preverify?.jobId ?? null,
+      fingerprint: turnState.preverify?.fingerprint ?? null,
+      failedStep: turnState.preverify?.failedStep ?? null,
+      failureKind: turnState.preverify?.failureKind ?? null,
+      timedOut: Boolean(turnState.preverify?.timedOut),
+      skipped: Boolean(turnState.preverify?.skipped),
+      reason: turnState.preverify?.reason ?? null,
+      errorLine:
+        typeof turnState.preverify?.errorLine === "number"
+          ? turnState.preverify.errorLine
+          : null,
+      escalationSuggested:
+        turnState.preverify?.escalationSuggested ?? null,
+      chamberAssessment:
+        turnState.preverify?.chamberAssessment ?? null,
+    }}
+  />
+)}
 
 {(() => {
 console.log("[proposal render gate]", {

@@ -77,6 +77,11 @@ const VaultEditorPane = forwardRef<VaultEditorPaneHandle, {
     reason?: string,
     source?: "preverify" | "verify" | "manual" | "scan"
   ) => void;
+  onFileSaved?: (args: {
+    fileId: string;
+    sha256: string | null;
+    saveStamp?: string | null;
+  }) => void;
   rightChamber?: ReactNode;
   rightChamberWidth?: number;
   rightChamberOpen?: boolean;
@@ -93,6 +98,7 @@ const VaultEditorPane = forwardRef<VaultEditorPaneHandle, {
     errorLinesByFileId = {},
     proposalPreviewByFileId = {},
     onFileStatus,
+    onFileSaved,
     rightChamber,
     rightChamberWidth,
     rightChamberOpen,
@@ -458,6 +464,23 @@ function computeChangedLineSet(oldText: string, newText: string) {
 
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j?.error ?? `HTTP ${r.status}`);
+
+      const savedSha256 =
+        typeof j?.save_meta?.sha256 === "string" ? j.save_meta.sha256 : null;
+      const saveStamp =
+        typeof j?.save_meta?.saveStamp === "string" ? j.save_meta.saveStamp : null;
+
+      console.log("[editor_save] success", {
+        fileId: activeTab.fileId,
+        sha256: savedSha256,
+        saveStamp,
+      });
+
+      onFileSaved?.({
+        fileId: activeTab.fileId,
+        sha256: savedSha256,
+        saveStamp,
+      });
 
       setOriginal(content);
       setMode("read");

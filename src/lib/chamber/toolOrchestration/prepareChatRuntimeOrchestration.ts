@@ -219,8 +219,12 @@ export async function prepareChatRuntimeOrchestration({
   let forceSinglePageSurgicalResume = false;
   let forceArtifactBootstrap = false;
 
-      if (
-    String(inference?.projectType ?? "").toLowerCase() === "static_site" &&
+      const currentProjectType = String(inference?.projectType ?? "").toLowerCase();
+  const hasExplicitResolvedTarget = effectiveMentionedPaths.length > 0;
+
+  if (
+    currentProjectType === "static_site" &&
+    !hasExplicitResolvedTarget &&
     (
       availableRepoPaths.includes("index.html") ||
       singlePageHtmlPaths.includes("index.html")

@@ -589,16 +589,64 @@ export async function attemptRepairProposalSet(opts: {
 
   const errorInfo = extractPythonError(opts.preverify.stderr);
 
+  function extractFailureText(preverify: {
+    stdout?: string;
+    stderr?: string;
+    error?: string | null;
+    failureKind?: string | null;
+  }) {
+    return [
+      String(preverify?.failureKind ?? ""),
+      String(preverify?.error ?? ""),
+      String(preverify?.stderr ?? ""),
+      String(preverify?.stdout ?? ""),
+    ]
+      .join("\n")
+      .toLowerCase();
+  }
+
+  function countRepairAttempts(userRequest: string) {
+    const s = String(userRequest ?? "").toLowerCase();
+
+    let attempts = 0;
+    if (/\bretry\b/.test(s)) attempts += 1;
+    if (/\btry again\b/.test(s)) attempts += 1;
+    if (/\brepair\b/.test(s)) attempts += 1;
+    if (/\bfix again\b/.test(s)) attempts += 1;
+
+    return attempts;
+  }
+
+  const failureText = extractFailureText(opts.preverify);
+  const repairAttempts = countRepairAttempts(opts.userRequest);
+
+  const isIndentationFailure =
+    /\bindentationerror\b/.test(failureText) ||
+    /\bexpected an indented block\b/.test(failureText);
+
+  const isSyntaxFailure =
+    /\bsyntaxerror\b/.test(failureText) ||
+    /\bunterminated string literal\b/.test(failureText) ||
+    /\bpython_compile_failed\b/.test(failureText);
+
   let repairMode: "line_patch" | "full_rewrite" = "full_rewrite";
 
   if (
+    !isIndentationFailure &&
+    repairAttempts < 2 &&
     opts.preverify.failureKind === "python_compile_failed" &&
     errorInfo?.line
   ) {
     repairMode = "line_patch";
   }
 
-  console.log("[repair_mode]", { repairMode, errorInfo });
+  console.log("[repair_mode]", {
+    repairMode,
+    errorInfo,
+    repairAttempts,
+    isIndentationFailure,
+    isSyntaxFailure,
+  });
 
   // 🔥 LINE PATCH FIRST
   if (repairMode === "line_patch" && errorInfo) {

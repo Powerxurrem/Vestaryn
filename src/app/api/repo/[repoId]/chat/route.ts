@@ -1164,17 +1164,18 @@ if (executionModeResolved.mode === "surgical") {
     (effectivePathsResolved.length >= 2 ? effectivePathsResolved[1] : null);
 
   const surgicalResponse = await handleSurgicalMode({
-    openai,
-    supabase,
-    repoId,
-    userId: user.id,
-    content,
-    model: runtimePolicy.model,
-    baselineVerify,
-    inferredVerifyCmd,
-    targetPathOverride: surgicalTargetPath,
-    referencePathOverride: surgicalReferencePath,
-  });
+  openai,
+  supabase,
+  repoId,
+  userId: user.id,
+  content,
+  model: runtimePolicy.model,
+  baselineVerify,
+  inferredVerifyCmd,
+  targetPathOverride: surgicalTargetPath,
+  referencePathOverride: surgicalReferencePath,
+  recentMessages: cleanedHistory,
+});
 
   if (surgicalResponse) {
     const responseText = await surgicalResponse.text();

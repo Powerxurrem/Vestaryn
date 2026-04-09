@@ -6,6 +6,7 @@ import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { buildRepoSnapshotSignedUrl } from "@/lib/runner/snapshot";
 import { runnerRun } from "@/lib/runner/client";
 import { persistRunConsoleLog } from "@/lib/chamber/persistRunConsoleLog";
+import crypto from "crypto";
 
 export const runtime = "nodejs";
 
@@ -71,9 +72,13 @@ function shouldPreserveExistingVerifiedStatus(existing: {
 
 async function runPythonScanViaRunner(args: {
   repoId: string;
+  fileId: string;
   path: string;
+  sha256: string;
+  storageKey: string;
+  interestingLines: Array<{ n: number; line: string }>;
 }) {
-  const { repoId, path } = args;
+  const { repoId, fileId, path, sha256, storageKey, interestingLines } = args;
 
   const supabaseAdmin = createSupabaseAdmin();
   const jobId = `scan-python-${repoId}-${Date.now()}`;
@@ -91,7 +96,11 @@ async function runPythonScanViaRunner(args: {
 
   console.log("[scan_python]", {
     repoId,
+    fileId,
     path,
+    storageKey,
+    sha256,
+    interestingLines,
     jobId,
     command: "python_verify",
     ok: result?.ok ?? null,
@@ -220,6 +229,26 @@ function normalizeLines(text: string) {
   return String(text ?? "").replace(/\r\n/g, "\n");
 }
 
+function sha256Text(value: string) {
+  return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+function buildInterestingLines(source: string) {
+  return String(source ?? "")
+    .split(/\r?\n/)
+    .map((line, i) => ({ n: i + 1, line }))
+    .filter(
+      ({ line }) =>
+        line.includes("return ") ||
+        line.includes("{count}") ||
+        line.includes("LeakGuardTest") ||
+        line.includes("SyntaxError") ||
+        line.includes("wb.create_sheet") ||
+        line.includes("Dashboard") ||
+        line.includes("]x[")
+    );
+}
+
 function scanPythonText(content: string) {
   const text = normalizeLines(content).trim();
 
@@ -305,7 +334,18 @@ async function readRepoFileText(
   supabase: any,
   repoId: string,
   fileId: string
-): Promise<{ ok: true; content: string; path: string; mime: string | null } | { ok: false; reason: string }> {
+): Promise<
+  | {
+      ok: true;
+      content: string;
+      path: string;
+      mime: string | null;
+      storageKey: string;
+      sha256: string;
+      interestingLines: Array<{ n: number; line: string }>;
+    }
+  | { ok: false; reason: string }
+> {
   const { data: row, error } = await supabase
     .from("repo_files")
     .select("id, path, mime, storage_key")
@@ -341,13 +381,28 @@ async function readRepoFileText(
     return { ok: false, reason: "scan_read_failed" };
   }
 
-  const content = await blob.text();
+  const content = String(await blob.text() ?? "");
+  const contentHash = sha256Text(content);
+  const interestingLines = buildInterestingLines(content);
+
+  console.log("[scan_vault.read]", {
+    repoId,
+    fileId,
+    path: String(row.path),
+    storageKey: String(row.storage_key),
+    bytes: Buffer.byteLength(content, "utf8"),
+    sha256: contentHash,
+    interestingLines,
+  });
 
   return {
     ok: true,
-    content: String(content ?? ""),
+    content,
     path: String(row.path),
     mime: row.mime ?? null,
+    storageKey: String(row.storage_key),
+    sha256: contentHash,
+    interestingLines,
   };
 }
 
@@ -399,6 +454,14 @@ export async function POST(
   let errorCount = 0;
   let scanned = 0;
 
+  const scannedFiles: Array<{
+    fileId: string;
+    path: string;
+    sha256: string | null;
+    status: "ok" | "warn" | "error";
+    reason: string;
+  }> = [];
+
   for (const file of rows) {
   const fileId = String(file.id ?? "");
   const path = String(file.path ?? "");
@@ -431,6 +494,15 @@ if (!readOut.ok) {
     readOut.reason,
     "scan"
   );
+
+  scannedFiles.push({
+    fileId,
+    path,
+    sha256: null,
+    status: "error",
+    reason: readOut.reason,
+  });
+
   errorCount += 1;
   continue;
 }
@@ -444,7 +516,11 @@ const content = readOut.content;
 if (ext === ".py") {
   const runnerResult = await runPythonScanViaRunner({
     repoId,
+    fileId,
     path,
+    sha256: readOut.sha256,
+    storageKey: readOut.storageKey,
+    interestingLines: readOut.interestingLines,
   });
 
   result = mapRunnerResultToFileStatus(runnerResult);
@@ -462,6 +538,14 @@ if (ext === ".py") {
       "scan"
     );
 
+    scannedFiles.push({
+      fileId,
+      path,
+      sha256: readOut.sha256,
+      status: result.status,
+      reason: result.reason,
+    });
+
     if (result.status === "ok") okCount += 1;
     else if (result.status === "warn") warnCount += 1;
     else errorCount += 1;
@@ -473,6 +557,15 @@ if (ext === ".py") {
       "scan_failed",
       "scan"
     );
+
+    scannedFiles.push({
+      fileId,
+      path,
+      sha256: null,
+      status: "error",
+      reason: "scan_failed",
+    });
+
     errorCount += 1;
 
     console.log("[scan_vault] file scan failed", {
@@ -491,5 +584,6 @@ if (ext === ".py") {
     okCount,
     warnCount,
     errorCount,
+    scannedFiles,
   });
 }

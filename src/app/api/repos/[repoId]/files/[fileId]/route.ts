@@ -57,6 +57,29 @@ function json(
   });
 }
 
+function parseVersionFromStorageKey(storageKey: string | null | undefined) {
+  const raw = String(storageKey ?? "");
+  const m = raw.match(/\/v(\d+)(?:$|\/)/i);
+  if (!m) return 0;
+
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function nextVersionedStorageKey(args: {
+  repoId: string;
+  fileId: string;
+  currentStorageKey?: string | null;
+}) {
+  const currentVersion = parseVersionFromStorageKey(args.currentStorageKey);
+  const nextVersion = Math.max(1, currentVersion + 1);
+
+  return {
+    nextVersion,
+    storageKey: `repos/${args.repoId}/${args.fileId}/v${nextVersion}`,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // PUT /api/repos/[repoId]/files/[fileId]
 // Overwrite blob (v1 upsert) + update DB metadata + return canonical DB row
@@ -118,6 +141,41 @@ if (mode === "export" && !tierPolicy.capabilities.allowExport) {
   const content = String(body?.content ?? "");
   const mime = String(body?.mime ?? "text/plain");
 const contentHash = crypto.createHash("sha256").update(content).digest("hex");
+const saveStamp = new Date().toISOString();
+
+function buildInterestingLines(source: string) {
+  return source
+    .split(/\r?\n/)
+    .map((line, i) => ({ n: i + 1, line }))
+    .filter(
+      ({ line }) =>
+        line.includes("return ") ||
+        line.includes("{count}") ||
+        line.includes("LeakGuardTest") ||
+        line.includes("SyntaxError") ||
+        line.includes("wb.create_sheet") ||
+        line.includes("Dashboard") ||
+        line.includes("]x[")
+    );
+}
+
+function firstDiffLine(a: string, b: string) {
+  const aLines = String(a ?? "").split(/\r?\n/);
+  const bLines = String(b ?? "").split(/\r?\n/);
+  const max = Math.max(aLines.length, bLines.length);
+
+  for (let i = 0; i < max; i++) {
+    if ((aLines[i] ?? "") !== (bLines[i] ?? "")) {
+      return {
+        line: i + 1,
+        incoming: aLines[i] ?? null,
+        readback: bLines[i] ?? null,
+      };
+    }
+  }
+
+  return null;
+}
 
 console.log("[file_put] incoming", {
   repoId,
@@ -125,28 +183,19 @@ console.log("[file_put] incoming", {
   mime,
   bytes: Buffer.byteLength(content, "utf8"),
   sha256: contentHash,
+  saveStamp,
   hasBrokenMarker: content.includes("{count};"),
   hasCleanMarker: content.includes("{count}</div>"),
 });
 
-const interestingLines = content
-  .split(/\r?\n/)
-  .map((line, i) => ({ n: i + 1, line }))
-  .filter(
-    ({ line }) =>
-      line.includes("return ") ||
-      line.includes("{count}") ||
-      line.includes("LeakGuardTest")
-  );
-
-console.log("[file_put] interesting_lines", interestingLines);
+console.log("[file_put] interesting_lines_incoming", buildInterestingLines(content));
   const bytes = new TextEncoder().encode(content);
   const buf = Buffer.from(bytes);
 
   // Load file row to get storage_key (and ensure membership via RLS)
   const { data: fileRow, error: fileErr } = await supabase
     .from("repo_files")
-    .select("id, repo_id, storage_key, deleted_at")
+    .select("id, repo_id, path, storage_key, deleted_at")
     .eq("id", fileId)
     .eq("repo_id", repoId)
     .single();
@@ -154,25 +203,46 @@ console.log("[file_put] interesting_lines", interestingLines);
   if (fileErr) return json({ error: fileErr.message }, 400);
   if (fileRow?.deleted_at) return json({ error: "not found" }, 404);
 
-  const storageKey: string | null = fileRow.storage_key;
-  if (!storageKey) return json({ error: "missing storage_key" }, 400);
+  const previousVersion = parseVersionFromStorageKey(fileRow.storage_key);
 
-  // Write blob (v1: overwrite same key)
+  const { nextVersion, storageKey } = nextVersionedStorageKey({
+    repoId,
+    fileId,
+    currentStorageKey: fileRow.storage_key ?? null,
+  });
+
+  console.log("[file_put] versioned_write", {
+    repoId,
+    fileId,
+    previousStorageKey: fileRow.storage_key ?? null,
+    nextStorageKey: storageKey,
+    previousVersion,
+    nextVersion,
+  });
+
   const { error: upErr } = await supabase.storage
     .from(VAULT_BUCKET)
-    .upload(storageKey, buf, { contentType: mime, upsert: true });
+    .upload(storageKey, buf, { contentType: mime, upsert: false });
 
   if (upErr) return json({ error: upErr.message }, 400);
 
 const dl = await supabase.storage.from(VAULT_BUCKET).download(storageKey);
 if (dl.data) {
   const savedText = await dl.data.text();
+  const readbackHash = crypto.createHash("sha256").update(savedText).digest("hex");
+  const diff = firstDiffLine(content, savedText);
+
   console.log("[file_put] readback", {
     storageKey,
     bytes: Buffer.byteLength(savedText, "utf8"),
+    sha256: readbackHash,
+    matchesIncoming: readbackHash === contentHash,
+    firstDiff: diff,
     hasBrokenMarker: savedText.includes("{count};"),
     hasCleanMarker: savedText.includes("{count}</div>"),
   });
+
+  console.log("[file_put] interesting_lines_readback", buildInterestingLines(savedText));
 }
 
   // Update DB metadata (DB remains canon)
@@ -181,7 +251,8 @@ if (dl.data) {
     .update({
       size_bytes: buf.byteLength,
       mime,
-      // updated_at ideally handled by DB trigger/default
+      storage_key: storageKey,
+      updated_at: new Date().toISOString(),
     })
     .eq("id", fileId)
     .eq("repo_id", repoId);
@@ -220,7 +291,18 @@ if (dl.data) {
 
   if (readErr) return json({ error: readErr.message }, 400);
 
-  return json({ file: updated }, 200);
+  return json(
+    {
+      file: updated,
+      save_meta: {
+        sha256: contentHash,
+        saveStamp,
+        storageKey,
+        version: nextVersion,
+      },
+    },
+    200
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -282,7 +364,7 @@ export async function GET(_req: Request, ctx: Ctx) {
 
   return json({
     file,
-    latest_version: null,
+    latest_version: parseVersionFromStorageKey(file.storage_key),
     signed_url: signed.signedUrl,
     content,
   });

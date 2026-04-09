@@ -70,6 +70,8 @@ export default function ChamberWithVault({
   const [fileStatusById, setFileStatusById] = useState<Record<string, FileStatus>>({});
 
   const [isScanningVault, setIsScanningVault] = useState(false);
+  const [scanQueued, setScanQueued] = useState(false);
+  const [latestExpectedScanHash, setLatestExpectedScanHash] = useState<string | null>(null);
 
 const reloadFileStatuses = useCallback(async () => {
   if (!repoId) return;
@@ -232,6 +234,31 @@ const handleScanVault = useCallback(async () => {
     const json = await res.json();
     console.log("[scan_vault] result", json);
 
+    const actualScannedHash =
+  Array.isArray(json?.scannedFiles)
+    ? json.scannedFiles.find((f: any) => f?.path === "script.py")?.sha256 ?? null
+    : null;
+
+if (
+  latestExpectedScanHash &&
+  actualScannedHash &&
+  latestExpectedScanHash !== actualScannedHash
+) {
+  console.log("[scan_guard] stale_read_detected", {
+    expected: latestExpectedScanHash,
+    actual: actualScannedHash,
+  });
+
+  await new Promise((r) => setTimeout(r, 400));
+
+  const retryRes = await fetch(`/api/repo/${repoId}/scan`, {
+    method: "POST",
+  });
+
+  const retryJson = await retryRes.json().catch(() => null);
+  console.log("[scan_guard] retry_result", retryJson);
+}
+
     // 3) refresh status after scan
     await reloadFileStatuses();
   } catch (e) {
@@ -240,6 +267,14 @@ const handleScanVault = useCallback(async () => {
     setIsScanningVault(false);
   }
 }, [repoId, isScanningVault, reloadFileStatuses]);
+
+useEffect(() => {
+  if (isScanningVault) return;
+  if (!scanQueued) return;
+
+  setScanQueued(false);
+  void handleScanVault();
+}, [isScanningVault, scanQueued, handleScanVault]);
 
 const previewResizeActiveRef = useRef(false);
 
@@ -440,8 +475,16 @@ const markFileUpdated = useCallback(
   (fileId: string) => {
     bumpFileReload(fileId);
     onFileStatus(fileId, "pending", "Verifying…", "manual");
+
+    if (isScanningVault) {
+      setScanQueued(true);
+      console.log("[scan_vault] queued because file changed during active scan", {
+        repoId,
+        fileId,
+      });
+    }
   },
-  [onFileStatus, bumpFileReload]
+  [onFileStatus, bumpFileReload, isScanningVault, repoId]
 );
 
   // load saved split
@@ -679,7 +722,19 @@ onPreviewRefresh={() => {
           />
         }
         fileStatusById={fileStatusById}
-        onFileStatus={onFileStatus}
+               onFileStatus={onFileStatus}
+        onFileSaved={({ fileId, sha256, saveStamp }) => {
+          if (sha256) {
+            setLatestExpectedScanHash(sha256);
+          }
+
+          console.log("[scan_guard] latest expected hash updated from editor save", {
+            repoId,
+            fileId,
+            sha256,
+            saveStamp,
+          });
+        }}
         rightChamber={
           <HiddenChamber
             repoId={repoId}
@@ -688,6 +743,8 @@ onPreviewRefresh={() => {
             fileStatusById={fileStatusById}
             maintenance={effectiveMaintenance}
             isScanningVault={isScanningVault}
+            scanQueued={scanQueued}
+            onQueueScan={() => setScanQueued(true)}
             onScanVault={handleScanVault}
             onResummarizeDone={() => {
               setMaintenance(null);
@@ -923,6 +980,8 @@ function HiddenChamber(props: {
   ) => void;
   onResummarizeDone?: () => void;
   isScanningVault?: boolean;
+  scanQueued?: boolean;
+  onQueueScan?: () => void;
   onScanVault?: () => void;
   onRepairPrompt?: (prompt: string) => void;
 }) {
@@ -934,6 +993,8 @@ const {
   maintenance,
   onResummarizeDone,
   isScanningVault = false,
+  scanQueued = false,
+  onQueueScan,
   onScanVault,
   onRepairPrompt,
 } = props;
@@ -952,6 +1013,18 @@ const {
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [resummarizing, setResummarizing] = useState(false);
 
+const runQueuedScan = useCallback(async () => {
+  if (!onScanVault) return;
+  await onScanVault();
+}, [onScanVault]);
+
+useEffect(() => {
+  if (isScanningVault) return;
+  if (!scanQueued) return;
+
+  onQueueScan?.();
+  void runQueuedScan();
+}, [isScanningVault, scanQueued, runQueuedScan]);
   // Bootstrap memory docs when Memory opens
 useEffect(() => {
   if (mode !== "memory") return;
@@ -1037,8 +1110,6 @@ return (
           const cap = Number(maintenance.cap ?? 0) || 0;
           const rawCount = Number(maintenance.count ?? 0) || 0;
           const count = cap > 0 ? Math.min(rawCount, cap) : rawCount;
-
-
           
           return (
             <>
@@ -1126,11 +1197,21 @@ return (
 
             <button
               type="button"
-              onClick={onScanVault}
-              disabled={isScanningVault}
-              className="mt-3 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => {
+                if (isScanningVault) {
+                  onQueueScan?.();
+                  return;
+                }
+
+                void runQueuedScan();
+              }}
+              className="mt-3 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white hover:bg-white/10"
             >
-              {isScanningVault ? "Scanning..." : "Scan Vault"}
+              {isScanningVault
+                ? scanQueued
+                  ? "Scanning… queued again"
+                  : "Scanning..."
+                : "Scan Vault"}
             </button>
 
             <button
