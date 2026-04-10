@@ -65,10 +65,36 @@ export async function POST(_req: Request, ctx: Ctx) {
     timeoutMs: 120_000,
   });
 
+    console.log("[execute_download runner result]", {
+      ok: result.ok,
+      exitCode: result.exitCode,
+      failedStep: result.failedStep ?? null,
+      failureKind: result.failureKind ?? null,
+      hasArtifactPreview: !!result.artifactPreview,
+      hasArtifactFile: !!result.artifactFile,
+      artifactFileMeta: result.artifactFile
+        ? {
+            path: result.artifactFile.path,
+            filename: result.artifactFile.filename,
+            mime: result.artifactFile.mime,
+            bytes: result.artifactFile.bytes,
+            hasBase64:
+              typeof result.artifactFile.base64 === "string" &&
+              result.artifactFile.base64.length > 0,
+          }
+        : null,
+      stdoutHead: String(result.stdout ?? "").slice(0, 400),
+      stderrHead: String(result.stderr ?? "").slice(0, 400),
+    });
+
   if (!result.ok || !result.artifactFile?.base64) {
     return NextResponse.json(
       {
-        error: result.error || "Artifact execution failed",
+        error:
+          result.error ||
+          (!result.artifactFile?.base64
+            ? "Artifact execution completed but no downloadable file was returned"
+            : "Artifact execution failed"),
         stdout: result.stdout ?? "",
         stderr: result.stderr ?? "",
         failureKind: result.failureKind ?? null,

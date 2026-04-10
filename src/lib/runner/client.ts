@@ -133,7 +133,23 @@ export async function runnerRun(args: {
     }
 
     const data: any = await res.json().catch(() => null);
-    console.log("[runner_client raw artifactPreview]", data?.artifactPreview);
+    console.log("[runner_client raw artifact payload]", {
+      ok: data?.ok,
+      exitCode: data?.exitCode,
+      failedStep: data?.failedStep,
+      failureKind: data?.failureKind,
+      hasArtifactPreview: !!data?.artifactPreview,
+      hasArtifactFile: !!data?.artifactFile,
+      artifactFileMeta: data?.artifactFile
+        ? {
+            path: data.artifactFile.path,
+            filename: data.artifactFile.filename,
+            mime: data.artifactFile.mime,
+            bytes: data.artifactFile.bytes,
+            hasBase64: typeof data.artifactFile.base64 === "string" && data.artifactFile.base64.length > 0,
+          }
+        : null,
+    });
 
     if (!data || typeof data !== "object") {
       return {
@@ -164,8 +180,12 @@ export async function runnerRun(args: {
         ? data.failedStep
         : null;
 
-    console.log("[runner_client mapped artifactPreview]", {
-      raw: data?.artifactPreview,
+    console.log("[runner_client mapped artifact payload]", {
+      ok,
+      hasArtifactPreview:
+        !!(data.artifactPreview && typeof data.artifactPreview === "object"),
+      hasArtifactFile:
+        !!(data.artifactFile && typeof data.artifactFile === "object"),
     });
 
     return {

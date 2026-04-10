@@ -770,6 +770,118 @@ ${opts.userRequest}
   return text;
 }
 
+function normalizeLoose(text: string) {
+  return String(text ?? "")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function safeContentRatio(original: string, rewritten: string) {
+  const a = normalizeLoose(original).length;
+  const b = normalizeLoose(rewritten).length;
+
+  if (a <= 0) return 1;
+  return b / a;
+}
+
+function extractHtmlRegionCounts(html: string) {
+  const s = String(html ?? "");
+
+  return {
+    sectionCount: (s.match(/<section\b/gi) ?? []).length,
+    navCount: (s.match(/<nav\b/gi) ?? []).length,
+    headerCount: (s.match(/<header\b/gi) ?? []).length,
+    footerCount: (s.match(/<footer\b/gi) ?? []).length,
+    h1Count: (s.match(/<h1\b/gi) ?? []).length,
+  };
+}
+
+function looksExplicitFullRewriteRequest(text: string) {
+  const t = String(text ?? "").toLowerCase();
+
+  return (
+    /\b(full rewrite|rewrite the entire file|rewrite entire file|regenerate the whole file|start over|from scratch)\b/.test(t)
+  );
+}
+
+function looksTargetedRegionRequest(text: string) {
+  const t = String(text ?? "").toLowerCase();
+
+  return (
+    /\b(header|nav|navbar|footer|hero|section|sections|button|card|title|spacing|layout|styling|style)\b/.test(t)
+  );
+}
+
+function enforceRewriteConstraints(args: {
+  path: string;
+  userRequest: string;
+  currentContent: string;
+  rewritten: string;
+}) {
+  const { path, userRequest, currentContent, rewritten } = args;
+
+  const next = String(rewritten ?? "");
+  const prev = String(currentContent ?? "");
+  const lowerPath = String(path ?? "").toLowerCase();
+
+  if (!next.trim()) {
+    throw new Error(`Rewrite rejected: empty output for ${path}`);
+  }
+
+  if (detectTruncation(path, next)) {
+    throw new Error(`Rewrite rejected: generated file appears truncated: ${path}`);
+  }
+
+  const isHtmlFile = lowerPath.endsWith(".html") || lowerPath.endsWith(".htm");
+  const isCssFile = lowerPath.endsWith(".css");
+  const isExplicitFullRewrite = looksExplicitFullRewriteRequest(userRequest);
+  const isTargeted = looksTargetedRegionRequest(userRequest);
+
+  const ratio = safeContentRatio(prev, next);
+
+  if (!isExplicitFullRewrite) {
+    if (ratio < 0.8) {
+      throw new Error(
+        `Rewrite rejected: content preservation too low for ${path} (ratio=${ratio.toFixed(2)})`
+      );
+    }
+  }
+
+  if (isHtmlFile && !isExplicitFullRewrite && isTargeted) {
+    const before = extractHtmlRegionCounts(prev);
+    const after = extractHtmlRegionCounts(next);
+
+    if (after.navCount < before.navCount) {
+      throw new Error(`Rewrite rejected: nav was removed from ${path}`);
+    }
+
+    if (after.headerCount < before.headerCount) {
+      throw new Error(`Rewrite rejected: header was removed from ${path}`);
+    }
+
+    if (after.footerCount < before.footerCount) {
+      throw new Error(`Rewrite rejected: footer was removed from ${path}`);
+    }
+
+    if (after.sectionCount + 2 < before.sectionCount) {
+      throw new Error(`Rewrite rejected: too many sections were removed from ${path}`);
+    }
+  }
+
+  if (isCssFile && !isExplicitFullRewrite && isTargeted) {
+    const beforeBlocks = (prev.match(/\{/g) ?? []).length;
+    const afterBlocks = (next.match(/\{/g) ?? []).length;
+
+    if (afterBlocks + 3 < beforeBlocks) {
+      throw new Error(`Rewrite rejected: stylesheet collapsed too much for ${path}`);
+    }
+  }
+
+  return next;
+}
+
 export async function generateRewrittenFileContent(opts: {
   openai: OpenAI;
   model: string;
@@ -861,6 +973,15 @@ HTML layout alignment rules:
 `.trim()
       : "";
 
+const preservationRules = `
+Preservation rules:
+- Preserve at least 80% of the original file unless the user explicitly requests a full rewrite.
+- Do not remove unrelated sections, selectors, functions, or content blocks.
+- If the request targets header, nav, footer, hero, or one named section, modify only that region.
+- If the request is alignment-focused, preserve page identity and only patch structure/styling relevant to alignment.
+- If you cannot make the requested change precisely, return the original file unchanged.
+`.trim();
+      
   const prompt = `
 You are rewriting a single repository file.
 
@@ -906,11 +1027,14 @@ FILE
     max_output_tokens: opts.maxOutputTokens ?? 10000,
   });
 
-  const text = (resp.output_text || "").trim();
+    const text = (resp.output_text || "").trim();
 
-  if (detectTruncation(opts.path, text)) {
-    throw new Error(`Rewritten file appears truncated: ${opts.path}`);
-  }
+  const safe = enforceRewriteConstraints({
+    path: opts.path,
+    userRequest: opts.userRequest,
+    currentContent: opts.currentContent,
+    rewritten: text,
+  });
 
-  return text;
+  return safe;
 }

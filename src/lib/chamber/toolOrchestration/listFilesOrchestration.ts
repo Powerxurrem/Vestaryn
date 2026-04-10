@@ -727,9 +727,12 @@ if (shouldUseSharedLayoutRewrite) {
         `You are rewriting ONLY a shared layout region.\n` +
         `Rules:\n` +
         `- Return ONLY the updated region (header/nav)\n` +
+        `- Preserve at least 90% of the original region structure\n` +
         `- Do NOT generate a full HTML document\n` +
         `- Do NOT add new sections\n` +
-        `- Do NOT change page identity\n`,
+        `- Do NOT change page identity\n` +
+        `- Do NOT remove unrelated links or blocks\n` +
+        `- If no precise alignment patch is possible, return the original region unchanged\n`,
       path: path,
       mime: "text/html",
       currentContent: originalRegion,

@@ -1232,7 +1232,12 @@ function isNonWebPlanningContext(text: string) {
 
 function hasImageSourceSpecified(text: string) {
   const t = String(text ?? "").toLowerCase();
-  return /\b(remote|url|urls|placeholder|local|unsplash)\b/.test(t);
+
+  return (
+    /\b(remote|url|urls|placeholder|local|unsplash)\b/.test(t) ||
+    /https?:\/\//i.test(text) ||
+    /\.(png|jpg|jpeg|webp|svg|gif)\b/i.test(text)
+  );
 }
 
 function extractLatestAssistantSuggestionFromMessages(messages: Array<{ role?: string; content?: string }>) {
@@ -1263,6 +1268,80 @@ function isAffirmativeCarryForwardRequest(text: string) {
   return (
     /^(yes|yeah|yep|sure|ok|okay|please)\b/.test(t) &&
     /\b(add|apply|use|that|it|file)\b/.test(t)
+  );
+}
+
+function tryStylesheetThemeShiftFastPath(args: {
+  userText: string;
+  currentPath: string;
+  currentContent: string;
+}) {
+  const { userText, currentPath, currentContent } = args;
+
+  if (!/\.css$/i.test(currentPath)) {
+    return { ok: false as const, reason: "not_css" };
+  }
+
+  const t = String(userText ?? "").toLowerCase();
+
+  const wantsHighFantasy =
+    /\b(high fantasy|fantasy|mythic|epic fantasy)\b/.test(t);
+
+  if (!wantsHighFantasy) {
+    return { ok: false as const, reason: "no_matching_theme" };
+  }
+
+  let next = String(currentContent ?? "");
+
+  next = next.replace(/--bg:\s*[^;]+;/, "--bg: #140f1f;");
+  next = next.replace(/--panel:\s*[^;]+;/, "--panel: #21182f;");
+  next = next.replace(/--text:\s*[^;]+;/, "--text: #f3ead7;");
+  next = next.replace(/--muted:\s*[^;]+;/, "--muted: #c2b4a0;");
+  next = next.replace(/--accent:\s*[^;]+;/, "--accent: #d6a84a;");
+  next = next.replace(/--border:\s*[^;]+;/, "--border: rgba(214, 168, 74, 0.22);");
+
+  next = next.replace(
+    /background:\s*var\(--bg\);/,
+    `background:
+    radial-gradient(circle at top, rgba(214, 168, 74, 0.14), transparent 28%),
+    radial-gradient(circle at 20% 20%, rgba(122, 92, 179, 0.12), transparent 24%),
+    linear-gradient(180deg, #1a1327 0%, #110d19 100%);`
+  );
+
+  next = next.replace(
+    /backdrop-filter:\s*blur\(\d+px\);/,
+    "backdrop-filter: blur(12px);"
+  );
+
+  if (!/text-shadow:\s*0 2px 18px rgba\(0, 0, 0, 0\.35\);/.test(next)) {
+    next = next.replace(
+      /h1\s*\{([\s\S]*?)\}/,
+      `h1 {$1
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.35);
+}`
+    );
+  }
+
+  if (next === currentContent) {
+    return { ok: false as const, reason: "no_effect" };
+  }
+
+  return {
+    ok: true as const,
+    kind: "css_theme_shift_high_fantasy",
+    recipeId: "high_fantasy_theme",
+    className: null,
+    nextContent: next,
+  };
+}
+
+function isAssetProvisionFollowup(text: string) {
+  const t = String(text ?? "").toLowerCase();
+
+  return (
+    /\b(use this|you can use|this one can be used|for the pictures|for the images)\b/.test(t) ||
+    /https?:\/\//.test(t) ||
+    /\.(png|jpg|jpeg|webp|svg|gif)\b/.test(t)
   );
 }
 
@@ -1301,7 +1380,7 @@ export async function handleSurgicalMode({
         .filter(Boolean)
     )
   );
-
+  
   const resolved = resolveSurgicalTargetAndReferences(content, hintedPaths);
 
   const normalizedTargetOverride = targetPathOverride
@@ -1317,6 +1396,30 @@ export async function handleSurgicalMode({
   resolved.targetPath ??
   hintedPaths[0] ??
   null;
+
+const recentAssistantText = recentMessages
+  .filter((m) => m?.role === "assistant")
+  .map((m) => String(m?.content ?? ""))
+  .slice(-3)
+  .join("\n\n");
+
+const previousAssistantRequestedImageSource =
+  /\b(source for the images was not specified|cannot safely wire them in yet|reply with one of: remote urls, placeholder images, or local assets)\b/i.test(
+    recentAssistantText
+  );
+
+if (
+  !targetPath &&
+  isAssetProvisionFollowup(content) &&
+  previousAssistantRequestedImageSource
+) {
+  targetPath = "about.html";
+
+  console.log("[surgical target override]", {
+    to: targetPath,
+    reason: "asset_provision_followup",
+  });
+}
 
 // 🔥 STRUCTURAL OVERRIDE
 const hasExplicitOrResolvedNonHtmlTarget =
@@ -1761,9 +1864,30 @@ Rules:
     referenceFiles,
   });
 
+  let effectiveStrategy = strategy;
+
+const isStylesheet = /\.css$/i.test(currentPath);
+
+const isBroadStyleFollowup =
+  isStylesheet &&
+  /\b(style|styling|theme|high fantasy|fantasy|mythic|epic|premium|more style|look and feel|visual)\b/i.test(content) &&
+  !/\b(rewrite|regenerate|from scratch|full rewrite)\b/i.test(content);
+
+if (isBroadStyleFollowup) {
+  effectiveStrategy = "css_preferred";
+
+  console.log("[surgical strategy override]", {
+    currentPath,
+    from: strategy,
+    to: effectiveStrategy,
+    reason: "broad_css_style_followup",
+  });
+}
+
   console.log("[surgical] strategy", {
     currentPath,
     strategy,
+    effectiveStrategy,
     hasReferenceFiles: referenceFiles.length > 0,
   });
 
@@ -1926,55 +2050,79 @@ function reorderNavLinksToMatchReference(args: {
   }
 
   if (!rewritten) {
-    const styleFastPath = applyStyleRecipeFastPath({
-      userText: content,
+  const layoutFastPath = applyLayoutRecipeFastPath({
+    userText: content,
+    currentPath,
+    currentContent,
+  });
+
+  if (layoutFastPath.ok) {
+    rewritten = layoutFastPath.nextContent;
+    rewriteSource = "fast_path";
+
+    console.log("[surgical fast-path hit]", {
       currentPath,
-      currentContent,
+      kind: layoutFastPath.kind,
+      recipeId: layoutFastPath.recipeId,
     });
-
-    if (styleFastPath.ok) {
-      rewritten = styleFastPath.nextContent;
-      rewriteSource = "fast_path";
-
-      console.log("[surgical fast-path hit]", {
-        currentPath,
-        kind: styleFastPath.kind,
-        recipeId: styleFastPath.recipeId,
-        className: styleFastPath.className,
-      });
-    } else {
-      console.log("[surgical style fast-path miss]", {
-        currentPath,
-        reason: styleFastPath.reason,
-      });
-    }
-  }
-
-  if (!rewritten) {
-    const layoutFastPath = applyLayoutRecipeFastPath({
-      userText: content,
+  } else {
+    console.log("[surgical layout fast-path miss]", {
       currentPath,
-      currentContent,
+      reason: layoutFastPath.reason,
     });
-
-    if (layoutFastPath.ok) {
-      rewritten = layoutFastPath.nextContent;
-      rewriteSource = "fast_path";
-
-      console.log("[surgical fast-path hit]", {
-        currentPath,
-        kind: layoutFastPath.kind,
-        recipeId: layoutFastPath.recipeId,
-      });
-    } else {
-      console.log("[surgical layout fast-path miss]", {
-        currentPath,
-        reason: layoutFastPath.reason,
-      });
-    }
   }
+}
 
-  if (!rewritten && strategy === "html_targeted") {
+if (!rewritten) {
+  const styleFastPath = applyStyleRecipeFastPath({
+    userText: content,
+    currentPath,
+    currentContent,
+  });
+
+  if (styleFastPath.ok) {
+    rewritten = styleFastPath.nextContent;
+    rewriteSource = "fast_path";
+
+    console.log("[surgical fast-path hit]", {
+      currentPath,
+      kind: styleFastPath.kind,
+      recipeId: styleFastPath.recipeId,
+      className: styleFastPath.className,
+    });
+  } else {
+    console.log("[surgical style fast-path miss]", {
+      currentPath,
+      reason: styleFastPath.reason,
+    });
+  }
+}
+
+if (!rewritten && effectiveStrategy === "css_preferred") {
+  const themeFastPath = tryStylesheetThemeShiftFastPath({
+    userText: content,
+    currentPath,
+    currentContent,
+  });
+
+  if (themeFastPath.ok) {
+    rewritten = themeFastPath.nextContent;
+    rewriteSource = "fast_path";
+
+    console.log("[surgical fast-path hit]", {
+      currentPath,
+      kind: themeFastPath.kind,
+      recipeId: themeFastPath.recipeId,
+    });
+  } else {
+    console.log("[surgical css theme fast-path miss]", {
+      currentPath,
+      reason: themeFastPath.reason,
+    });
+  }
+}
+
+  if (!rewritten && effectiveStrategy === "html_targeted") {
     const htmlIntent = tryHtmlIntentFastPath(
       content,
       currentPath,
@@ -2012,6 +2160,28 @@ function reorderNavLinksToMatchReference(args: {
           ]),
         ].join("\n")
       : "";
+
+const isExplicitFullRewrite =
+  /\b(full rewrite|rewrite the entire file|rewrite entire file|regenerate the whole file|start over|from scratch)\b/i.test(content);
+
+const isAlignmentOnlyRequest =
+  /\b(align|alignment|match|same layout|same style|consistent)\b/i.test(content) &&
+  /\b(layout|header|nav|navbar|footer|spacing|visual|style|styling)\b/i.test(content);
+
+if (!rewritten && isAlignmentOnlyRequest && !isExplicitFullRewrite) {
+  return new Response(
+    "[Observation]\nThe requested alignment did not run through a safe structural path.\n\n" +
+      "[Assessment]\nThis request is alignment-oriented, but no deterministic structural patch matched, so a full rewrite was blocked.\n\n" +
+      "[Action]\nRetry with a more specific target such as header, nav, footer, or named section.",
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+      },
+    }
+  );
+}
 
   const referenceResolvedPath =
     referenceFiles.length > 0 ? referenceFiles[0].path : null;
