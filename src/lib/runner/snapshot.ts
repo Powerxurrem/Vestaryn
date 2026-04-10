@@ -295,20 +295,32 @@ async function listRepoFiles(
   // IMPORTANT: if your path column isn't literally "path", change it here.
   const filesRes = await supabase
     .from("repo_files")
-    .select("id, repo_id, path, deleted_at, storage_key, size_bytes")
+    .select("id, repo_id, path, deleted_at, storage_key, byte_size")
     .eq("repo_id", repoId);
 
-  if (filesRes.error) {
-    throw new Error(`Snapshot list repo_files failed: ${filesRes.error.message}`);
-  }
+if (!Array.isArray(filesRes.data)) {
+  console.log("[snapshot:listRepoFiles unexpected data]", filesRes.data);
+}
 
+if (filesRes.error) {
+  console.log("[snapshot:listRepoFiles error]", {
+    error: filesRes.error,
+  });
+
+  throw new Error(
+    `Snapshot list repo_files failed: ${filesRes.error.message}`
+  );
+}
+console.log("[snapshot:listRepoFiles context]", {
+  repoId,
+});
   const files = (filesRes.data ?? []) as Array<{
     id: string;
     repo_id: string;
     path: string | null;
     deleted_at: string | null;
     storage_key: string | null;
-    size_bytes?: number | null;
+    byte_size?: number | null;
   }>;
 
   const alive = files.filter((f) => !f.deleted_at);
@@ -335,7 +347,7 @@ for (const f of alive) {
     path: p,
     deleted_at: f.deleted_at,
     storage_key: storageKey,
-    byte_size: Number((f as any).size_bytes ?? 0),
+    byte_size: Number((f as any).byte_size ?? 0),
   });
 }
 
