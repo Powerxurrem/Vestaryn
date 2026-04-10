@@ -25,19 +25,52 @@ function sanitizeIntentParsingInput(text: string) {
   return stripExampleNoise(stripCodeBlocks(text));
 }
 
+export function isMultiFileContentCreationIntent(text: string) {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isInternalGoalExecutionPrompt(t)) return false;
+
+  const createSignal =
+    /\b(create|make|write|generate|build)\b/.test(t);
+
+  const pluralFileSignal =
+    /\b\d+\s+new\s+files\b/.test(t) ||
+    /\bnew\s+files\b/.test(t) ||
+    /\bmultiple\s+files\b/.test(t) ||
+    /\bseparate\s+files\b/.test(t);
+
+  const chapterSignal =
+    /\bchapter\b/.test(t) ||
+    /\bchapters\b/.test(t) ||
+    /\b1\s+file\s+is\s+1\s+chapter\b/.test(t) ||
+    /\bone\s+file\s+(is|=)\s+one\s+chapter\b/.test(t) ||
+    /\bone\s+story\s+per\s+file\b/.test(t) ||
+    /\bstory\s+per\s+file\b/.test(t);
+
+  const contentSignal =
+    /\bstory\b/.test(t) ||
+    /\bfantasy\b/.test(t) ||
+    /\beidolon\b/.test(t) ||
+    /\beidolons\b/.test(t);
+
+  return createSignal && (pluralFileSignal || chapterSignal) && contentSignal;
+}
+
 export function inferMultipleImplicitPagePaths(text: string): string[] {
   const t = normText(text).toLowerCase();
   if (!t) return [];
 
   const mappings: Array<[RegExp, string]> = [
-    [/\bportfolio\b/, "portfolio.html"],
-    [/\bgallery\b/, "gallery.html"],
-    [/\babout\b/, "about.html"],
-    [/\bcontact\b/, "contact.html"],
-    [/\bpricing\b/, "pricing.html"],
-    [/\bservices\b/, "services.html"],
-    [/\bfaq\b/, "faq.html"],
-    [/\bexplore\b/, "explore.html"],
+    [/\bportfolio(?:\s+page)?\b/, "portfolio.html"],
+    [/\bgallery(?:\s+page)?\b/, "gallery.html"],
+    [/\babout\s+page\b/, "about.html"],
+    [/\bcontact(?:\s+page)?\b/, "contact.html"],
+    [/\bpricing(?:\s+page)?\b/, "pricing.html"],
+    [/\bservices(?:\s+page)?\b/, "services.html"],
+    [/\bfaq(?:\s+page)?\b/, "faq.html"],
+    [/\bexplore(?:\s+page)?\b/, "explore.html"],
   ];
 
   const results: string[] = [];
@@ -146,9 +179,16 @@ export function isCreateLinkedPageIntent(text: string) {
 
 export function resolveCreateMissingTargetPath(text: string) {
   const raw = normText(text);
-    if (isExplicitPythonFileCreateIntent(raw)) {
+
+  if (isExplicitPythonFileCreateIntent(raw)) {
     return "script.py";
   }
+
+  // 🚫 Do not collapse generic multi-file content creation into about.html
+  if (isMultiFileContentCreationIntent(raw)) {
+    return null;
+  }
+
   const explicit = extractSingleMentionedPath(raw);
   const implicitMultiple = inferMultipleImplicitPagePaths(raw);
   const implicitSingle = inferImplicitPagePath(raw);
@@ -156,7 +196,7 @@ export function resolveCreateMissingTargetPath(text: string) {
   const wantsNewFile =
     /\b(new file|new files|separate file|separate files|separately|create a new page|create new pages|add a .* page|add .* pages|create a .* page|create .* pages)\b/i.test(raw);
 
-  // If the prompt clearly asks to create new page(s), prefer implicit page targets
+  // If the prompt clearly asks to create new named page(s), prefer implicit page targets
   // over a referenced existing file like index.html.
   if (wantsNewFile && implicitMultiple.length > 0) {
     return implicitMultiple;

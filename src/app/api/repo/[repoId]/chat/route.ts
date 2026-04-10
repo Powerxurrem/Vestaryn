@@ -17,6 +17,7 @@ import {
   isInternalControlPrompt,
   isGoalPlanningUserIntent,
   resolveCreateMissingTargetPath,
+  isMultiFileContentCreationIntent,
 } from "@/lib/chamber/intent";
 import {isSourceTargetTransferIntent,isImportRefactorIntent,isSplitFileIntent} from "@/lib/chamber/refactorIntent";
 import { generateNewFileContent} from "@/lib/chamber/generation";
@@ -52,7 +53,13 @@ import { runToolExecutionRounds } from "@/lib/chamber/toolOrchestration/toolExec
 import { supabaseRouteHandler } from "@/lib/supabase/server";
 import { vault_read_text, resolveFileIdByPathOrName } from "@/lib/vault/tools";
 import { runTool } from "@/lib/vault/toolRuntime";
-
+import {
+  logChatTurnSummary,
+  type FallbackReason,
+  type FailureSurface,
+  type TurnOutcome,
+  type RouteDecisionKind,
+} from "@/lib/diagnostics/types";
 /**
  * @file app/api/repo/[repoId]/chat/route.ts
  * @purpose Stream assistant output for a repo chat, while enforcing Vestaryn output contract.
@@ -564,6 +571,60 @@ function classifyEditIntent(content: string): "style" | "content" | "structure" 
   return "unknown";
 }
 
+function inferMultiFileStoryCount(text: string) {
+  const t = String(text ?? "").toLowerCase();
+
+  const digitMatch = t.match(/\b(\d+)\s+new\s+files\b/);
+  if (digitMatch) {
+    const n = Number(digitMatch[1]);
+    if (Number.isFinite(n) && n >= 2 && n <= 12) return n;
+  }
+
+  const wordMap: Record<string, number> = {
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+
+  for (const [word, value] of Object.entries(wordMap)) {
+    if (new RegExp(`\\b${word}\\s+new\\s+files\\b`, "i").test(t)) {
+      return value;
+    }
+  }
+
+  return 5;
+}
+
+function inferStoryFileExtension(text: string) {
+  const t = String(text ?? "").toLowerCase();
+
+  if (/\bhtml\b|\bpage\b|\bpages\b/.test(t)) return ".html";
+  if (/\bmarkdown\b|\bmd\b/.test(t)) return ".md";
+  return ".txt";
+}
+
+function buildStoryFilePaths(count: number, ext: string) {
+  return Array.from({ length: count }, (_, i) => {
+    const n = String(i + 1).padStart(2, "0");
+    return `chapter-${n}${ext}`;
+  });
+}
+
+function inferStoryTheme(text: string) {
+  const t = String(text ?? "").trim();
+  const m =
+    t.match(/\babout\s+(.+?)(?:,|\.|$)/i) ||
+    t.match(/\bstory\s+of\s+(.+?)(?:,|\.|$)/i);
+
+  return String(m?.[1] ?? "a fantasy world").trim();
+}
+
 // ─────────────────────────────────────────────────────────────
 // Route: POST /api/repo/[repoId]/chat
 // ─────────────────────────────────────────────────────────────
@@ -596,8 +657,31 @@ if (!content?.trim()) return new Response("Missing content", { status: 400 });
 
 const text = normText(content);
 
-// Stage 1: raw mode from user text only
+let fallbackReason: FallbackReason = "none";
+let failureSurface: FailureSurface = "none";
+let turnOutcome: TurnOutcome = "advisory_response";
+
+const routeDecisionReason: string[] = [];
+let continuityMatched = false;
+let continuityReason: string | null = null;
+
+let proposedFileId: string | null = null;
+let appliedFileId: string | null = null;
+
+let verifyAttempted = false;
+let verifyOk: boolean | null = null;
+
+let hadTools = false;
+let toolRounds = 0;
+
 const rawExecutionMode = resolveExecutionMode(text);
+
+const rawMentionedPaths = Array.isArray(rawExecutionMode.mentionedPaths)
+  ? rawExecutionMode.mentionedPaths
+  : [];
+
+// Stage 1: raw mode from user text only
+
 
 console.log("[execution_mode.raw]", {
   mode: rawExecutionMode.mode,
@@ -812,11 +896,47 @@ const {
   runtimePolicy,
 } = runtimeSetup;
 
+const isMultiFileCreateRequest = isMultiFileContentCreationIntent(content);
+
+if (continuityTargetPath) {
+  continuityMatched = true;
+  continuityReason = "runtime_continuity_target";
+}
+
 const availableFiles = await getAvailableFiles();
 
 let effectivePathsResolved = [...effectiveMentionedPaths];
 let continuityTargetResolved = continuityTargetPath;
 let executionModeResolved = executionMode;
+
+if (isMultiFileCreateRequest) {
+  continuityTargetResolved = null;
+  continuityMatched = false;
+  continuityReason = "suppressed_for_multi_file_creation";
+
+  effectivePathsResolved = [];
+
+  executionModeResolved = {
+    ...executionModeResolved,
+    mode: "incremental",
+    confidence: "high",
+    reasons: [
+      ...(Array.isArray(executionModeResolved?.reasons)
+        ? executionModeResolved.reasons
+        : []),
+      "multi_file_creation_request",
+      "continuity_suppressed",
+    ],
+    mentionedPaths: [],
+  };
+
+  console.log("[continuity_override]", {
+    reason: "multi_file_creation_request",
+    previousContinuityTarget: continuityTargetPath,
+    clearedEffectivePaths: true,
+    forcedMode: "incremental",
+  });
+}
 
 const createMissingTarget = resolveCreateMissingTargetPath(content);
 
@@ -1094,6 +1214,7 @@ const missingEffectivePaths = effectivePathsResolved.filter(
 );
 
 const shouldRunCreateMissingMode =
+  !isMultiFileCreateRequest &&
   !shouldRunExistingMultiPageLinking &&
   !continuityTargetResolved &&
   executionModeResolved.mode !== "bootstrap" &&
@@ -1104,6 +1225,27 @@ const shouldRunCreateMissingMode =
     executionModeResolved.mode === "rewrite"
   );
 
+const isQuestionShaped =
+  /\?/.test(content) || /^\s*(what|which|should|could|would|why|how)\b/i.test(content);
+
+const hasExplicitExecutionVerb =
+  /\b(add|insert|update|change|rewrite|modify|create|make|remove|delete|apply)\b/i.test(content);
+
+if (
+  isQuestionShaped &&
+  !hasExplicitExecutionVerb &&
+  effectivePathsResolved.length > 0 &&
+  executionModeResolved.mode === "surgical"
+) {
+  fallbackReason = "explicit_path_overrode_advisory";
+  failureSurface = "routing";
+}
+
+if (isMultiFileCreateRequest && continuityTargetPath) {
+  fallbackReason = "short_followup_resumed_previous_task";
+  failureSurface = "continuity";
+}
+
 console.log("[route_path_decision]", {
   mode: executionModeResolved.mode,
   createMissing: shouldRunCreateMissingMode,
@@ -1113,6 +1255,7 @@ console.log("[route_path_decision]", {
 
 
 if (shouldRunCreateMissingMode) {
+  routeDecisionReason.push("create_missing_mode");
   console.log("[execution_mode] create-missing-file handler active", {
     confidence: executionModeResolved.confidence,
     paths: executionModeResolved.mentionedPaths,
@@ -1131,6 +1274,11 @@ if (shouldRunCreateMissingMode) {
   if (createMissingResponse) {
     const responseText = await createMissingResponse.text();
 
+turnOutcome = "proposal_created";
+if (fallbackReason === "none") {
+  fallbackReason = "none";
+}
+
     return await buildCreateMissingResponseOrchestration({
       supabase,
       repoId,
@@ -1147,6 +1295,7 @@ if (shouldRunCreateMissingMode) {
 }
 
 if (executionModeResolved.mode === "surgical") {
+  routeDecisionReason.push("surgical_mode");
   console.log("[execution_mode] surgical handler active", {
     confidence: executionModeResolved.confidence,
     paths: executionModeResolved.mentionedPaths,
@@ -1185,6 +1334,8 @@ if (executionModeResolved.mode === "surgical") {
       responseLen: responseText.length,
     });
 
+turnOutcome = "proposal_created";
+
     return await buildSurgicalResponseOrchestration({
       supabase,
       repoId,
@@ -1214,7 +1365,14 @@ const explainModeResponse = await tryHandleExplainModeOrchestration({
 });
 
 if (explainModeResponse) {
+  routeDecisionReason.push("explain_mode");
+  turnOutcome = "advisory_response";
   return explainModeResponse;
+}
+
+if (isMultiFileCreateRequest && effectivePathsResolved.length > 0) {
+  fallbackReason = "short_followup_resumed_previous_task";
+  failureSurface = "continuity";
 }
 
 const implicitStaticPageResponse = await handleImplicitStaticPageMode({
@@ -1269,6 +1427,119 @@ console.log("[existing_multi_page_linking]", {
   content,
 });
 
+if (isMultiFileCreateRequest) {
+  console.log("[multi_file_create] handler active", {
+    repoId,
+    contentHead: String(content ?? "").slice(0, 160),
+  });
+
+  const fileCount = inferMultiFileStoryCount(content);
+  const ext = inferStoryFileExtension(content);
+  const filePaths = buildStoryFilePaths(fileCount, ext);
+  const storyTheme = inferStoryTheme(content);
+
+  const stagedProposals: any[] = [];
+
+  for (let i = 0; i < filePaths.length; i++) {
+    const chapterNumber = i + 1;
+    const path = filePaths[i];
+
+    const chapterPrompt =
+      `${content}\n\n` +
+      `Create content for a multi-file story set.\n` +
+      `Rules:\n` +
+      `- This is chapter ${chapterNumber} of ${fileCount}.\n` +
+      `- Theme/topic: ${storyTheme}\n` +
+      `- Each file must be unique.\n` +
+      `- The chapters must align as one continuous story.\n` +
+      `- Keep continuity with previous chapters implicitly.\n` +
+      `Formatting rules:\n` +
+      `- Write in paragraphs, not line-by-line.\n` +
+      `- Use a single blank line between paragraphs.\n` +
+      `- Avoid unnecessary line breaks.\n`+
+      `- Return ONLY the file contents.\n`;
+
+    const mime =
+      ext === ".html"
+        ? "text/html"
+        : ext === ".md"
+          ? "text/markdown"
+          : "text/plain";
+
+    const generated = await generateNewFileContentSafe({
+      openai,
+      model: runtimePolicy.model,
+      userRequest: chapterPrompt,
+      path,
+      mime,
+      maxOutputTokens: runtimePolicy.output.maxOutputTokens,
+    });
+
+    const proposal = await runTool(
+      supabase,
+      repoId,
+      user.id,
+      content,
+      "vault_propose_create",
+      {
+        path,
+        content: generated,
+      }
+    );
+
+    if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+      console.log("[multi_file_create] propose failed", {
+        repoId,
+        path,
+        proposal,
+      });
+
+      return new Response(
+        "[Observation]\nThe requested multi-file story set could not be staged.\n\n" +
+          "[Assessment]\nA file creation step failed before the full proposal set could be assembled.\n\n" +
+          "[Action]\nRetry the request or reduce the scope.",
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-cache, no-transform",
+          },
+        }
+      );
+    }
+
+    stagedProposals.push({
+      fileId: String((proposal as any).fileId),
+      content: String((proposal as any).content ?? generated),
+      prevHash: String((proposal as any).prevHash ?? ""),
+      nextHash: String((proposal as any).nextHash ?? ""),
+      confirm: String((proposal as any).confirm ?? ""),
+      path: (proposal as any).path ?? path,
+      name: (proposal as any).name ?? path,
+      mime: (proposal as any).mime ?? mime,
+      meta: (proposal as any).meta ?? null,
+    });
+  }
+
+  proposedFileId = stagedProposals[0]?.fileId ?? null;
+  turnOutcome = "proposal_created";
+  routeDecisionReason.push("multi_file_create");
+
+  const body =
+    `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: stagedProposals })}\n` +
+    "[Observation]\nRequired repository changes were staged.\n\n" +
+    `[Assessment]\nA multi-file story set with ${fileCount} chapter files was prepared.\n\n` +
+    "[Action]\nA staged multi-file change is ready. Confirm to apply.";
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+    },
+  });
+}
+
 if (shouldAllowPreStreamRepoOpsForMode(executionModeResolved.mode)) {
   const preStreamResponse = await tryHandlePreStreamRepoOps({
     openai,
@@ -1313,6 +1584,8 @@ if (shouldAllowBootstrapForMode(executionModeResolved.mode)) {
   });
 
   if (bootstrapResponse) {
+    routeDecisionReason.push("bootstrap_mode");
+    turnOutcome = "proposal_created";
     return bootstrapResponse;
   }
 } else {
@@ -1412,6 +1685,7 @@ const encoder = new TextEncoder();
           });
         } catch (err: any) {
           console.log("[responses.create pass1 failed]", {
+            
             message: err?.message,
             name: err?.name,
             status: err?.status,
@@ -1419,6 +1693,7 @@ const encoder = new TextEncoder();
             type: err?.type,
             param: err?.param,
             cause: err?.cause,
+            
           });
           throw err;
         }
@@ -1450,6 +1725,7 @@ const encoder = new TextEncoder();
       });
 
       pendingTools = pass1.builtPendingTools ?? [];
+      hadTools = hadTools || pendingTools.length > 0 || pass1.sawToolsThisPass;
       rawAssistantText = pass1.buffer ?? "";
 
       let initialHadTools = pendingTools.length > 0 || pass1.sawToolsThisPass;
@@ -1555,6 +1831,9 @@ pendingProposalOuts = roundsResult.state.pendingProposalOuts;
 handledSplitTurn = roundsResult.state.handledSplitTurn;
 deterministicToolHandled = roundsResult.state.deterministicToolHandled;
 fullText = roundsResult.state.fullText;
+toolRounds = Array.isArray(roundsResult.toolOutputs)
+  ? roundsResult.toolOutputs.length
+  : toolRounds;
 
 const toolOutputs = roundsResult.toolOutputs;
 
@@ -1621,10 +1900,58 @@ await persistAssistantTurnOrchestration({
   },
 });
   }  catch (err: any) {
+    turnOutcome = "failed";
+if (fallbackReason === "none") {
+  fallbackReason = "none";
+  failureSurface = failureSurface === "none" ? "orchestration" : failureSurface;
+}
       console.error("LLM error:", err?.message);
       controller.enqueue(encoder.encode("System: LLM unavailable. Check billing/quota."));
     } finally {
       console.log("Total request time (ms):", Math.round(performance.now() - t0));
+
+      const finalModeForLog: RouteDecisionKind =
+        executionModeResolved.mode === "rewrite"
+          ? "incremental"
+          : (executionModeResolved.mode as RouteDecisionKind);
+
+      logChatTurnSummary({
+        kind: "chat_turn_summary",
+        repoId,
+        userId: user.id,
+        contentHead: String(content ?? "").slice(0, 160),
+        rawMode: rawExecutionMode.mode,
+        finalMode: finalModeForLog,
+
+        rawMentionedPaths,
+        effectiveMentionedPaths: effectivePathsResolved,
+
+        targetPath: getEffectiveSinglePath() ?? continuityTargetResolved ?? null,
+        referencePaths: [],
+
+        continuityMatched,
+        continuityReason,
+
+        routeDecisionReason,
+
+        fallbackReason,
+        failureSurface,
+
+        outcome: turnOutcome,
+
+        hadTools,
+        toolRounds,
+
+        proposedFileId,
+        appliedFileId,
+
+        verifyAttempted,
+        verifyOk,
+
+        responseLen: fullText.length,
+        durationMs: Math.round(performance.now() - t0),
+      });
+
       controller.close();
     }
   },
