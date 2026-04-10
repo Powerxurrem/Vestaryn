@@ -38,7 +38,7 @@ type RepoFileRow = {
   path: string;
   deleted_at: string | null;
   storage_key: string;
-  byte_size: number;
+  size_bytes: number;
   mime?: string;
 };
 
@@ -171,8 +171,8 @@ if (leakGuardEffective) {
     effectiveFiles.map((f: any) => f.path).slice(0, 100)
   );
 
-  // If you have byte_size populated, we can pre-cap. Otherwise we cap during download.
-  const preTotal = filtered.reduce((sum, f) => sum + (f.byte_size ?? 0), 0);
+  // If you have size_bytes populated, we can pre-cap. Otherwise we cap during download.
+  const preTotal = filtered.reduce((sum, f) => sum + (f.size_bytes ?? 0), 0);
   if (preTotal > 0 && preTotal > maxTotalBytes) {
     throw new Error(
       `Snapshot: repo too large (${preTotal} bytes > ${maxTotalBytes}).`
@@ -295,7 +295,7 @@ async function listRepoFiles(
   // IMPORTANT: if your path column isn't literally "path", change it here.
   const filesRes = await supabase
     .from("repo_files")
-    .select("id, repo_id, path, deleted_at, storage_key, byte_size")
+    .select("id, repo_id, path, deleted_at, storage_key, size_bytes")
     .eq("repo_id", repoId);
 
 if (!Array.isArray(filesRes.data)) {
@@ -320,7 +320,7 @@ console.log("[snapshot:listRepoFiles context]", {
     path: string | null;
     deleted_at: string | null;
     storage_key: string | null;
-    byte_size?: number | null;
+    size_bytes?: number | null;
   }>;
 
   const alive = files.filter((f) => !f.deleted_at);
@@ -347,7 +347,7 @@ for (const f of alive) {
     path: p,
     deleted_at: f.deleted_at,
     storage_key: storageKey,
-    byte_size: Number((f as any).byte_size ?? 0),
+    size_bytes: Number((f as any).size_bytes ?? 0),
   });
 }
 
