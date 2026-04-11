@@ -33,13 +33,14 @@ export function isMultiFileContentCreationIntent(text: string) {
   if (isInternalGoalExecutionPrompt(t)) return false;
 
   const createSignal =
-    /\b(create|make|write|generate|build)\b/.test(t);
+    /\b(create|make|write|generate|build|continue|add)\b/.test(t);
 
   const pluralFileSignal =
-    /\b\d+\s+new\s+files\b/.test(t) ||
+    /\b\d+\s+(?:new\s+)?files\b/.test(t) ||
     /\bnew\s+files\b/.test(t) ||
     /\bmultiple\s+files\b/.test(t) ||
-    /\bseparate\s+files\b/.test(t);
+    /\bseparate\s+files\b/.test(t) ||
+    /\bseries\s+of\s+files\b/.test(t);
 
   const chapterSignal =
     /\bchapter\b/.test(t) ||
@@ -49,13 +50,45 @@ export function isMultiFileContentCreationIntent(text: string) {
     /\bone\s+story\s+per\s+file\b/.test(t) ||
     /\bstory\s+per\s+file\b/.test(t);
 
-  const contentSignal =
+  const genericContentSignal =
     /\bstory\b/.test(t) ||
+    /\bstories\b/.test(t) ||
     /\bfantasy\b/.test(t) ||
     /\beidolon\b/.test(t) ||
-    /\beidolons\b/.test(t);
+    /\beidolons\b/.test(t) ||
+    /\bpokemon\b/.test(t) ||
+    /\blegendary\b/.test(t) ||
+    /\bcharacter\b/.test(t) ||
+    /\bcharacters\b/.test(t);
 
-  return createSignal && (pluralFileSignal || chapterSignal) && contentSignal;
+  const namingSignal =
+    /\bname\s+the\s+files?\b/.test(t) ||
+    /\bnamed?\s+the\s+files?\b/.test(t) ||
+    /\bname\s+the\s+file\b/.test(t) ||
+    /\bname\s+each\s+file\b/.test(t) ||
+    /\bfile\s+based\s+on\b/.test(t) ||
+    /\bbased\s+on\s+the\s+pokemon\b/.test(t) ||
+    /\bwith\s+the\s+stories\b/.test(t);
+
+  const sequelChapterSignal =
+    /\bcreate\s+a\s+\d+(?:st|nd|rd|th)\s+chapter\b/.test(t) ||
+    /\badd\s+chapter\s+\d+\b/.test(t) ||
+    /\bcreate\s+chapter\s+\d+\b/.test(t) ||
+    /\bcreate\s+the\s+next\s+chapter\b/.test(t) ||
+    /\bcontinue\s+the\s+story\b/.test(t) ||
+    /\bcontinue\s+the\s+story\s+with\s+(?:a\s+)?new\s+chapter\b/.test(t) ||
+    /\bnext\s+chapter\b/.test(t);
+
+  const genericNamedMultiFileSignal =
+    createSignal &&
+    pluralFileSignal &&
+    (genericContentSignal || namingSignal);
+
+  return (
+    (createSignal && (pluralFileSignal || chapterSignal) && genericContentSignal) ||
+    genericNamedMultiFileSignal ||
+    sequelChapterSignal
+  );
 }
 
 export function inferMultipleImplicitPagePaths(text: string): string[] {
@@ -216,8 +249,50 @@ export function isShortFollowupExecutionIntent(text: string): boolean {
   if (isInternalControlPrompt(t)) return false;
 
   return (
-    /^(yes|yes please|do it|go ahead|apply it|retry|try again|please retry|continue|go for it|proceed|do that)$/i.test(t)
+    /^(yes|yes please|do it|go ahead|apply it|retry|try again|please retry|continue|go for it|proceed|do that)$/i.test(t) ||
+    /^(create it for me|make it for me|do it for me|create that for me)$/i.test(t)
   );
+}
+
+export function isChapterSequenceRequest(text: string): boolean {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isInternalGoalExecutionPrompt(t)) return false;
+
+  return (
+    /\bcreate\s+a\s+\d+(?:st|nd|rd|th)\s+chapter\b/.test(t) ||
+    /\bcreate\s+chapter\s+\d+\b/.test(t) ||
+    /\badd\s+chapter\s+\d+\b/.test(t) ||
+    /\bcreate\s+the\s+next\s+chapter\b/.test(t) ||
+    /\badd\s+the\s+next\s+chapter\b/.test(t) ||
+    /\bnext\s+chapter\b/.test(t)
+  );
+}
+
+export function isStoryContinuationRequest(text: string): boolean {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+  if (isInternalGoalExecutionPrompt(t)) return false;
+
+  return (
+    /\bcontinue\s+the\s+story\b/.test(t) ||
+    /\bcontinue\s+the\s+storyline\b/.test(t) ||
+    /\bcontinue\s+it\b/.test(t) ||
+    /\bcontinue\b.*\bchapter\b/.test(t)
+  );
+}
+
+export function isAmbiguousCreateForMeFollowup(text: string): boolean {
+  const t = normText(text).toLowerCase();
+
+  if (!t) return false;
+  if (isInternalControlPrompt(t)) return false;
+
+  return /^(create it for me|make it for me|do it for me|create that for me)\??$/i.test(t);
 }
 
 export function inferImplicitPagePath(text: string) {

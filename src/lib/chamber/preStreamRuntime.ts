@@ -5,7 +5,11 @@ import {
   isCreateAndModifyIntent,
   resolveCreateAndModifyPaths,
   isExtractToModuleIntent,
-  resolveExtractToModulePaths,extractSingleMentionedPath
+  resolveExtractToModulePaths,
+  extractSingleMentionedPath,
+  isChapterSequenceRequest,
+  isStoryContinuationRequest,
+  isAmbiguousCreateForMeFollowup,
 } from "@/lib/chamber/intent";
 import { isImportRefactorIntent } from "@/lib/chamber/refactorIntent";
 import {
@@ -66,6 +70,61 @@ function buildPreverifyAwareProposalResponse(args: {
   );
 }
 
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function inferNextChapterPathFromRepoPaths(paths: string[]) {
+  const normalized = Array.isArray(paths)
+    ? paths.map((p) => String(p ?? "").trim()).filter(Boolean)
+    : [];
+
+  const chapterRows = normalized
+    .map((path) => {
+      const match =
+        path.match(/(^|\/)chapter[-_ ]?(\d+)\.(txt|md)$/i) ||
+        path.match(/(^|\/)(\d+)[-_ ]?chapter\.(txt|md)$/i);
+
+      if (!match) return null;
+
+      const chapterNo = Number(match[2]);
+      if (!Number.isFinite(chapterNo)) return null;
+
+      return {
+        path,
+        chapterNo,
+        ext: path.toLowerCase().endsWith(".md") ? ".md" : ".txt",
+      };
+    })
+    .filter(Boolean) as Array<{ path: string; chapterNo: number; ext: ".txt" | ".md" }>;
+
+  if (chapterRows.length === 0) return null;
+
+  const maxChapter = Math.max(...chapterRows.map((x) => x.chapterNo));
+  const preferredExt =
+    chapterRows.find((x) => x.chapterNo === maxChapter)?.ext ?? ".txt";
+
+  return `chapter-${pad2(maxChapter + 1)}${preferredExt}`;
+}
+
+function inferExplicitRequestedChapterNumber(text: string): number | null {
+  const t = String(text ?? "").toLowerCase();
+
+  const match =
+    t.match(/\bcreate\s+a\s+(\d+)(?:st|nd|rd|th)\s+chapter\b/) ||
+    t.match(/\bcreate\s+chapter\s+(\d+)\b/) ||
+    t.match(/\badd\s+chapter\s+(\d+)\b/);
+
+  if (!match) return null;
+
+  const n = Number(match[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function buildChapterPath(n: number, ext: ".txt" | ".md" = ".txt") {
+  return `chapter-${pad2(n)}${ext}`;
+}
+
 export async function tryHandlePreStreamRepoOps(args: {
   openai: OpenAI;
   supabase: any;
@@ -96,6 +155,124 @@ export async function tryHandlePreStreamRepoOps(args: {
     projectType: inference?.projectType ?? null,
     verifyCmd: inferredVerifyCmd,
   });
+
+  try {
+    const wantsChapterFollowup =
+      isChapterSequenceRequest(content) ||
+      isStoryContinuationRequest(content) ||
+      isAmbiguousCreateForMeFollowup(content);
+
+    if (wantsChapterFollowup) {
+      const { data: repoFileRows, error: repoFilesErr } = await supabase
+        .from("repo_files")
+        .select("path")
+        .eq("repo_id", repoId)
+        .is("deleted_at", null);
+
+      if (!repoFilesErr) {
+        const repoPaths = Array.isArray(repoFileRows)
+          ? repoFileRows.map((r: any) => String(r?.path ?? "").trim()).filter(Boolean)
+          : [];
+
+        const inferredNextChapterPath = inferNextChapterPathFromRepoPaths(repoPaths);
+        const explicitChapterNo = inferExplicitRequestedChapterNumber(content);
+
+        let targetChapterPath: string | null = null;
+
+        if (explicitChapterNo) {
+          const ext =
+            inferredNextChapterPath?.toLowerCase().endsWith(".md") ? ".md" : ".txt";
+          targetChapterPath = buildChapterPath(explicitChapterNo, ext as ".txt" | ".md");
+        } else if (inferredNextChapterPath) {
+          targetChapterPath = inferredNextChapterPath;
+        }
+
+        console.log("[chapter_followup_probe]", {
+          content,
+          wantsChapterFollowup,
+          explicitChapterNo,
+          inferredNextChapterPath,
+          targetChapterPath,
+          repoPaths,
+        });
+
+        if (targetChapterPath) {
+          const existingId = await resolveFileIdByPathOrName(
+            supabase,
+            repoId,
+            targetChapterPath
+          );
+
+          if (!existingId) {
+            const mime = inferTextMimeFromPath(targetChapterPath);
+
+            const newFileContent = await generateNewFileContent({
+              openai,
+              model: runtimePolicy.model,
+              userRequest:
+                `${content}\n\n` +
+                `Repository continuity rules:\n` +
+                `- This is a story-chapter continuation request.\n` +
+                `- Create exactly one new chapter file.\n` +
+                `- Target path: ${targetChapterPath}\n` +
+                `- Continue the existing story sequence naturally.\n` +
+                `- Return only the full file contents for that one chapter.\n`,
+              path: targetChapterPath,
+              mime,
+            });
+
+            const proposal = await vault_propose_create(supabase, repoId, {
+              path: targetChapterPath,
+              content: newFileContent,
+              mime,
+              meta: {
+  op: "create",
+  kind: "story_chapter_followup",
+  sequence: "chapter",
+  chapterNumber: explicitChapterNo ?? inferredNext,
+}
+            });
+
+
+            
+            const proposals = [proposal].filter(Boolean);
+
+            const visible =
+              "[Observation]\nRequired repository changes were staged.\n\n" +
+              `[Assessment]\nA follow-up story chapter was prepared as ${targetChapterPath}.\n\n` +
+              "[Action]\nA staged change is ready. Confirm to apply.";
+
+            if (shouldPreVerifyProposalSet(proposals)) {
+              const result = await finalizeProposalSet({
+                openai,
+                model: runtimePolicy.model,
+                repoId,
+                userRequest: content,
+                baselineVerifyPayload: baselineVerify.verifyPayload,
+                verifyCmd: inferredVerifyCmd,
+                proposals,
+              });
+
+              return buildPreverifyAwareProposalResponse({
+                visible,
+                proposals,
+                result,
+              });
+            }
+
+            return new Response(
+              `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`,
+              {
+                headers: { "Content-Type": "text/plain; charset=utf-8" },
+              }
+            );
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    console.log("[chapter_followup_short_circuit] failed:", e?.message);
+  }
 
     const createModifyIntent = isCreateAndModifyIntent(content);
     const createModifyPaths = createModifyIntent

@@ -44,6 +44,47 @@ function inferPreviewMimeFromPath(path: string) {
   return "text/plain";
 }
 
+function isCodeLikePath(path: string) {
+  const p = String(path ?? "").toLowerCase();
+
+  return (
+    p.endsWith(".ts") ||
+    p.endsWith(".tsx") ||
+    p.endsWith(".js") ||
+    p.endsWith(".jsx") ||
+    p.endsWith(".css") ||
+    p.endsWith(".html") ||
+    p.endsWith(".json") ||
+    p.endsWith(".xml") ||
+    p.endsWith(".yml") ||
+    p.endsWith(".yaml") ||
+    p.endsWith(".sql") ||
+    p.endsWith(".py") ||
+    p.endsWith(".java") ||
+    p.endsWith(".cpp") ||
+    p.endsWith(".c") ||
+    p.endsWith(".rs") ||
+    p.endsWith(".go") ||
+    p.endsWith(".php") ||
+    p.endsWith(".rb") ||
+    p.endsWith(".sh")
+  );
+}
+
+function shouldWrapLikeProse(path: string, mime: string) {
+  if (!isTextLike(mime)) return false;
+  if (isCodeLikePath(path)) return false;
+
+  const p = String(path ?? "").toLowerCase();
+
+  return (
+    mime === "text/plain" ||
+    mime === "text/markdown" ||
+    p.endsWith(".txt") ||
+    p.endsWith(".md")
+  );
+}
+
 const VaultEditorPane = forwardRef<VaultEditorPaneHandle, {
   repoId: string;
   tabs: OpenTab[];
@@ -167,17 +208,12 @@ const activeErrorLines = useMemo(
 // Explorer / Engraving layout
 // ─────────────────────────────
 const [engravingOpen, setEngravingOpen] = useState(false);
-const engravingWidth = 320;
 const minEditorWidth = 300;      // minimum width of editor
-const minExplorerWidth = 330;    // minimum width of explorer
 const vaultW = 320;          // fixed Vault list width
 const minEngravingW = 0;   // minimum engraving area so it’s usable
 const minExplorer = vaultW + minEngravingW;
-// Engraving panel sizing (fixed)
-const engravingW = 260; // try 260–320
-const minVaultW = 260;        // file list usability
-const maxEngravingW = 340;    // optional cap (aesthetics)
-const minEditorW = 720;       // you already have this (keep one source of truth)
+const [viewMode, setViewMode] = useState<"auto" | "code" | "read">("auto");
+
 type DiffLine =
   | { kind: "same"; text: string }
   | { kind: "add"; text: string }
@@ -264,6 +300,23 @@ const displayContent =
   hasProposalForActiveFile && mode === "read"
     ? activeProposal!.content
     : content;
+
+const autoReadMode = shouldWrapLikeProse(effectivePath, effectiveMime);
+
+const resolvedReadMode =
+  viewMode === "read"
+    ? true
+    : viewMode === "code"
+    ? false
+    : autoReadMode;
+    
+const previewLineClass = resolvedReadMode
+  ? "leading-5 whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
+  : "h-5 leading-5 whitespace-pre";
+
+const previewPaneClass = resolvedReadMode
+  ? "min-w-0 flex-1"
+  : "min-w-0 flex-1 overflow-x-auto";
 
 const previewDisplayContent =
   mode === "read" ? normalizeLeadingPreviewNewline(displayContent) : displayContent;
@@ -721,6 +774,48 @@ return (
           )}
     </div>
   </div>
+  <div className="inline-flex items-center rounded-md border border-white/10 bg-white/5 p-1 z-100">
+  <button
+  
+    type="button"
+    onClick={() => setViewMode("code")}
+    className={[
+      "px-2 py-1 text-[11px] rounded",
+      viewMode === "code"
+        ? "bg-white/10 text-white"
+        : "text-white/50 hover:text-white/80",
+    ].join(" ")}
+    title="Force code-style view"
+  >
+    Code
+  </button>
+  <button
+    type="button"
+    onClick={() => setViewMode("auto")}
+    className={[
+      "px-2 py-1 text-[11px] rounded",
+      viewMode === "auto"
+        ? "bg-white/10 text-white"
+        : "text-white/50 hover:text-white/80",
+    ].join(" ")}
+    title="Auto view by file type"
+  >
+    Auto
+  </button>
+  <button
+    type="button"
+    onClick={() => setViewMode("read")}
+    className={[
+      "px-2 py-1 text-[11px] rounded",
+      viewMode === "read"
+        ? "bg-white/10 text-white"
+        : "text-white/50 hover:text-white/80",
+    ].join(" ")}
+    title="Force reading view"
+  >
+    Read
+  </button>
+</div>
           {/* Right-side actions */}
           <div className="shrink-0 flex items-center gap-2 relative z-100">
             {canEdit && (
@@ -758,7 +853,15 @@ return (
         </div>
 
 {/* Editor body */}
-<div ref={editorScrollRef} className="flex-1 min-h-0 overflow-auto">
+<div
+  ref={editorScrollRef}
+  className={[
+    "flex-1 min-h-0 overflow-auto transition-colors duration-200",
+    resolvedReadMode
+      ? "bg-[#f8f6f2] text-[#1a1a1a]"
+      : "bg-black/40 text-white",
+  ].join(" ")}
+>
   {!activeTab && !fallbackProposal ? (
   <div className="h-full flex items-center justify-center text-sm text-white/35">
     Open a file from Explorer.
@@ -772,7 +875,14 @@ return (
   ) : error ? (
     <div className="p-4 text-sm text-rose-300">{error}</div>
   ) : mode === "read" ? (
-<div className="p-4 text-xs text-white/80 font-mono">
+<div
+  className={[
+    "p-4 text-xs font-mono",
+    resolvedReadMode
+      ? "text-[#1a1a1a]"
+      : "text-white/80",
+  ].join(" ")}
+>
   {isVirtualCreatePreview ? (
     <div className="mb-3 rounded-md border border-blue-400/25 bg-blue-500/10 px-3 py-2 text-[11px] text-blue-100/80">
       Previewing staged new file: <span className="font-mono">{effectivePath}</span>
@@ -785,12 +895,12 @@ return (
         {inlineDiff.map((_, i) => lineNumberCell(i + 1, activeErrorLines.has(i)))}
       </div>
 
-      <div className="min-w-0 flex-1 overflow-x-auto">
+      <div className={previewPaneClass}>
         {inlineDiff.map((line, i) => (
           <div
             key={i}
             className={[
-              "h-5 leading-5 whitespace-pre",
+              previewLineClass,
               line.kind === "add"
                 ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
                 : line.kind === "remove"
@@ -811,7 +921,7 @@ return (
         {splitPreviewLines(previewDisplayContent).map((_, i) => lineNumberCell(i + 1, activeErrorLines.has(i)))}
       </div>
 
-      <div className="min-w-0 flex-1 overflow-x-auto">
+      <div className={previewPaneClass}>
         {splitPreviewLines(previewDisplayContent).map((line, i) => {
           const isChanged = changedLines.has(i);
 
@@ -819,7 +929,7 @@ return (
             <div
               key={i}
               className={[
-                "h-5 leading-5 whitespace-pre",
+                previewLineClass,
                 isChanged
                   ? "bg-emerald-500/10 border-l-2 border-emerald-400 px-2 -mx-2"
                   : "",

@@ -95,9 +95,17 @@ export async function handleApplySetCommand(args: {
 
     const touchedFileIds: string[] = [];
     const appliedFiles: any[] = [];
-    const appliedPaths = appliedFiles
-      .map(f => f?.path)
-      .filter(Boolean);
+
+    const isStorySequence = proposals.some(
+      (p: any) => p?.meta?.kind === "story_chapter_followup"
+    );
+
+    if (isStorySequence) {
+      console.log("[apply_set story_sequence]", {
+        count: proposals.length,
+        chapters: proposals.map((p: any) => p?.meta?.chapterNumber),
+      });
+    }
 
     for (const proposal of proposals) {
       console.log("[apply_set item]", {
@@ -105,6 +113,9 @@ export async function handleApplySetCommand(args: {
         fileId: proposal?.fileId,
         op: proposal?.meta?.op === "create" ? "create" : "overwrite",
       });
+    const appliedPaths = appliedFiles
+      .map(f => f?.path)
+      .filter(Boolean);
 
       const op = proposal?.meta?.op === "create" ? "create" : "overwrite";
       let applied: any;

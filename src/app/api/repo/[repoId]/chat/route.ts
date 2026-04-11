@@ -18,6 +18,9 @@ import {
   isGoalPlanningUserIntent,
   resolveCreateMissingTargetPath,
   isMultiFileContentCreationIntent,
+  isChapterSequenceRequest,
+  isStoryContinuationRequest,
+  isAmbiguousCreateForMeFollowup,
 } from "@/lib/chamber/intent";
 import {isSourceTargetTransferIntent,isImportRefactorIntent,isSplitFileIntent} from "@/lib/chamber/refactorIntent";
 import { generateNewFileContent} from "@/lib/chamber/generation";
@@ -609,15 +612,94 @@ function inferStoryFileExtension(text: string) {
   return ".txt";
 }
 
-function buildStoryFilePaths(count: number, ext: string) {
-  return Array.from({ length: count }, (_, i) => {
+function slugifyStoryLeaf(raw: string) {
+  return String(raw ?? "")
+    .toLowerCase()
+    .replace(/['".]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/--+/g, "-")
+    .trim();
+}
+
+function normalizeStorySubjectName(raw: string) {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+
+  const lower = s.toLowerCase();
+
+  if (lower === "charizards") return "charizard";
+  if (lower === "pokemons") return "pokemon";
+
+  return lower;
+}
+
+function extractRequestedStorySubjects(text: string): string[] {
+  const raw = String(text ?? "").trim();
+  const lower = raw.toLowerCase();
+
+  const explicitBlock =
+    raw.match(/\bname\s+the\s+files?\s+(.+?)\s+with\s+the\s+stories\b/i)?.[1] ??
+    raw.match(/\bname\s+each\s+file\s+(.+?)\s+with\s+the\s+stories\b/i)?.[1] ??
+    raw.match(/\bnamed?\s+(.+?)\s+with\s+the\s+stories\b/i)?.[1] ??
+    "";
+
+  if (explicitBlock) {
+    return Array.from(
+      new Set(
+        explicitBlock
+          .split(/,|&|\band\b/gi)
+          .map((x) => normalizeStorySubjectName(x))
+          .map((x) => x.trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  if (/\bpokemon\b/.test(lower) && /\blegendary\b/.test(lower)) {
+    return ["mewtwo", "mew", "lugia", "ho-oh", "charizard"];
+  }
+
+  return [];
+}
+
+function buildStoryFileSpecs(args: {
+  text: string;
+  count: number;
+  ext: string;
+}) {
+  const subjects = extractRequestedStorySubjects(args.text);
+
+  if (subjects.length > 0) {
+    return subjects.slice(0, args.count).map((subject) => {
+      const leaf = slugifyStoryLeaf(subject) || "story";
+      return {
+        path: `${leaf}${args.ext}`,
+        subject,
+        kind: "named_story" as const,
+      };
+    });
+  }
+
+  return Array.from({ length: args.count }, (_, i) => {
     const n = String(i + 1).padStart(2, "0");
-    return `chapter-${n}${ext}`;
+    return {
+      path: `chapter-${n}${args.ext}`,
+      subject: null,
+      kind: "chapter_story" as const,
+    };
   });
 }
 
 function inferStoryTheme(text: string) {
   const t = String(text ?? "").trim();
+  const lower = t.toLowerCase();
+
+  if (/\bpokemon\b/.test(lower) && /\blegendary\b/.test(lower)) {
+    return "legendary Pokémon adventures";
+  }
+
   const m =
     t.match(/\babout\s+(.+?)(?:,|\.|$)/i) ||
     t.match(/\bstory\s+of\s+(.+?)(?:,|\.|$)/i);
@@ -1213,16 +1295,34 @@ const missingEffectivePaths = effectivePathsResolved.filter(
   (p) => !availableFiles.includes(p)
 );
 
-const shouldRunCreateMissingMode =
-  !isMultiFileCreateRequest &&
-  !shouldRunExistingMultiPageLinking &&
-  !continuityTargetResolved &&
-  executionModeResolved.mode !== "bootstrap" &&
-  missingEffectivePaths.length > 0 &&
+const isChapterFollowupRequest =
+  isChapterSequenceRequest(content) || isStoryContinuationRequest(content);
+
+const isAmbiguousCreateFollowup =
+  isAmbiguousCreateForMeFollowup(content);
+
+const shouldForceFollowupCreationPromotion =
+  executionModeResolved.mode === "advisory" &&
   (
-    executionModeResolved.mode === "incremental" ||
-    executionModeResolved.mode === "surgical" ||
-    executionModeResolved.mode === "rewrite"
+    isChapterFollowupRequest ||
+    (isAmbiguousCreateFollowup && /chapter|story|fantasy|eidolon/i.test(String(continuityReason ?? "")))
+  );
+
+const shouldRunCreateMissingMode =
+  !shouldRunExistingMultiPageLinking &&
+  executionModeResolved.mode !== "bootstrap" &&
+  (
+    (
+      !isMultiFileCreateRequest &&
+      !continuityTargetResolved &&
+      missingEffectivePaths.length > 0 &&
+      (
+        executionModeResolved.mode === "incremental" ||
+        executionModeResolved.mode === "surgical" ||
+        executionModeResolved.mode === "rewrite"
+      )
+    ) ||
+    shouldForceFollowupCreationPromotion
   );
 
 const isQuestionShaped =
@@ -1246,11 +1346,40 @@ if (isMultiFileCreateRequest && continuityTargetPath) {
   failureSurface = "continuity";
 }
 
+if (isChapterFollowupRequest && executionModeResolved.mode === "advisory") {
+  fallbackReason = "chapter_sequence_request_missed";
+  failureSurface = "routing";
+}
+
+if (
+  isAmbiguousCreateFollowup &&
+  executionModeResolved.mode === "advisory"
+) {
+  fallbackReason = "ambiguous_followup_should_resume_last_creation";
+  failureSurface = "continuity";
+}
+
+if (
+  isMultiFileCreateRequest &&
+  executionModeResolved.mode === "advisory" &&
+  !continuityTargetPath &&
+  fallbackReason === "none"
+) {
+  fallbackReason = "multi_file_followup_not_promoted";
+  failureSurface = "continuity";
+}
+
 console.log("[route_path_decision]", {
   mode: executionModeResolved.mode,
   createMissing: shouldRunCreateMissingMode,
   bootstrap: shouldAllowBootstrapForMode(executionModeResolved.mode),
   effectiveMentionedPaths: effectivePathsResolved,
+  continuityMatched,
+  continuityReason,
+  isMultiFileCreateRequest,
+  isChapterFollowupRequest,
+  isAmbiguousCreateFollowup,
+  shouldForceFollowupCreationPromotion,
 });
 
 
@@ -1427,6 +1556,157 @@ console.log("[existing_multi_page_linking]", {
   content,
 });
 
+if (isChapterFollowupRequest) {
+  console.log("[chapter_followup_create] handler active", {
+    repoId,
+    contentHead: String(content ?? "").slice(0, 160),
+  });
+
+  const chapterPaths = availableFiles.filter((p) =>
+    /^chapter[-_ ]?\d+\.(txt|md)$/i.test(String(p ?? "").trim())
+  );
+
+  const parsedChapters = chapterPaths
+    .map((path) => {
+      const match = String(path).match(/^chapter[-_ ]?(\d+)\.(txt|md)$/i);
+      if (!match) return null;
+
+      const n = Number(match[1]);
+      const ext = String(path).toLowerCase().endsWith(".md") ? ".md" : ".txt";
+
+      if (!Number.isFinite(n)) return null;
+      return { path, n, ext };
+    })
+    .filter(Boolean) as Array<{ path: string; n: number; ext: ".txt" | ".md" }>;
+
+  const highestChapter = parsedChapters.length > 0
+    ? Math.max(...parsedChapters.map((x) => x.n))
+    : 0;
+
+  const requestedChapterMatch =
+    String(content ?? "").toLowerCase().match(/\b(?:create|add)\s+(?:a\s+)?(\d+)(?:st|nd|rd|th)?\s+chapter\b/) ||
+    String(content ?? "").toLowerCase().match(/\bchapter\s+(\d+)\b/);
+
+  const requestedChapterNumber = requestedChapterMatch
+    ? Number(requestedChapterMatch[1])
+    : null;
+
+  const nextChapterNumber =
+    requestedChapterNumber && Number.isFinite(requestedChapterNumber) && requestedChapterNumber > 0
+      ? requestedChapterNumber
+      : highestChapter + 1;
+
+  const preferredExt =
+    parsedChapters.find((x) => x.n === highestChapter)?.ext ?? ".txt";
+
+  const targetPath = `chapter-${String(nextChapterNumber).padStart(2, "0")}${preferredExt}`;
+
+  console.log("[chapter_followup_create] resolved", {
+    chapterPaths,
+    highestChapter,
+    requestedChapterNumber,
+    nextChapterNumber,
+    targetPath,
+  });
+
+  if (availableFiles.includes(targetPath)) {
+    return new Response(
+      "[Observation]\nI checked the repository state.\n\n" +
+        `[Assessment]\n${targetPath} already exists, so a new sequel chapter was not staged.\n\n` +
+        "[Action]\nAsk for the next missing chapter or remove the existing file if you want it regenerated.",
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+        },
+      }
+    );
+  }
+
+  const chapterPrompt =
+    `${content}\n\n` +
+    `Create content for one sequel chapter in an existing story sequence.\n` +
+    `Rules:\n` +
+    `- Create exactly one new chapter file.\n` +
+    `- This is chapter ${nextChapterNumber}.\n` +
+    `- Continue naturally from the prior chapter sequence.\n` +
+    `- Keep continuity with earlier chapters.\n` +
+    `Formatting rules:\n` +
+    `- Write in paragraphs, not line-by-line.\n` +
+    `- Use a single blank line between paragraphs.\n` +
+    `- Avoid unnecessary line breaks.\n` +
+    `- Return ONLY the file contents.\n`;
+
+  const mime = preferredExt === ".md" ? "text/markdown" : "text/plain";
+
+  const generated = await generateNewFileContentSafe({
+    openai,
+    model: runtimePolicy.model,
+    userRequest: chapterPrompt,
+    path: targetPath,
+    mime,
+    maxOutputTokens: runtimePolicy.output.maxOutputTokens,
+  });
+
+  const proposal = await runTool(
+    supabase,
+    repoId,
+    user.id,
+    content,
+    "vault_propose_create",
+    {
+      path: targetPath,
+      content: generated,
+      mime,
+      meta: {
+        op: "create",
+        kind: "story_chapter_followup",
+        chapterNumber: nextChapterNumber,
+      },
+    }
+  );
+
+  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+    console.log("[chapter_followup_create] propose failed", {
+      repoId,
+      targetPath,
+      proposal,
+    });
+
+    return new Response(
+      "[Observation]\nThe requested sequel chapter could not be staged.\n\n" +
+        "[Assessment]\nThe chapter follow-up creation step failed before a proposal could be assembled.\n\n" +
+        "[Action]\nRetry the request.",
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+        },
+      }
+    );
+  }
+
+  proposedFileId = String((proposal as any).fileId ?? "");
+  turnOutcome = "proposal_created";
+  routeDecisionReason.push("chapter_followup_create");
+
+  const body =
+    `\n__PROPOSAL__:${JSON.stringify(proposal)}\n` +
+    "[Observation]\nRequired repository changes were staged.\n\n" +
+    `[Assessment]\nA sequel story chapter was prepared as ${targetPath}.\n\n` +
+    "[Action]\nA staged change is ready. Confirm to apply.";
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+    },
+  });
+}
+
 if (isMultiFileCreateRequest) {
   console.log("[multi_file_create] handler active", {
     repoId,
@@ -1435,29 +1715,27 @@ if (isMultiFileCreateRequest) {
 
   const fileCount = inferMultiFileStoryCount(content);
   const ext = inferStoryFileExtension(content);
-  const filePaths = buildStoryFilePaths(fileCount, ext);
+  const fileSpecs = buildStoryFileSpecs({
+    text: content,
+    count: fileCount,
+    ext,
+  });
   const storyTheme = inferStoryTheme(content);
+
+console.log("[multi_file_create specs]", {
+  repoId,
+  fileCount,
+  ext,
+  storyTheme,
+  fileSpecs,
+});
 
   const stagedProposals: any[] = [];
 
-  for (let i = 0; i < filePaths.length; i++) {
-    const chapterNumber = i + 1;
-    const path = filePaths[i];
-
-    const chapterPrompt =
-      `${content}\n\n` +
-      `Create content for a multi-file story set.\n` +
-      `Rules:\n` +
-      `- This is chapter ${chapterNumber} of ${fileCount}.\n` +
-      `- Theme/topic: ${storyTheme}\n` +
-      `- Each file must be unique.\n` +
-      `- The chapters must align as one continuous story.\n` +
-      `- Keep continuity with previous chapters implicitly.\n` +
-      `Formatting rules:\n` +
-      `- Write in paragraphs, not line-by-line.\n` +
-      `- Use a single blank line between paragraphs.\n` +
-      `- Avoid unnecessary line breaks.\n`+
-      `- Return ONLY the file contents.\n`;
+  for (let i = 0; i < fileSpecs.length; i++) {
+    const fileSpec = fileSpecs[i];
+    const storyNumber = i + 1;
+    const path = fileSpec.path;
 
     const mime =
       ext === ".html"
@@ -1466,10 +1744,69 @@ if (isMultiFileCreateRequest) {
           ? "text/markdown"
           : "text/plain";
 
+    const storyPrompt =
+      fileSpec.kind === "named_story"
+        ? `${content}\n\n` +
+          `Create one self-contained story file.\n` +
+          `Rules:\n` +
+          `- The story must focus on: ${fileSpec.subject}\n` +
+          `- The filename must match this subject: ${path}\n` +
+          `- This file must stand alone.\n` +
+          `- Do NOT write it as a chapter in a continuing series.\n` +
+          `- Do NOT reference previous or next chapters.\n` +
+          `- Keep the Pokémon/theme explicit and central.\n` +
+          `- Theme/topic: ${storyTheme}\n` +
+          `High-priority content rule:\n` +
+          `- This file content may be much longer than Vestaryn's normal chat replies.\n` +
+          `- Increase total story length without increasing sentence complexity.\n` +
+          `- Keep the writing simple, readable, and steady.\n` +
+          `Formatting rules:\n` +
+`- Target roughly 700 to 1100 words total.\n` +
+`- Use 8 to 12 paragraphs.\n` +
+`- Put each paragraph on its own line.\n` +
+`- Use a normal newline between paragraphs.\n` +
+`- Do NOT insert repeated empty blank lines.\n` +
+`- Most paragraphs should contain 2 to 3 sentences.\n` +
+`- Most sentences should be short to medium length.\n` +
+`- Target roughly 8 to 14 words per sentence.\n` +
+`- Hard cap: 18 words maximum for most sentences.\n` +
+`- Write as if the story will be read on a narrow e-reader screen.\n` +
+`- Keep paragraph shape visually narrow and easy to scan.\n` +
+`- Prefer adding a new paragraph over extending an already wide one.\n` +
+`- Avoid long flowing sentences, stacked clauses, and overly poetic phrasing.\n` +
+`- Create length by adding more paragraphs and more story beats, not by stretching sentences.\n` 
+        : `${content}\n\n` +
+          `Create content for a multi-file story set.\n` +
+          `Rules:\n` +
+          `- This is chapter ${storyNumber} of ${fileSpecs.length}.\n` +
+          `- Theme/topic: ${storyTheme}\n` +
+          `- Each file must be unique.\n` +
+          `- The chapters must align as one continuous story.\n` +
+          `- Keep continuity with previous chapters implicitly.\n` +
+          `High-priority content rule:\n` +
+          `- This file content may be much longer than Vestaryn's normal chat replies.\n` +
+          `- Increase total chapter length without increasing sentence complexity.\n` +
+          `- Keep the writing simple, readable, and steady.\n` +
+          `Formatting rules:\n` +
+`- Target roughly 700 to 1100 words total.\n` +
+`- Use 8 to 12 paragraphs.\n` +
+`- Put each paragraph on its own line.\n` +
+`- Use a normal newline between paragraphs.\n` +
+`- Do NOT insert repeated empty blank lines.\n` +
+`- Most paragraphs should contain 2 to 3 sentences.\n` +
+`- Most sentences should be short to medium length.\n` +
+`- Target roughly 8 to 14 words per sentence.\n` +
+`- Hard cap: 18 words maximum for most sentences.\n` +
+`- Write as if the story will be read on a narrow e-reader screen.\n` +
+`- Keep paragraph shape visually narrow and easy to scan.\n` +
+`- Prefer adding a new paragraph over extending an already wide one.\n` +
+`- Avoid long flowing sentences, stacked clauses, and overly poetic phrasing.\n` +
+`- Create length by adding more paragraphs and more story beats, not by stretching sentences.\n` 
+
     const generated = await generateNewFileContentSafe({
       openai,
       model: runtimePolicy.model,
-      userRequest: chapterPrompt,
+      userRequest: storyPrompt,
       path,
       mime,
       maxOutputTokens: runtimePolicy.output.maxOutputTokens,

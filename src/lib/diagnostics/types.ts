@@ -9,6 +9,10 @@ export type FallbackReason =
   | "explicit_path_overrode_advisory"
   | "short_followup_lost_target"
   | "short_followup_resumed_previous_task"
+  | "multi_file_followup_not_promoted"
+  | "followup_creation_intent_not_resumed"
+  | "chapter_sequence_request_missed"
+  | "ambiguous_followup_should_resume_last_creation"
   | "model_rewrite_used_after_fastpath_miss"
   | "python_dependency_missing"
   | "python_install_failed";

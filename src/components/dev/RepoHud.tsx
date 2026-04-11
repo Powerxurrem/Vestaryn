@@ -108,7 +108,7 @@ function Sigil({
       </div>
 
       {/* tooltip */}
-      <div className="pointer-events-none absolute top-full mt-2 rounded-md border border-white/10 bg-black/70 px-2 py-1 text-[10px] uppercase tracking-wide text-white/70 opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 backdrop-blur-md">
+      <div className="pointer-events-none absolute top-full mt-2 rounded-md border border-white/10 bg-black/10 px-2 py-1 text-[10px] uppercase tracking-wide text-white/70 opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 backdrop-blur-md">
         Chamber Core
       </div>
     </button>
@@ -134,7 +134,9 @@ export function VestarynFrame({
   const [coreView, setCoreView] = useState<CoreView>("menu");
   const coreRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
-
+const [appMode, setAppMode] = useState<"engineering" | "artistic">("engineering");
+const [artisticMenu, setArtisticMenu] = useState<{ x: number; y: number } | null>(null);
+const [artisticPrompt, setArtisticPrompt] = useState("");
 async function copyRepoId() {
   try {
     await navigator.clipboard.writeText(repoId);
@@ -178,20 +180,86 @@ useEffect(() => {
 }, [coreOpen]);
 
   return (
-    <div className="relative z-[1000] w-full h-full flex flex-col min-w-0">
+    <div
+  className={[
+    "relative z-[1000] w-full h-full flex flex-col min-w-0 transition-colors duration-500",
+    appMode === "artistic"
+      ? "bg-transparent"
+      : "bg-transparent",
+  ].join(" ")}
+>
       {/* Top rail */}
-      <div className="relative z-[1000] h-12 shrink-0 px-3 flex items-center gap-3 border-b border-blue-400/35 relative overflow-hidden bg-black/35 backdrop-blur-md overflow-visible  mb-15">
+      <div
+        className={[
+  "relative z-[1000] shrink-0 px-3 flex items-center overflow-visible transition-all duration-500",
+  appMode === "artistic"
+  ? "h-35 mb-0 border-blue-400/20 bg-transparent backdrop-blur-none"
+  : "h-12 mb-15 border-blue-400/35 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.85),rgba(2,6,23,0.6),transparent)] backdrop-blur-md",
+].join(" ")}
+style={
+  appMode === "artistic"
+    ? {
+        background:
+          "linear-gradient(to right, rgba(4,8,16,0.98), rgba(8,14,26,0.90), rgba(4,8,16,0.98))",
+        boxShadow:
+          "inset 0 -1px 0 rgba(96,165,250,0.18), inset 0 -18px 40px rgba(20,28,48,0.22)",
+      }
+    : undefined
+}
+      >{appMode === "artistic" && (
+  <>
+  {/* 🔥 Custom bottom border glow */}
+<div className="pointer-events-none absolute bottom-0 left-0 w-full h-[11px]">
+  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-400/40 to-transparent blur-[100px]" />
+  <div className="absolute inset-0 bg-blue-400/10" />
+</div>
+{/* subtle top edge */}
+<div className="pointer-events-none absolute top-0 left-0 w-full h-[17px] bg-gradient-to-r from-transparent bg-blue-400/10 to-transparent blur-[20px]" />
+    {/* LEFT STREAK */}
+    <div className="pointer-events-none absolute left-0 top-0 h-full w-[120px] bg-gradient-to-r from-black/80 via-black/30 to-transparent" />
+
+    {/* RIGHT STREAK */}
+    <div className="pointer-events-none absolute right-0 top-0 h-full w-[120px] bg-gradient-to-l from-black/80 via-black/30 to-transparent" />
+  </>
+)}
         <RepoHud repoId={repoId} repoName={repoName} messageCount={messageCount} />
 
 {/* Center nav / Chamber Core */}
-<div className="mx-auto flex items-center gap-4">
+<div className="mx-auto flex items-center gap-3">
 
+<div className="inline-flex items-center rounded-xl border border-white/10 bg-white/5 p-1 backdrop-blur-md">
+  <button
+    type="button"
+    onClick={() => setAppMode("engineering")}
+    className={[
+      "px-3 py-1.5 text-xs rounded-lg transition",
+      appMode === "engineering"
+        ? "bg-white/10 text-white"
+        : "text-white/55 hover:text-white/85",
+    ].join(" ")}
+  >
+    Engineering
+  </button>
 
+  <button
+    type="button"
+    onClick={() => setAppMode("artistic")}
+    className={[
+      "px-3 py-1.5 text-xs rounded-lg transition",
+      appMode === "artistic"
+        ? "bg-blue-500/20 text-blue-100 border border-blue-400/30"
+        : "text-white/55 hover:text-white/85",
+    ].join(" ")}
+  >
+    Artistic
+  </button>
+</div>
 
   {/* Sigil + Chamber Core menu */}
   <div ref={coreRef} className="relative px-3">
-    <Sigil
-  active={coreOpen}
+    {appMode === "artistic" ? (
+  <button
+  type="button"
   onClick={() =>
     setCoreOpen((v) => {
       const next = !v;
@@ -199,7 +267,67 @@ useEffect(() => {
       return next;
     })
   }
+  className="relative flex items-center justify-center"
+>
+  <div className="relative flex items-center justify-center h-[200px] w-[180px] overflow-visible">
+
+  {/* 🔵 Aura glow - deepest layer */}
+  <div className="absolute -inset-6 z-0 rounded-full blur-3xl bg-blue-500/25 opacity-70 animate-pulse" />
+
+  {/* ✨ Cosmic particle layer - behind sigil */}
+  <div
+    className="absolute inset-0 z-[1] opacity-[0.05] pointer-events-none"
+    style={{
+      maskImage: "radial-gradient(circle at center, black 0%, black 42%, transparent 78%)",
+      WebkitMaskImage: "radial-gradient(circle at center, black 0%, black 42%, transparent 78%)",
+      backgroundImage: "radial-gradient(rgba(255,255,255,0.75) 1px, transparent 1.2px)",
+      backgroundSize: "18px 18px",
+    }}
+  />
+
+  {/* 🧠 Sigil */}
+  <img
+  src="/vestaryn_artistic.png"
+  alt="Vestaryn"
+  className="relative z-10 h-[180px] w-[200px] object-contain mix-blend-screen opacity-90 animate-[float_6s_ease-in-out_infinite]"
+  style={{
+    maskImage: `
+      radial-gradient(circle at center,
+        black 0%,
+        black 45%,
+        rgba(0,0,0,0.9) 55%,
+        rgba(0,0,0,0.6) 25%,
+        rgba(0,0,0,0.2) 75%,
+        transparent 90%
+      )
+    `,
+    WebkitMaskImage: `
+      radial-gradient(circle at center,
+        black 0%,
+        black 25%,
+        rgba(0,0,0,0.9) 55%,
+        rgba(0,0,0,0.6) 65%,
+        rgba(0,0,0,0.2) 75%,
+        transparent 30%
+      )
+    `,
+    filter: "drop-shadow(-30 -30 300px rgba(96,165,250,0.35)) saturate(1.15)",
+  }}
 />
+</div>
+</button>
+) : (
+  <Sigil
+    active={coreOpen}
+    onClick={() =>
+      setCoreOpen((v) => {
+        const next = !v;
+        if (!next) setCoreView("menu");
+        return next;
+      })
+    }
+  />
+)}
 
     {coreOpen && (
       <div className="absolute left-1/2 top-full z-50 mt-6 w-[760px] -translate-x-1/2 rounded-2xl border border-white/10 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.55)] backdrop-blur-md ring-1 ring-white/10 bg-black">
@@ -506,7 +634,110 @@ useEffect(() => {
       </div>
 
       {/* Body */}
-      <div className="flex-1 min-h-0 min-w-0">{children}</div>
+<div
+  className={[
+    "flex-1 min-h-0 min-w-0 transition-colors duration-500",
+    appMode === "artistic" ? "bg-transparent" : "bg-black/10",
+  ].join(" ")}
+>
+        {appMode === "engineering" ? (
+          children
+        ) : (
+          <div
+            className="relative h-full w-full overflow-hidden bg-[#f4f5f8] "
+            onContextMenu={(e) => {
+              e.preventDefault();
+
+              const rect = e.currentTarget.getBoundingClientRect();
+
+              setArtisticMenu({
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top,
+              });
+            }}
+            onClick={() => {
+              if (artisticMenu) setArtisticMenu(null);
+            }}
+          >
+
+
+{/* Bottom chamber bar */}
+<div className="pointer-events-none absolute bottom-0 left-0 z-[1] h-[40px] w-full">
+  <div className="absolute inset-0 bg-[linear-gradient(to_top,rgba(4,8,16,0.98),rgba(8,14,26,0.94),rgba(12,20,34,0.88))]" />
+  <div className="absolute top-0 left-0 h-px w-full bg-blue-400/22 shadow-[0_0_14px_rgba(96,165,250,0.18)]" />
+  <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(96,165,250,0.06),transparent_48%)]" />
+</div>
+
+            <div
+              className="absolute inset-0 transition-opacity duration-700"
+              style={{
+                backgroundImage: "url('/task_01kn9mmwgkefetfpb2k97syv2c_1775218904_img_1.webp')",
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+                opacity: 0.22,
+              }}
+            />
+
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.20),rgba(255,255,255,0.04)_35%,rgba(0,0,0,0.0)_70%)]" />
+            <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.10),rgba(255,255,255,0.03),rgba(255,255,255,0.08))]" />
+            <div className="pointer-events-none absolute inset-[0px] z-[0] rounded-[28px] shadow-[inset_0_0_80px_rgba(8,14,26,0.14),inset_0_0_160px_rgba(96,165,250,0.03)]" />
+
+            <div className="absolute left-1/2 top-1/2 h-[180vh] w-[180vw] -translate-x-1/2 -translate-y-1/2">
+              <div className="absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(0,0,0,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.18)_1px,transparent_1px)] [background-size:48px_48px]" />
+            </div>
+
+
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
+              Right-click anywhere on the canvas to summon Vestaryn
+            </div>
+
+            {artisticMenu ? (
+              <div
+                className="absolute z-[1200] w-[320px] rounded-2xl border border-black/10 bg-white/75 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
+                style={{
+  left: artisticMenu.x,
+  top: artisticMenu.y,
+  transform: "translate(8px, 8px)",
+}}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
+                    VESTARYN
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setArtisticMenu(null)}
+                    className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <textarea
+                  value={artisticPrompt}
+                  onChange={(e) => setArtisticPrompt(e.target.value)}
+                  placeholder="Shape the chamber..."
+                  className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
+                />
+
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="text-[11px] text-black/35">
+                    Spatial ideation surface
+                  </div>
+
+                  <button
+                    type="button"
+                    className="rounded-xl border border-blue-400/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-900 hover:bg-blue-500/15"
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
