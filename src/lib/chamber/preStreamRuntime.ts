@@ -222,16 +222,10 @@ export async function tryHandlePreStreamRepoOps(args: {
             });
 
             const proposal = await vault_propose_create(supabase, repoId, {
-              path: targetChapterPath,
-              content: newFileContent,
-              mime,
-              meta: {
-  op: "create",
-  kind: "story_chapter_followup",
-  sequence: "chapter",
-  chapterNumber: explicitChapterNo ?? inferredNext,
-}
-            });
+  path: targetChapterPath,
+  content: newFileContent,
+  mime,
+});
 
 
             

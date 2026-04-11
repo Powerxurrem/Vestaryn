@@ -170,3 +170,23 @@ html {
   50%  { transform: translateY(6px); }
   100% { transform: translateY(0px); }
 }
+
+@keyframes vestarynFlow {
+  0% {
+    transform: translateX(0%);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.6;
+  }
+  90% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: translateX(420%);
+    opacity: 0;
+  }
+}

@@ -196,6 +196,7 @@ useEffect(() => {
   ? "h-35 mb-0 border-blue-400/20 bg-transparent backdrop-blur-none"
   : "h-12 mb-15 border-blue-400/35 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.85),rgba(2,6,23,0.6),transparent)] backdrop-blur-md",
 ].join(" ")}
+
 style={
   appMode === "artistic"
     ? {
@@ -207,14 +208,18 @@ style={
     : undefined
 }
       >{appMode === "artistic" && (
-  <>
+      <>{appMode === "artistic" && (
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute inset-y-0 -left-1/3 w-1/3 bg-[linear-gradient(to_right,transparent,rgba(96,165,250,0.12),transparent)] blur-x3 animate-[vestarynFlow_7s_linear_infinite]" />
+      </div>
+    )}
   {/* 🔥 Custom bottom border glow */}
 <div className="pointer-events-none absolute bottom-0 left-0 w-full h-[11px]">
-  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-400/40 to-transparent blur-[100px]" />
-  <div className="absolute inset-0 bg-blue-400/10" />
+  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-400/40 to-transparent blur-[20px]" />
+  <div className="absolute inset-0 bg-black/20" />
 </div>
 {/* subtle top edge */}
-<div className="pointer-events-none absolute top-0 left-0 w-full h-[17px] bg-gradient-to-r from-transparent bg-blue-400/10 to-transparent blur-[20px]" />
+<div className="pointer-events-none absolute top-0 left-0 w-full h-[10px] bg-gradient-to-r from-transparent black/20 to-transparent blur-[20px]" />
     {/* LEFT STREAK */}
     <div className="pointer-events-none absolute left-0 top-0 h-full w-[120px] bg-gradient-to-r from-black/80 via-black/30 to-transparent" />
 
@@ -298,7 +303,7 @@ style={
         rgba(0,0,0,0.9) 55%,
         rgba(0,0,0,0.6) 25%,
         rgba(0,0,0,0.2) 75%,
-        transparent 90%
+        transparent 10%
       )
     `,
     WebkitMaskImage: `
@@ -308,10 +313,10 @@ style={
         rgba(0,0,0,0.9) 55%,
         rgba(0,0,0,0.6) 65%,
         rgba(0,0,0,0.2) 75%,
-        transparent 30%
+        transparent 20%
       )
     `,
-    filter: "drop-shadow(-30 -30 300px rgba(96,165,250,0.35)) saturate(1.15)",
+    filter: "drop-shadow(0 0 300px rgba(96,165,250,0.35)) saturate(1.15)",
   }}
 />
 </div>
