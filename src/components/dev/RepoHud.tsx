@@ -137,6 +137,10 @@ export function VestarynFrame({
 const [appMode, setAppMode] = useState<"engineering" | "artistic">("engineering");
 const [artisticMenu, setArtisticMenu] = useState<{ x: number; y: number } | null>(null);
 const [artisticPrompt, setArtisticPrompt] = useState("");
+const [artisticMessages, setArtisticMessages] = useState<
+  { role: "user" | "assistant"; content: string }[]
+>([]);
+
 async function copyRepoId() {
   try {
     await navigator.clipboard.writeText(repoId);
@@ -145,11 +149,110 @@ async function copyRepoId() {
   } catch {}
 }
 
+function cleanArtisticReply(text: string) {
+  const actionMatch = text.match(/\[Action\]\s*([\s\S]*)$/i);
+  if (actionMatch?.[1]?.trim()) {
+    return actionMatch[1].trim();
+  }
+
+  const observationMatch = text.match(/\[Observation\]\s*([\s\S]*?)(?:\n\[Assessment\]|\n\[Action\]|$)/i);
+  if (observationMatch?.[1]?.trim()) {
+    return observationMatch[1].trim();
+  }
+
+  return text
+    .replace(/\[(Observation|Assessment|Action)\]\s*/gi, "")
+    .trim();
+}
+
+
+
+const [artisticSending, setArtisticSending] = useState(false);
+const [artisticError, setArtisticError] = useState<string | null>(null);
+
 async function onLogout() {
   setCoreOpen(false);
   const supabase = supabaseBrowser();
   await supabase.auth.signOut();
   window.location.href = "/";
+}
+
+async function sendArtisticPrompt() {
+  const prompt = artisticPrompt.trim();
+  if (!prompt || artisticSending) return;
+
+  setArtisticSending(true);
+  setArtisticError(null);
+
+  try {
+    const res = await fetch(`/api/repo/${repoId}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        content:
+          `[Artistic Mode]\n` +
+          `Creative ideation request. Favor vivid, imaginative language in the response content.\n\n` +
+          prompt,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || `Request failed (${res.status})`);
+    }
+
+    const raw = await res.text();
+    console.log("[artistic send] raw response", raw);
+
+    let reply = "";
+    const trimmed = raw.trim();
+
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        const data = JSON.parse(trimmed);
+        console.log("[artistic send] parsed response", data);
+
+        reply =
+          typeof data?.assistant === "string"
+            ? data.assistant
+            : typeof data?.content === "string"
+            ? data.content
+            : typeof data?.message === "string"
+            ? data.message
+            : typeof data?.reply === "string"
+            ? data.reply
+            : typeof data?.text === "string"
+            ? data.text
+            : typeof data?.output_text === "string"
+            ? data.output_text
+            : typeof data?.raw === "string"
+            ? data.raw
+            : typeof data?.assistantText === "string"
+            ? data.assistantText
+            : "";
+      } catch {
+        reply = trimmed;
+      }
+    } else {
+      reply = trimmed;
+    }
+
+    const cleaned = cleanArtisticReply(reply || "Vestaryn returned no visible reply.");
+
+    setArtisticMessages((prev) => [
+      ...prev,
+      { role: "user", content: prompt },
+      { role: "assistant", content: cleaned },
+    ]);
+
+    setArtisticPrompt("");
+  } catch (err) {
+    setArtisticError(err instanceof Error ? err.message : "Failed to send prompt.");
+  } finally {
+    setArtisticSending(false);
+  }
 }
 
 useEffect(() => {
@@ -219,7 +322,7 @@ style={
   <div className="absolute inset-0 bg-black/20" />
 </div>
 {/* subtle top edge */}
-<div className="pointer-events-none absolute top-0 left-0 w-full h-[20px] bg-gradient-to-r from-transparent black/30 to-transparent blur-[10px]" />
+<div className="pointer-events-none absolute top-0 left-0 w-full h-[20px] bg-gradient-to-r from-transparent via-black/30 to-transparent blur-[10px]" />
     {/* LEFT STREAK */}
     <div className="pointer-events-none absolute left-0 top-0 h-full w-[120px] bg-gradient-to-r from-black/80 via-black/30 to-transparent" />
 
@@ -294,7 +397,7 @@ style={
   <img
   src="/vestaryn_artistic.png"
   alt="Vestaryn"
-  className="relative z-10 h-[180px] w-[200px] object-contain mix-blend-screen opacity-90 animate-[float_6s_ease-in-out_infinite]"
+  className="relative z-[2] h-[180px] w-[200px] object-contain mix-blend-screen opacity-90 animate-[float_6s_ease-in-out_infinite]"
   style={{
     maskImage: `
       radial-gradient(circle at center,
@@ -661,7 +764,12 @@ style={
               });
             }}
             onClick={() => {
-              if (artisticMenu) setArtisticMenu(null);
+              if (artisticMenu) {
+                setArtisticMenu(null);
+                setArtisticPrompt("");
+                setArtisticMessages([]);
+                setArtisticError(null);
+              }
             }}
           >
 
@@ -676,10 +784,10 @@ style={
             <div
               className="absolute inset-0 transition-opacity duration-700"
               style={{
-                backgroundImage: "url('/task_01kn9mmwgkefetfpb2k97syv2c_1775218904_img_1.webp')",
+                backgroundImage: "url('/vestaryn_cosmos.png')",
                 backgroundSize: "cover",
                 backgroundPosition: "center",
-                opacity: 0.22,
+                opacity: 1,
               }}
             />
 
@@ -712,19 +820,57 @@ style={
                   </div>
                   <button
                     type="button"
-                    onClick={() => setArtisticMenu(null)}
+                    onClick={() => {
+                      setArtisticMenu(null);
+                      setArtisticPrompt("");
+                      setArtisticMessages([]);
+                      setArtisticError(null);
+                    }}
                     className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
                   >
                     ✕
                   </button>
                 </div>
 
+{artisticMessages.length > 0 ? (
+  <div id="artistic-scroll" className="mb-3 max-h-[260px] overflow-auto space-y-2">
+    {artisticMessages.map((m, i) => (
+      <div
+        key={i}
+        className={[
+          "rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
+          m.role === "user"
+            ? "bg-black/5 text-black/70"
+            : "bg-white/70 text-black/80 border border-black/10",
+        ].join(" ")}
+      >
+        {m.content}
+      </div>
+    ))}
+  </div>
+) : null}
+
                 <textarea
                   value={artisticPrompt}
-                  onChange={(e) => setArtisticPrompt(e.target.value)}
+                  onChange={(e) => {
+                    setArtisticPrompt(e.target.value);
+                    if (artisticError) setArtisticError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void sendArtisticPrompt();
+                    }
+                  }}
                   placeholder="Shape the chamber..."
                   className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
                 />
+
+                {artisticError ? (
+                  <div className="mt-3 rounded-xl border border-rose-300/40 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">
+                    {artisticError}
+                  </div>
+                ) : null}
 
                 <div className="mt-3 flex items-center justify-between">
                   <div className="text-[11px] text-black/35">
@@ -733,9 +879,16 @@ style={
 
                   <button
                     type="button"
-                    className="rounded-xl border border-blue-400/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-900 hover:bg-blue-500/15"
+                    onClick={() => void sendArtisticPrompt()}
+                    disabled={artisticSending || !artisticPrompt.trim()}
+                    className={[
+                      "rounded-xl border px-3 py-2 text-xs transition",
+                      artisticSending || !artisticPrompt.trim()
+                        ? "border-black/10 bg-black/5 text-black/25 cursor-not-allowed"
+                        : "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
+                    ].join(" ")}
                   >
-                    Send
+                    {artisticSending ? "Sending..." : "Send"}
                   </button>
                 </div>
               </div>
@@ -893,15 +1046,7 @@ return (
       {/* Divider */}
       <div className="h-6 w-px bg-white/10" />
 
-      {/* Tier */}
-      <span className="text-[11px] rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-white/70 whitespace-nowrap">
-        {titleCase(tierDb)}
-      </span>
 
-      {/* Credits */}
-      <span className="text-[11px] rounded-md border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 text-amber-100/80 whitespace-nowrap">
-        {shownCredits}
-      </span>
 
             {/* Messages */}
       <span className="text-[11px] rounded-md border border-white/10 bg-white/5 px-2 py-0.5 text-white/70 whitespace-nowrap">

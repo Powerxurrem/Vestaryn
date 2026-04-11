@@ -222,12 +222,10 @@ export async function tryHandlePreStreamRepoOps(args: {
             });
 
             const proposal = await vault_propose_create(supabase, repoId, {
-  path: targetChapterPath,
-  content: newFileContent,
-  mime,
-});
-
-
+              path: targetChapterPath,
+              content: newFileContent,
+              mime,
+            });
             
             const proposals = [proposal].filter(Boolean);
 
