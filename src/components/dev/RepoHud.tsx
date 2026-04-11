@@ -140,6 +140,13 @@ const [artisticPrompt, setArtisticPrompt] = useState("");
 const [artisticMessages, setArtisticMessages] = useState<
   { role: "user" | "assistant"; content: string }[]
 >([]);
+const [artisticCards, setArtisticCards] = useState<
+  { id: string; x: number; y: number; w: number; h: number; title: string }[]
+>([]);
+
+const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
+const [isDraggingCard, setIsDraggingCard] = useState(false);
 
 async function copyRepoId() {
   try {
@@ -165,10 +172,53 @@ function cleanArtisticReply(text: string) {
     .trim();
 }
 
+function clampRect(
+  start: { x: number; y: number },
+  end: { x: number; y: number }
+) {
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  const w = Math.abs(end.x - start.x);
+  const h = Math.abs(end.y - start.y);
 
+  return { x, y, w, h };
+}
+
+function makeCardId() {
+  return `card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 const [artisticSending, setArtisticSending] = useState(false);
 const [artisticError, setArtisticError] = useState<string | null>(null);
+const [isPanning, setIsPanning] = useState(false);
+const panStartRef = useRef<{ x: number; y: number } | null>(null);
+const panOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+const worldRef = useRef<HTMLDivElement | null>(null);
+
+useEffect(() => {
+  function onKeyDown(e: KeyboardEvent) {
+    if (e.code === "Space") {
+      e.preventDefault(); // prevents page scroll
+      setIsPanning(true);
+    }
+  }
+
+  function onKeyUp(e: KeyboardEvent) {
+  if (e.code === "Space") {
+    setIsPanning(false);
+    panStartRef.current = null;
+    document.body.style.cursor = "";
+  }
+}
+
+  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
+
+  return () => {
+    window.removeEventListener("keydown", onKeyDown);
+    window.removeEventListener("keyup", onKeyUp);
+  };
+}, []);
 
 async function onLogout() {
   setCoreOpen(false);
@@ -296,8 +346,8 @@ useEffect(() => {
         className={[
   "relative z-[1000] shrink-0 px-3 flex items-center overflow-visible transition-all duration-500",
   appMode === "artistic"
-  ? "h-33 mb-0 border-blue-400/20 bg-transparent backdrop-blur-none"
-  : "h-12 mb-15 border-blue-400/35 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.85),rgba(2,6,23,0.6),transparent)] backdrop-blur-md",
+  ? "h-[132px] mb-0 border-blue-400/20 bg-transparent backdrop-blur-none"
+  : "h-[132px] mb-0 border-blue-400/35 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.85),rgba(2,6,23,0.6),transparent)] backdrop-blur-md",
 ].join(" ")}
 
 style={
@@ -311,23 +361,23 @@ style={
     : undefined
 }
       >{appMode === "artistic" && (
-      <>{appMode === "artistic" && (
+      <>
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute inset-y-0 -left-1/3 w-1/3 bg-[linear-gradient(to_right,transparent,rgba(96,165,250,0.10),transparent)] blur-x1 animate-[vestarynFlow_7s_linear_infinite]" />
+        <div className="absolute inset-y-0 -left-1/3 w-1/3 bg-[linear-gradient(to_right,transparent,rgba(96,165,250,0.10),transparent)] blur-xl animate-[vestarynFlow_7s_linear_infinite]" />
       </div>
-    )}
+    
   {/* 🔥 Custom bottom border glow */}
 <div className="pointer-events-none absolute bottom-0 left-0 w-full h-[11px]">
   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-400/40 to-transparent blur-[20px]" />
   <div className="absolute inset-0 bg-black/20" />
 </div>
 {/* subtle top edge */}
-<div className="pointer-events-none absolute top-0 left-0 w-full h-[20px] bg-gradient-to-r from-transparent via-black/30 to-transparent blur-[10px]" />
+<div className="pointer-events-none absolute top-0 left-0 w-full h-[30px] bg-gradient-to-r from-transparent via-black/80 to-transparent blur-[10px]" />
     {/* LEFT STREAK */}
-    <div className="pointer-events-none absolute left-0 top-0 h-full w-[120px] bg-gradient-to-r from-black/80 via-black/30 to-transparent" />
+    <div className="pointer-events-none absolute left-0 top-0 h-full w-[120px] bg-gradient-to-r from-black/80 via-black/80 to-transparent" />
 
     {/* RIGHT STREAK */}
-    <div className="pointer-events-none absolute right-0 top-0 h-full w-[120px] bg-gradient-to-l from-black/80 via-black/30 to-transparent" />
+    <div className="pointer-events-none absolute right-0 top-0 h-full w-[120px] bg-gradient-to-l from-black/80 via-black/80 to-transparent" />
   </>
 )}
         <RepoHud repoId={repoId} repoName={repoName} messageCount={messageCount} />
@@ -737,164 +787,315 @@ style={
 
 </div>
 
-        {/* Right slot */}
-        <div className="ml-auto flex items-center gap-2">{right}</div>
-      </div>
-
-      {/* Body */}
-<div
-  className={[
-    "flex-1 min-h-0 min-w-0 transition-colors duration-500",
-    appMode === "artistic" ? "bg-transparent" : "bg-black/10",
-  ].join(" ")}
->
-        {appMode === "engineering" ? (
-          children
-        ) : (
-          <div
-            className="relative h-full w-full overflow-hidden bg-[#f4f5f8] "
-            onContextMenu={(e) => {
-              e.preventDefault();
-
-              const rect = e.currentTarget.getBoundingClientRect();
-
-              setArtisticMenu({
-                x: e.clientX - rect.left,
-                y: e.clientY - rect.top,
-              });
-            }}
-            onClick={() => {
-              if (artisticMenu) {
-                setArtisticMenu(null);
-                setArtisticPrompt("");
-                setArtisticMessages([]);
-                setArtisticError(null);
-              }
-            }}
-          >
-
-
-{/* Bottom chamber bar */}
-<div className="pointer-events-none absolute bottom-0 left-0 z-[1] h-[40px] w-full">
-  <div className="absolute inset-0 bg-[linear-gradient(to_top,rgba(4,8,16,0.98),rgba(8,14,26,0.94),rgba(12,20,34,0.88))]" />
-  <div className="absolute top-0 left-0 h-px w-full bg-blue-400/22 shadow-[0_0_14px_rgba(96,165,250,0.18)]" />
-  <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(96,165,250,0.06),transparent_48%)]" />
-</div>
-
-            <div
-              className="absolute inset-0 transition-opacity duration-700"
-              style={{
-                backgroundImage: "url('/vestaryn_cosmos.png')",
-                backgroundSize: "cover",
-                backgroundPosition: "center",
-                opacity: 1,
-              }}
-            />
-
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.20),rgba(255,255,255,0.04)_35%,rgba(0,0,0,0.0)_70%)]" />
-            <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.10),rgba(255,255,255,0.03),rgba(255,255,255,0.08))]" />
-            <div className="pointer-events-none absolute inset-[0px] z-[0] rounded-[28px] shadow-[inset_0_0_80px_rgba(8,14,26,0.14),inset_0_0_160px_rgba(96,165,250,0.03)]" />
-
-            <div className="absolute left-1/2 top-1/2 h-[180vh] w-[180vw] -translate-x-1/2 -translate-y-1/2">
-              <div className="absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(0,0,0,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.18)_1px,transparent_1px)] [background-size:48px_48px]" />
-            </div>
-
-
-            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
-              Right-click anywhere on the canvas to summon Vestaryn
-            </div>
-
-            {artisticMenu ? (
-              <div
-                className="absolute z-[1200] w-[320px] rounded-2xl border border-black/10 bg-white/75 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
-                style={{
-  left: artisticMenu.x,
-  top: artisticMenu.y,
-  transform: "translate(8px, 8px)",
-}}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
-                    VESTARYN
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setArtisticMenu(null);
-                      setArtisticPrompt("");
-                      setArtisticMessages([]);
-                      setArtisticError(null);
-                    }}
-                    className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
-                  >
-                    ✕
-                  </button>
-                </div>
-
-{artisticMessages.length > 0 ? (
-  <div id="artistic-scroll" className="mb-3 max-h-[260px] overflow-auto space-y-2">
-    {artisticMessages.map((m, i) => (
-      <div
-        key={i}
-        className={[
-          "rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
-          m.role === "user"
-            ? "bg-black/5 text-black/70"
-            : "bg-white/70 text-black/80 border border-black/10",
-        ].join(" ")}
-      >
-        {m.content}
-      </div>
-    ))}
-  </div>
-) : null}
-
-                <textarea
-                  value={artisticPrompt}
-                  onChange={(e) => {
-                    setArtisticPrompt(e.target.value);
-                    if (artisticError) setArtisticError(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void sendArtisticPrompt();
-                    }
-                  }}
-                  placeholder="Shape the chamber..."
-                  className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
-                />
-
-                {artisticError ? (
-                  <div className="mt-3 rounded-xl border border-rose-300/40 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">
-                    {artisticError}
-                  </div>
-                ) : null}
-
-                <div className="mt-3 flex items-center justify-between">
-                  <div className="text-[11px] text-black/35">
-                    Spatial ideation surface
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => void sendArtisticPrompt()}
-                    disabled={artisticSending || !artisticPrompt.trim()}
-                    className={[
-                      "rounded-xl border px-3 py-2 text-xs transition",
-                      artisticSending || !artisticPrompt.trim()
-                        ? "border-black/10 bg-black/5 text-black/25 cursor-not-allowed"
-                        : "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
-                    ].join(" ")}
-                  >
-                    {artisticSending ? "Sending..." : "Send"}
-                  </button>
-                </div>
-              </div>
-            ) : null}
+            {/* Right slot */}
+            <div className="ml-auto flex items-center gap-2">{right}</div>
           </div>
-        )}
+
+          {/* Body */}
+    <div
+      className={[
+        "flex-1 min-h-0 min-w-0 transition-colors duration-500",
+        appMode === "artistic" ? "bg-transparent" : "bg-black/10",
+      ].join(" ")}
+    >
+
+{appMode === "engineering" ? (
+  children
+) : (
+  <div
+    className={[
+      "relative h-full w-full overflow-hidden bg-[#f4f5f8]",
+      isPanning ? "cursor-grab" : "",
+    ].join(" ")}
+    onPointerDown={(e) => {
+      if (isPanning) {
+        panStartRef.current = { x: e.clientX, y: e.clientY };
+        return;
+      }
+      if (e.button !== 0) return;
+      if (artisticMenu) return;
+
+      const target = e.target as HTMLElement;
+      if (target.closest("[data-artistic-card]")) return;
+      if (target.closest("[data-artistic-popup]")) return;
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      setDragStart({ x, y });
+      setDragCurrent({ x, y });
+      setIsDraggingCard(true);
+    }}
+    onPointerMove={(e) => {
+      if (isPanning && panStartRef.current) {
+        const start = panStartRef.current;
+
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+
+        panOffsetRef.current.x += dx;
+        panOffsetRef.current.y += dy;
+
+        panStartRef.current = { x: e.clientX, y: e.clientY };
+
+        if (worldRef.current) {
+          worldRef.current.style.transform = `translate(calc(-50% + ${panOffsetRef.current.x}px), calc(-50% + ${panOffsetRef.current.y}px))`;
+        }
+
+        document.body.style.cursor = "grabbing";
+        return;
+      }
+
+      if (!isDraggingCard || !dragStart) return;
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      setDragCurrent({ x, y });
+    }}
+    onPointerUp={() => {
+      if (isPanning) {
+        panStartRef.current = null;
+        document.body.style.cursor = "";
+        return;
+      }
+
+      if (!isDraggingCard || !dragStart || !dragCurrent) {
+        setIsDraggingCard(false);
+        setDragStart(null);
+        setDragCurrent(null);
+        return;
+      }
+
+      const rect = clampRect(dragStart, dragCurrent);
+
+      if (rect.w >= 80 && rect.h >= 60) {
+        setArtisticCards((prev) => [
+          ...prev,
+          {
+            id: makeCardId(),
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+            title: "Untitled card",
+          },
+        ]);
+      }
+
+      setIsDraggingCard(false);
+      setDragStart(null);
+      setDragCurrent(null);
+    }}
+    onPointerLeave={() => {
+      document.body.style.cursor = "";
+      if (!isDraggingCard) return;
+      setIsDraggingCard(false);
+      setDragStart(null);
+      setDragCurrent(null);
+    }}
+    onContextMenu={(e) => {
+      e.preventDefault();
+
+      const rect = e.currentTarget.getBoundingClientRect();
+
+      setArtisticMenu({
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      });
+    }}
+    onClick={() => {
+      if (artisticMenu) {
+        setArtisticMenu(null);
+        setArtisticPrompt("");
+        setArtisticMessages([]);
+        setArtisticError(null);
+      }
+    }}
+  >
+    <div
+      ref={worldRef}
+      className="absolute left-1/2 top-1/2"
+      style={{
+        width: "260vw",
+        height: "220vh",
+        transform: "translate(-50%, -50%)",
+      }}
+    >
+      {/* Bottom chamber bar */}
+      <div className="pointer-events-none absolute bottom-0 left-0 z-[1] h-[40px] w-full">
+        <div className="absolute inset-0 bg-[linear-gradient(to_top,rgba(4,8,16,0.98),rgba(8,14,26,0.94),rgba(12,20,34,0.88))]" />
+        <div className="absolute top-0 left-0 h-px w-full bg-blue-400/22 shadow-[0_0_14px_rgba(96,165,250,0.18)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(96,165,250,0.06),transparent_48%)]" />
+      </div>
+
+      <div
+        className="absolute inset-0 transition-opacity duration-700"
+        style={{
+          backgroundImage: "url('/vestaryn_cosmos.png')",
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          opacity: 1,
+        }}
+      />
+
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.20),rgba(255,255,255,0.04)_35%,rgba(0,0,0,0.0)_70%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.10),rgba(255,255,255,0.03),rgba(255,255,255,0.08))]" />
+      <div className="pointer-events-none absolute inset-[0px] z-[0] rounded-[28px] shadow-[inset_0_0_80px_rgba(8,14,26,0.14),inset_0_0_160px_rgba(96,165,250,0.03)]" />
+
+      <div className="absolute left-1/2 top-1/2 h-[180vh] w-[180vw] -translate-x-1/2 -translate-y-1/2">
+        <div className="absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(0,0,0,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.18)_1px,transparent_1px)] [background-size:48px_48px]" />
+      </div>
+
+      {isDraggingCard && dragStart && dragCurrent ? (() => {
+        const rect = clampRect(dragStart, dragCurrent);
+
+        return (
+          <div
+            className="pointer-events-none absolute z-[900] rounded-2xl border border-blue-400/50 bg-blue-500/10 shadow-[0_0_24px_rgba(96,165,250,0.18)]"
+            style={{
+              left: rect.x,
+              top: rect.y,
+              width: rect.w,
+              height: rect.h,
+            }}
+          />
+        );
+      })() : null}
+
+      {artisticCards.map((card) => (
+        <div
+          key={card.id}
+          data-artistic-card
+          className="absolute z-[850] overflow-hidden rounded-2xl border border-black/10 bg-white/70 shadow-[0_18px_50px_rgba(0,0,0,0.16)] backdrop-blur-xl"
+          style={{
+            left: card.x,
+            top: card.y,
+            width: card.w,
+            height: card.h,
+          }}
+        >
+          <div className="flex items-center justify-between border-b border-black/8 px-3 py-2">
+            <div className="text-[11px] font-medium tracking-[0.16em] text-black/45">
+              {card.title}
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setArtisticCards((prev) => prev.filter((c) => c.id !== card.id));
+              }}
+              className="rounded-md px-2 py-1 text-[11px] text-black/35 hover:bg-black/5 hover:text-black/65"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="p-3 text-sm text-black/50">
+            Floating canvas card
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <div className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
+      Right-click anywhere on the canvas to summon Vestaryn
+    </div>
+
+    {artisticMenu ? (
+      <div
+        data-artistic-popup
+        className="absolute z-[1200] w-[320px] rounded-2xl border border-black/10 bg-white/75 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
+        style={{
+          left: artisticMenu.x,
+          top: artisticMenu.y,
+          transform: "translate(8px, 8px)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
+            VESTARYN
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setArtisticMenu(null);
+              setArtisticPrompt("");
+              setArtisticMessages([]);
+              setArtisticError(null);
+            }}
+            className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
+          >
+            ✕
+          </button>
+        </div>
+
+        {artisticMessages.length > 0 ? (
+          <div id="artistic-scroll" className="mb-3 max-h-[260px] overflow-auto space-y-2">
+            {artisticMessages.map((m, i) => (
+              <div
+                key={i}
+                className={[
+                  "rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
+                  m.role === "user"
+                    ? "bg-black/5 text-black/70"
+                    : "bg-white/70 text-black/80 border border-black/10",
+                ].join(" ")}
+              >
+                {m.content}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <textarea
+          value={artisticPrompt}
+          onChange={(e) => {
+            setArtisticPrompt(e.target.value);
+            if (artisticError) setArtisticError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void sendArtisticPrompt();
+            }
+          }}
+          placeholder="Shape the chamber..."
+          className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
+        />
+
+        {artisticError ? (
+          <div className="mt-3 rounded-xl border border-rose-300/40 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">
+            {artisticError}
+          </div>
+        ) : null}
+
+        <div className="mt-3 flex items-center justify-between">
+          <div className="text-[11px] text-black/35">
+            Spatial ideation surface
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void sendArtisticPrompt()}
+            disabled={artisticSending || !artisticPrompt.trim()}
+            className={[
+              "rounded-xl border px-3 py-2 text-xs transition",
+              artisticSending || !artisticPrompt.trim()
+                ? "border-black/10 bg-black/5 text-black/25 cursor-not-allowed"
+                : "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
+            ].join(" ")}
+          >
+            {artisticSending ? "Sending..." : "Send"}
+          </button>
+        </div>
+      </div>
+    ) : null}
+  </div>
+)} 
       </div>
     </div>
   );
