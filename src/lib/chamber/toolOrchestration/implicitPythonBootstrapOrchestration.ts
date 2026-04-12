@@ -1,6 +1,10 @@
 import OpenAI from "openai";
 import { inferTextMimeFromPath } from "@/lib/vault/utils";
-import { generateNewFileContent } from "@/lib/chamber/generation";
+import {
+  generateNewFileContent,
+  buildRequirementsTxtContentFromPython,
+  mergeRequirementsTxt,
+} from "@/lib/chamber/generation";
 import { runTool } from "@/lib/vault/toolRuntime";
 import { fileExistsByPath, resolveFileIdByPathOrName } from "@/lib/vault/tools";
 
@@ -42,6 +46,88 @@ function isExplicitPythonScriptFollowup(text: string) {
       /\bscript\b/.test(t)
     )
   );
+}
+
+async function stageBootstrapPythonRequirements(args: {
+  supabase: any;
+  repoId: string;
+  userId: string;
+  userMessage: string;
+  pythonContent: string;
+}) {
+  const { supabase, repoId, userId, userMessage, pythonContent } = args;
+
+  const requirementsPath = "requirements.txt";
+  const generatedRequirements = buildRequirementsTxtContentFromPython(pythonContent);
+
+  const existingRequirementsId = await resolveFileIdByPathOrName(
+    supabase,
+    repoId,
+    requirementsPath
+  );
+
+  if (!existingRequirementsId) {
+    const proposal = await runTool(
+      supabase,
+      repoId,
+      userId,
+      userMessage,
+      "vault_propose_create",
+      {
+        path: requirementsPath,
+        content: generatedRequirements,
+        mime: "text/plain",
+      }
+    );
+
+    if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+      throw new Error("bootstrap requirements create proposal failed");
+    }
+
+    return proposal;
+  }
+
+  const existingRequirements = await runTool(
+    supabase,
+    repoId,
+    userId,
+    userMessage,
+    "vault_read_text",
+    {
+      fileRef: existingRequirementsId,
+    }
+  );
+
+  if (!existingRequirements || typeof existingRequirements !== "object" || "error" in existingRequirements) {
+    throw new Error("bootstrap requirements read failed");
+  }
+
+  const mergedRequirements = mergeRequirementsTxt(
+    String((existingRequirements as any)?.content ?? ""),
+    generatedRequirements
+  );
+
+  const proposal = await runTool(
+    supabase,
+    repoId,
+    userId,
+    userMessage,
+    "vault_propose_write",
+    {
+      fileId: existingRequirementsId,
+      content: mergedRequirements,
+    }
+  );
+
+  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+    throw new Error("bootstrap requirements write proposal failed");
+  }
+
+  if ((proposal as any).noop === true) {
+    return null;
+  }
+
+  return proposal;
 }
 
 export async function tryHandleImplicitPythonBootstrapOrchestration({
@@ -133,13 +219,14 @@ export async function tryHandleImplicitPythonBootstrapOrchestration({
     });
   }
 
-let proposal;
+const stagedProposals: any[] = [];
+
+let scriptProposal: any;
 
 const exists = await fileExistsByPath(supabase, repoId, createPath);
 
 if (!exists) {
-  // 🟢 create new file
-  proposal = await runTool(
+  scriptProposal = await runTool(
     supabase,
     repoId,
     userId,
@@ -152,7 +239,6 @@ if (!exists) {
     }
   );
 } else {
-  // 🔥 overwrite existing file
   const fileId = await resolveFileIdByPathOrName(
     supabase,
     repoId,
@@ -163,7 +249,7 @@ if (!exists) {
     throw new Error(`Failed to resolve fileId for ${createPath}`);
   }
 
-  proposal = await runTool(
+  scriptProposal = await runTool(
     supabase,
     repoId,
     userId,
@@ -176,32 +262,53 @@ if (!exists) {
   );
 }
 
-  console.log("[implicit_python_bootstrap] proposal result", {
+console.log("[implicit_python_bootstrap] proposal result", {
+  repoId,
+  createPath,
+  proposalType: typeof scriptProposal,
+  isObject: !!scriptProposal && typeof scriptProposal === "object",
+  hasError: !!scriptProposal && typeof scriptProposal === "object" && "error" in scriptProposal,
+  keys:
+    scriptProposal && typeof scriptProposal === "object"
+      ? Object.keys(scriptProposal as Record<string, unknown>)
+      : [],
+});
+
+if (!scriptProposal || typeof scriptProposal !== "object" || "error" in scriptProposal) {
+  console.log("[implicit_python_bootstrap] proposal invalid -> returning null", {
     repoId,
     createPath,
-    proposalType: typeof proposal,
-    isObject: !!proposal && typeof proposal === "object",
-    hasError: !!proposal && typeof proposal === "object" && "error" in proposal,
-    keys:
-      proposal && typeof proposal === "object"
-        ? Object.keys(proposal as Record<string, unknown>)
-        : [],
   });
+  return null;
+}
 
-  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
-    console.log("[implicit_python_bootstrap] proposal invalid -> returning null", {
-      repoId,
-      createPath,
-    });
-    return null;
-  }
+stagedProposals.push(scriptProposal);
 
-  const visible =
-    "[Observation]\nRequired repository changes were staged.\n\n" +
-    "[Assessment]\nA new Python workbook generator was prepared for the empty repository.\n\n" +
-    "[Action]\nA staged change is ready. Confirm to apply.";
+const requirementsProposal = await stageBootstrapPythonRequirements({
+  supabase,
+  repoId,
+  userId,
+  userMessage: content,
+  pythonContent: newContent,
+});
 
-  const body = `${visible}\n\n__PROPOSAL__:${JSON.stringify(proposal)}\n`;
+if (
+  requirementsProposal &&
+  typeof requirementsProposal === "object" &&
+  !("error" in requirementsProposal)
+) {
+  stagedProposals.push(requirementsProposal);
+}
+
+const visible =
+  "[Observation]\nRequired repository changes were staged.\n\n" +
+  "[Assessment]\nA new Python workbook generator was prepared together with its dependency contract.\n\n" +
+  "[Action]\nA staged change is ready. Confirm to apply.";
+
+const body =
+  stagedProposals.length === 1
+    ? `${visible}\n\n__PROPOSAL__:${JSON.stringify(stagedProposals[0])}\n`
+    : `${visible}\n\n__PROPOSAL_SET__:${JSON.stringify({ proposals: stagedProposals })}\n`;
 
   console.log("[implicit_python_bootstrap] returning response", {
     repoId,

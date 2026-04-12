@@ -97,6 +97,7 @@ const RepoVault = forwardRef<RepoVaultHandle, {
   const [uploading, setUploading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [executingFileId, setExecutingFileId] = useState<string | null>(null);
 
   // Portals must only render after mount (client-only)
   const [mounted, setMounted] = useState(false);
@@ -328,7 +329,11 @@ async function executeAndDownloadFile(f: RepoFile) {
     return;
   }
 
+  if (executingFileId) return;
+
   setError(null);
+  console.log("[RepoVault] set executing", f.id);
+  setExecutingFileId(f.id);
 
   try {
     const r = await fetch(
@@ -377,6 +382,9 @@ async function executeAndDownloadFile(f: RepoFile) {
   } catch (e: any) {
     console.error("[RepoVault] executeAndDownloadFile failed", e);
     setError(e?.message ?? "Execute & Download failed");
+  } finally {
+    console.log("[RepoVault] clear executing", f.id);
+    setExecutingFileId(null);
   }
 }
 
@@ -629,13 +637,15 @@ async function handleCopyFile(file: { id: string; path: string; name?: string })
 {prettyFiles.map((f) => {
   const st = fileStatusById?.[f.id];
   const status = st?.status;
-
+  const isExecuting = executingFileId === f.id;
+  
   return (
     <li key={f.id}>
       <div className="flex items-stretch gap-1">
         <button
           className={[
-            "flex-1 text-left px-2 py-2 rounded-md",
+            "flex-1 text-left px-2 py-2 rounded-md transition-opacity",
+            isExecuting ? "opacity-80" : "",
             "hover:bg-white/10",
             selectedId === f.id ? "bg-white/12" : "bg-transparent",
           ].join(" ")}
@@ -668,6 +678,12 @@ async function handleCopyFile(file: { id: string; path: string; name?: string })
   />
 
   <div className="text-sm text-white truncate flex-1">{f.path}</div>
+{isExecuting ? (
+  <span className="shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] border border-blue-400/25 bg-blue-500/10 text-blue-200">
+    <span className="h-2.5 w-2.5 rounded-full border border-blue-300 border-t-transparent animate-spin" />
+    RUNNING
+  </span>
+) : null}
 
   {status ? (
     <span
@@ -695,8 +711,9 @@ async function handleCopyFile(file: { id: string; path: string; name?: string })
 
         {/* Fallback menu button (works everywhere) */}
         <button
-          className="px-2 rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70"
-          title="Actions"
+          className="px-2 rounded-md bg-white/5 border border-white/10 hover:bg-white/10 text-white/70 disabled:opacity-40 disabled:cursor-not-allowed"
+          title={isExecuting ? "Execution in progress" : "Actions"}
+          disabled={isExecuting}
           onClick={(e) => {
             e.stopPropagation();
             const rect = e.currentTarget.getBoundingClientRect();
@@ -779,17 +796,19 @@ async function handleCopyFile(file: { id: string; path: string; name?: string })
                 </button>
               );
             })()}
-{isExecutableArtifactFile(menu.file.path) && (
-  <button
-    className="w-full text-left px-3 py-2 text-sm text-white/80 hover:bg-white/10"
-    onClick={async () => {
-      await executeAndDownloadFile(menu.file!);
-      setMenu({ open: false, x: 0, y: 0, file: null });
-    }}
-  >
-    Execute & Download
-  </button>
-)}
+          {isExecutableArtifactFile(menu.file.path) && (
+            <button
+              className="w-full text-left px-3 py-2 text-sm text-white/80 hover:bg-white/10 disabled:text-white/30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              disabled={executingFileId === menu.file.id}
+              onClick={async () => {
+                const currentFile = menu.file!;
+                setMenu({ open: false, x: 0, y: 0, file: null });
+                await executeAndDownloadFile(currentFile);
+              }}
+            >
+              {executingFileId === menu.file.id ? "Running..." : "Execute & Download"}
+            </button>
+          )}
             <div className="h-px bg-white/10" />
 
             <button

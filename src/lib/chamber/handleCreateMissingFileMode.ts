@@ -1,5 +1,9 @@
 import OpenAI from "openai";
-import { generateNewFileContent } from "@/lib/chamber/generation";
+import {
+  generateNewFileContent,
+  buildRequirementsTxtContentFromPython,
+  mergeRequirementsTxt,
+} from "@/lib/chamber/generation";
 import {
   resolveCreateMissingTargetPath,
 } from "@/lib/chamber/intent";
@@ -180,6 +184,84 @@ async function generateNewFileContentWithRetry(args: {
       maxOutputTokens: Math.max(maxOutputTokens ?? 10000, 10000),
     });
   }
+}
+
+async function stagePythonRequirementsProposal(args: {
+  supabase: any;
+  repoId: string;
+  userId: string;
+  userMessage: string;
+  pythonPath: string;
+  pythonContent: string;
+}) {
+  const { supabase, repoId, userId, userMessage, pythonPath, pythonContent } = args;
+
+  if (!/\.py$/i.test(String(pythonPath ?? "").trim())) {
+    return null;
+  }
+
+  const requirementsPath = "requirements.txt";
+  const generatedRequirements = buildRequirementsTxtContentFromPython(pythonContent);
+
+  const existingRequirementsId = await resolveFileIdByPathOrName(
+    supabase,
+    repoId,
+    requirementsPath
+  );
+
+  if (!existingRequirementsId) {
+    const proposal = await runTool(
+      supabase,
+      repoId,
+      userId,
+      userMessage,
+      "vault_propose_create",
+      {
+        path: requirementsPath,
+        content: generatedRequirements,
+        mime: "text/plain",
+      }
+    );
+
+    if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+      throw new Error("requirements create proposal failed");
+    }
+
+    return proposal;
+  }
+
+  const existingRequirements = await vault_read_text(
+    supabase,
+    repoId,
+    existingRequirementsId
+  );
+
+  const mergedRequirements = mergeRequirementsTxt(
+    String(existingRequirements?.content ?? ""),
+    generatedRequirements
+  );
+
+  const proposal = await runTool(
+    supabase,
+    repoId,
+    userId,
+    userMessage,
+    "vault_propose_write",
+    {
+      fileId: existingRequirementsId,
+      content: mergedRequirements,
+    }
+  );
+
+  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+    throw new Error("requirements write proposal failed");
+  }
+
+  if ((proposal as any).noop === true) {
+    return null;
+  }
+
+  return proposal;
 }
 
 export async function handleCreateMissingFileMode({
@@ -481,36 +563,66 @@ export async function handleCreateMissingFileMode({
     }
 
     stagedProposals.push({
-      fileId: String((proposal as any).fileId),
-      content: String((proposal as any).content ?? newContent),
-      prevHash: String((proposal as any).prevHash ?? ""),
-      nextHash: String((proposal as any).nextHash ?? ""),
-      confirm: String((proposal as any).confirm ?? ""),
-      path: (proposal as any).path ?? requestedPath,
-      name: (proposal as any).name ?? null,
-      mime: (proposal as any).mime ?? mime,
-      meta: (proposal as any).meta ?? null,
+  fileId: String((proposal as any).fileId),
+  content: String((proposal as any).content ?? newContent),
+  prevHash: String((proposal as any).prevHash ?? ""),
+  nextHash: String((proposal as any).nextHash ?? ""),
+  confirm: String((proposal as any).confirm ?? ""),
+  path: (proposal as any).path ?? requestedPath,
+  name: (proposal as any).name ?? null,
+  mime: (proposal as any).mime ?? mime,
+  meta: (proposal as any).meta ?? null,
+});
+
+if (/\.py$/i.test(requestedPath)) {
+  const requirementsProposal = await stagePythonRequirementsProposal({
+    supabase,
+    repoId,
+    userId,
+    userMessage: content,
+    pythonPath: requestedPath,
+    pythonContent: String(newContent ?? ""),
+  });
+
+  if (
+    requirementsProposal &&
+    typeof requirementsProposal === "object" &&
+    !("error" in requirementsProposal)
+  ) {
+    stagedProposals.push({
+      fileId: String((requirementsProposal as any).fileId),
+      content: String((requirementsProposal as any).content ?? ""),
+      prevHash: String((requirementsProposal as any).prevHash ?? ""),
+      nextHash: String((requirementsProposal as any).nextHash ?? ""),
+      confirm: String((requirementsProposal as any).confirm ?? ""),
+      path: (requirementsProposal as any).path ?? "requirements.txt",
+      name: (requirementsProposal as any).name ?? "requirements.txt",
+      mime: (requirementsProposal as any).mime ?? "text/plain",
+      meta: (requirementsProposal as any).meta ?? null,
     });
   }
+}
 
-  if (stagedProposals.length === 0) {
-    return textResponse(
-      "[Observation]\nThe requested file creation is already satisfied.\n\n" +
-        "[Assessment]\nNo staged change was needed because the requested files already exist or matched the requested content.\n\n" +
-        "[Action]\nContinue with the next change or request another file."
-    );
-  }
+} // closes: for (const requestedPath of missingPaths)
 
-  const body =
-    stagedProposals.length === 1
-      ? `\n__PROPOSAL__:${JSON.stringify(stagedProposals[0])}\n` +
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nA new file was prepared and staged.\n\n" +
-        "[Action]\nA staged change is ready. Confirm to apply."
-      : `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: stagedProposals })}\n` +
-        "[Observation]\nRequired repository changes were staged.\n\n" +
-        "[Assessment]\nMultiple new files were prepared and staged as one aligned change set.\n\n" +
-        "[Action]\nA staged multi-file change is ready. Confirm to apply.";
+if (stagedProposals.length === 0) {
+  return textResponse(
+    "[Observation]\nThe requested file creation is already satisfied.\n\n" +
+      "[Assessment]\nNo staged change was needed because the requested files already exist or matched the requested content.\n\n" +
+      "[Action]\nContinue with the next change or request another file."
+  );
+}
 
-  return textResponse(body);
+const body =
+  stagedProposals.length === 1
+    ? `\n__PROPOSAL__:${JSON.stringify(stagedProposals[0])}\n` +
+      "[Observation]\nRequired repository changes were staged.\n\n" +
+      "[Assessment]\nA new file was prepared and staged.\n\n" +
+      "[Action]\nA staged change is ready. Confirm to apply."
+    : `\n__PROPOSAL_SET__:${JSON.stringify({ proposals: stagedProposals })}\n` +
+      "[Observation]\nRequired repository changes were staged.\n\n" +
+      "[Assessment]\nMultiple new files were prepared and staged as one aligned change set.\n\n" +
+      "[Action]\nA staged multi-file change is ready. Confirm to apply.";
+
+return textResponse(body);
 }

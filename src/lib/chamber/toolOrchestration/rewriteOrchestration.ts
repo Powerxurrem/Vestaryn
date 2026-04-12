@@ -1,6 +1,11 @@
 import OpenAI from "openai";
 import { runTool } from "@/lib/vault/toolRuntime";
-import { generateRewrittenFileContent } from "@/lib/chamber/generation";
+import { vault_read_text, resolveFileIdByPathOrName } from "@/lib/vault/tools";
+import {
+  generateRewrittenFileContent,
+  buildRequirementsTxtContentFromPython,
+  mergeRequirementsTxt,
+} from "@/lib/chamber/generation";
 import { isSourceTargetTransferIntent } from "@/lib/chamber/refactorIntent";
 
 type RewriteOrchestrationArgs = {
@@ -47,6 +52,84 @@ type RewriteOrchestrationResult = {
     output: string;
   };
 };
+
+async function stagePythonRequirementsRewrite(args: {
+  supabase: any;
+  repoId: string;
+  userId: string;
+  userMessage: string;
+  pythonPath: string;
+  rewrittenPython: string;
+}) {
+  const { supabase, repoId, userId, userMessage, pythonPath, rewrittenPython } = args;
+
+  if (!/\.py$/i.test(String(pythonPath ?? "").trim())) {
+    return null;
+  }
+
+  const requirementsPath = "requirements.txt";
+  const generatedRequirements = buildRequirementsTxtContentFromPython(rewrittenPython);
+
+  const existingRequirementsId = await resolveFileIdByPathOrName(
+    supabase,
+    repoId,
+    requirementsPath
+  );
+
+  if (!existingRequirementsId) {
+    const proposal = await runTool(
+      supabase,
+      repoId,
+      userId,
+      userMessage,
+      "vault_propose_create",
+      {
+        path: requirementsPath,
+        content: generatedRequirements,
+        mime: "text/plain",
+      }
+    );
+
+    if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+      throw new Error("requirements create proposal failed");
+    }
+
+    return proposal;
+  }
+
+  const existingRequirements = await vault_read_text(
+    supabase,
+    repoId,
+    existingRequirementsId
+  );
+
+  const mergedRequirements = mergeRequirementsTxt(
+    String(existingRequirements?.content ?? ""),
+    generatedRequirements
+  );
+
+  const proposal = await runTool(
+    supabase,
+    repoId,
+    userId,
+    userMessage,
+    "vault_propose_write",
+    {
+      fileId: existingRequirementsId,
+      content: mergedRequirements,
+    }
+  );
+
+  if (!proposal || typeof proposal !== "object" || "error" in proposal) {
+    throw new Error("requirements write proposal failed");
+  }
+
+  if ((proposal as any).noop === true) {
+    return null;
+  }
+
+  return proposal;
+}
 
 export async function tryHandleRewriteOrchestration({
   ctx,
@@ -416,6 +499,25 @@ export async function tryHandleRewriteOrchestration({
     if (proposal && typeof proposal === "object" && !("error" in proposal)) {
       pendingProposalOuts = [...pendingProposalOuts, proposal];
     }
+
+if (/\.py$/i.test(String(readOut.path ?? ""))) {
+  const requirementsProposal = await stagePythonRequirementsRewrite({
+    supabase,
+    repoId,
+    userId,
+    userMessage: content,
+    pythonPath: String(readOut.path ?? ""),
+    rewrittenPython: String(rewritten ?? ""),
+  });
+
+  if (
+    requirementsProposal &&
+    typeof requirementsProposal === "object" &&
+    !("error" in requirementsProposal)
+  ) {
+    pendingProposalOuts = [...pendingProposalOuts, requirementsProposal];
+  }
+}
 
     return {
       handled: true,

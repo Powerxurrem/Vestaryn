@@ -721,6 +721,136 @@ function fallbackWebsiteBootstrapBrief(userRequest: string): WebsiteBootstrapBri
   };
 }
 
+const PYTHON_STD_LIB = new Set([
+  "abc",
+  "argparse",
+  "asyncio",
+  "base64",
+  "collections",
+  "copy",
+  "csv",
+  "dataclasses",
+  "datetime",
+  "decimal",
+  "enum",
+  "functools",
+  "glob",
+  "hashlib",
+  "heapq",
+  "html",
+  "http",
+  "io",
+  "itertools",
+  "json",
+  "logging",
+  "math",
+  "os",
+  "pathlib",
+  "pickle",
+  "pprint",
+  "queue",
+  "random",
+  "re",
+  "shutil",
+  "sqlite3",
+  "statistics",
+  "string",
+  "subprocess",
+  "sys",
+  "tempfile",
+  "textwrap",
+  "time",
+  "traceback",
+  "typing",
+  "unittest",
+  "urllib",
+  "uuid",
+  "xml",
+  "zipfile",
+]);
+
+const PYTHON_PACKAGE_MAP: Record<string, string> = {
+  PIL: "pillow",
+  bs4: "beautifulsoup4",
+  sklearn: "scikit-learn",
+  cv2: "opencv-python",
+  yaml: "PyYAML",
+};
+
+export function extractPythonImports(code: string): string[] {
+  const imports = new Set<string>();
+
+  for (const rawLine of String(code ?? "").split("\n")) {
+    const line = rawLine.trim();
+
+    if (!line || line.startsWith("#")) continue;
+
+    if (line.startsWith("import ")) {
+      const rest = line.slice("import ".length);
+      for (const part of rest.split(",")) {
+        const token = part.trim().split(/\s+as\s+/i)[0]?.trim();
+        const root = token?.split(".")[0]?.trim();
+        if (root) imports.add(root);
+      }
+      continue;
+    }
+
+    if (line.startsWith("from ")) {
+      const match = line.match(/^from\s+([a-zA-Z0-9_\.]+)\s+import\s+/);
+      const token = match?.[1]?.trim();
+      const root = token?.split(".")[0]?.trim();
+      if (root) imports.add(root);
+    }
+  }
+
+  return Array.from(imports).sort();
+}
+
+export function mapPythonImportsToPackages(imports: string[]): string[] {
+  return Array.from(
+    new Set(
+      imports
+        .map((name) => String(name ?? "").trim())
+        .filter(Boolean)
+        .filter((name) => !PYTHON_STD_LIB.has(name))
+        .map((name) => PYTHON_PACKAGE_MAP[name] ?? name)
+    )
+  ).sort();
+}
+
+export function buildRequirementsTxtContentFromPython(code: string): string {
+  const imports = extractPythonImports(code);
+  const packages = mapPythonImportsToPackages(imports);
+
+  if (packages.length === 0) {
+    return "# no external dependencies\n";
+  }
+
+  return `${packages.join("\n")}\n`;
+}
+
+export function mergeRequirementsTxt(existingContent: string, nextContent: string): string {
+  const existing = String(existingContent ?? "")
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .filter((x) => !x.startsWith("#"));
+
+  const incoming = String(nextContent ?? "")
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .filter((x) => !x.startsWith("#"));
+
+  const merged = Array.from(new Set([...existing, ...incoming])).sort();
+
+  if (merged.length === 0) {
+    return "# no external dependencies\n";
+  }
+
+  return `${merged.join("\n")}\n`;
+}
+
 export async function generateNewFileContent(opts: {
   openai: OpenAI;
   model: string;
