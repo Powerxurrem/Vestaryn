@@ -137,11 +137,20 @@ export function VestarynFrame({
 const [appMode, setAppMode] = useState<"engineering" | "artistic">("engineering");
 const [artisticMenu, setArtisticMenu] = useState<{ x: number; y: number } | null>(null);
 const [artisticPrompt, setArtisticPrompt] = useState("");
+const [editingCardId, setEditingCardId] = useState<string | null>(null);
 const [artisticMessages, setArtisticMessages] = useState<
   { role: "user" | "assistant"; content: string }[]
 >([]);
 const [artisticCards, setArtisticCards] = useState<
-  { id: string; x: number; y: number; w: number; h: number; title: string }[]
+  {
+    id: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    title: string;
+    body: string;
+  }[]
 >([]);
 
 const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
@@ -188,35 +197,147 @@ function makeCardId() {
   return `card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function updateCard(
+  cardId: string,
+  patch: Partial<{
+    title: string;
+    body: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }>
+) {
+  setArtisticCards((prev) =>
+    prev.map((card) =>
+      card.id === cardId
+        ? {
+            ...card,
+            ...patch,
+          }
+        : card
+    )
+  );
+}
+
+function commitCardTitle(cardId: string, title: string) {
+  updateCard(cardId, {
+    title: title.trim() || "Untitled card",
+  });
+}
+
+function commitCardBody(cardId: string, body: string) {
+  updateCard(cardId, {
+    body,
+  });
+}
+
 const [artisticSending, setArtisticSending] = useState(false);
 const [artisticError, setArtisticError] = useState<string | null>(null);
 const [isPanning, setIsPanning] = useState(false);
+const [pendingNewCardId, setPendingNewCardId] = useState<string | null>(null);
+const viewportRef = useRef<HTMLDivElement | null>(null);
 const panStartRef = useRef<{ x: number; y: number } | null>(null);
-const panOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-const worldRef = useRef<HTMLDivElement | null>(null);
+const [zoom, setZoom] = useState(1);
+const MIN_ZOOM = 0.35;
+const MAX_ZOOM = 3; 
+const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
+const cardDragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({
+  x: 2400,
+  y: 2400,
+});
+
+const WORLD_W = 8000;
+const WORLD_H = 8000;
+
+const [resizingCardId, setResizingCardId] = useState<string | null>(null);
+const resizeStartRef = useRef<{
+  startX: number;
+  startY: number;
+  startW: number;
+  startH: number;
+} | null>(null);
+
+const MIN_CARD_W = 140;
+const MIN_CARD_H = 90;
+
+function viewportPointFromClient(clientX: number, clientY: number) {
+  const rect = viewportRef.current?.getBoundingClientRect();
+  if (!rect) {
+    return { x: 0, y: 0 };
+  }
+
+  return {
+    x: clientX - rect.left,
+    y: clientY - rect.top,
+  };
+}
+
+function viewportPointToWorldAtZoom(
+  viewportX: number,
+  viewportY: number,
+  pan: { x: number; y: number },
+  zoomLevel: number
+) {
+  return {
+    x: (viewportX - pan.x) / zoomLevel,
+    y: (viewportY - pan.y) / zoomLevel,
+  };
+}
+
+function viewportPointToWorld(clientX: number, clientY: number) {
+  const viewportPoint = viewportPointFromClient(clientX, clientY);
+
+  return viewportPointToWorldAtZoom(
+    viewportPoint.x,
+    viewportPoint.y,
+    panOffset,
+    zoom
+  );
+}
 
 useEffect(() => {
   function onKeyDown(e: KeyboardEvent) {
     if (e.code === "Space") {
-      e.preventDefault(); // prevents page scroll
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      e.preventDefault();
       setIsPanning(true);
+      document.body.style.cursor = "grab";
+      document.body.style.userSelect = "none";
+      document.body.style.webkitUserSelect = "none";
     }
   }
 
   function onKeyUp(e: KeyboardEvent) {
-  if (e.code === "Space") {
-    setIsPanning(false);
-    panStartRef.current = null;
-    document.body.style.cursor = "";
+    if (e.code === "Space") {
+      setIsPanning(false);
+      panStartRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.body.style.webkitUserSelect = "";
+    }
   }
-}
 
-  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keydown", onKeyDown, { passive: false });
   window.addEventListener("keyup", onKeyUp);
 
   return () => {
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("keyup", onKeyUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    document.body.style.webkitUserSelect = "";
   };
 }, []);
 
@@ -784,9 +905,7 @@ style={
   </div>
 
   {/* Right mode */}
-
 </div>
-
             {/* Right slot */}
             <div className="ml-auto flex items-center gap-2">{right}</div>
           </div>
@@ -799,303 +918,568 @@ style={
       ].join(" ")}
     >
 
-{appMode === "engineering" ? (
-  children
-) : (
-  <div
-    className={[
-      "relative h-full w-full overflow-hidden bg-[#f4f5f8]",
-      isPanning ? "cursor-grab" : "",
-    ].join(" ")}
-    onPointerDown={(e) => {
-      if (isPanning) {
-        panStartRef.current = { x: e.clientX, y: e.clientY };
-        return;
-      }
-      if (e.button !== 0) return;
-      if (artisticMenu) return;
-
-      const target = e.target as HTMLElement;
-      if (target.closest("[data-artistic-card]")) return;
-      if (target.closest("[data-artistic-popup]")) return;
-
-      const rect = e.currentTarget.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-
-      setDragStart({ x, y });
-      setDragCurrent({ x, y });
-      setIsDraggingCard(true);
-    }}
-    onPointerMove={(e) => {
-      if (isPanning && panStartRef.current) {
-        const start = panStartRef.current;
-
-        const dx = e.clientX - start.x;
-        const dy = e.clientY - start.y;
-
-        panOffsetRef.current.x += dx;
-        panOffsetRef.current.y += dy;
-
-        panStartRef.current = { x: e.clientX, y: e.clientY };
-
-        if (worldRef.current) {
-          worldRef.current.style.transform = `translate(calc(-50% + ${panOffsetRef.current.x}px), calc(-50% + ${panOffsetRef.current.y}px))`;
-        }
-
-        document.body.style.cursor = "grabbing";
-        return;
-      }
-
-      if (!isDraggingCard || !dragStart) return;
-
-      const rect = e.currentTarget.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-
-      setDragCurrent({ x, y });
-    }}
-    onPointerUp={() => {
-      if (isPanning) {
-        panStartRef.current = null;
-        document.body.style.cursor = "";
-        return;
-      }
-
-      if (!isDraggingCard || !dragStart || !dragCurrent) {
-        setIsDraggingCard(false);
-        setDragStart(null);
-        setDragCurrent(null);
-        return;
-      }
-
-      const rect = clampRect(dragStart, dragCurrent);
-
-      if (rect.w >= 80 && rect.h >= 60) {
-        setArtisticCards((prev) => [
-          ...prev,
-          {
-            id: makeCardId(),
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
-            title: "Untitled card",
-          },
-        ]);
-      }
-
-      setIsDraggingCard(false);
-      setDragStart(null);
-      setDragCurrent(null);
-    }}
-    onPointerLeave={() => {
-      document.body.style.cursor = "";
-      if (!isDraggingCard) return;
-      setIsDraggingCard(false);
-      setDragStart(null);
-      setDragCurrent(null);
-    }}
-    onContextMenu={(e) => {
-      e.preventDefault();
-
-      const rect = e.currentTarget.getBoundingClientRect();
-
-      setArtisticMenu({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      });
-    }}
-    onClick={() => {
-      if (artisticMenu) {
-        setArtisticMenu(null);
-        setArtisticPrompt("");
-        setArtisticMessages([]);
-        setArtisticError(null);
-      }
-    }}
-  >
-    <div
-      ref={worldRef}
-      className="absolute left-1/2 top-1/2"
-      style={{
-        width: "260vw",
-        height: "220vh",
-        transform: "translate(-50%, -50%)",
-      }}
-    >
-      {/* Bottom chamber bar */}
-      <div className="pointer-events-none absolute bottom-0 left-0 z-[1] h-[40px] w-full">
-        <div className="absolute inset-0 bg-[linear-gradient(to_top,rgba(4,8,16,0.98),rgba(8,14,26,0.94),rgba(12,20,34,0.88))]" />
-        <div className="absolute top-0 left-0 h-px w-full bg-blue-400/22 shadow-[0_0_14px_rgba(96,165,250,0.18)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(96,165,250,0.06),transparent_48%)]" />
-      </div>
-
-      <div
-        className="absolute inset-0 transition-opacity duration-700"
-        style={{
-          backgroundImage: "url('/vestaryn_cosmos.png')",
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          opacity: 1,
-        }}
-      />
-
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.20),rgba(255,255,255,0.04)_35%,rgba(0,0,0,0.0)_70%)]" />
-      <div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(255,255,255,0.10),rgba(255,255,255,0.03),rgba(255,255,255,0.08))]" />
-      <div className="pointer-events-none absolute inset-[0px] z-[0] rounded-[28px] shadow-[inset_0_0_80px_rgba(8,14,26,0.14),inset_0_0_160px_rgba(96,165,250,0.03)]" />
-
-      <div className="absolute left-1/2 top-1/2 h-[180vh] w-[180vw] -translate-x-1/2 -translate-y-1/2">
-        <div className="absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(0,0,0,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(0,0,0,0.18)_1px,transparent_1px)] [background-size:48px_48px]" />
-      </div>
-
-      {isDraggingCard && dragStart && dragCurrent ? (() => {
-        const rect = clampRect(dragStart, dragCurrent);
-
-        return (
+        {appMode === "engineering" ? (
+          children
+        ) : (
           <div
-            className="pointer-events-none absolute z-[900] rounded-2xl border border-blue-400/50 bg-blue-500/10 shadow-[0_0_24px_rgba(96,165,250,0.18)]"
+            ref={viewportRef}
+            className={[
+              "relative h-full w-full overflow-hidden bg-[#eef1f6]",
+              isPanning ? "cursor-grab" : "",
+            ].join(" ")}
             style={{
-              left: rect.x,
-              top: rect.y,
-              width: rect.w,
-              height: rect.h,
+              userSelect: isPanning || !!draggingCardId || !!resizingCardId ? "none" : undefined,
+              WebkitUserSelect:
+                isPanning || !!draggingCardId || !!resizingCardId ? "none" : undefined,
             }}
-          />
-        );
-      })() : null}
+            onPointerDown={(e) => {
+              if (isPanning) {
+                e.preventDefault();
+                panStartRef.current = { x: e.clientX, y: e.clientY };
+                document.body.style.cursor = "grabbing";
+                return;
+              }
 
-      {artisticCards.map((card) => (
-        <div
-          key={card.id}
-          data-artistic-card
-          className="absolute z-[850] overflow-hidden rounded-2xl border border-black/10 bg-white/70 shadow-[0_18px_50px_rgba(0,0,0,0.16)] backdrop-blur-xl"
-          style={{
-            left: card.x,
-            top: card.y,
-            width: card.w,
-            height: card.h,
-          }}
-        >
-          <div className="flex items-center justify-between border-b border-black/8 px-3 py-2">
-            <div className="text-[11px] font-medium tracking-[0.16em] text-black/45">
-              {card.title}
-            </div>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setArtisticCards((prev) => prev.filter((c) => c.id !== card.id));
+              if (e.button !== 0) return; 
+              if (artisticMenu) return;
+
+              const target = e.target as HTMLElement;
+              if (target.closest("[data-artistic-card]")) return;
+              if (target.closest("[data-artistic-popup]")) return;
+
+              const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+
+              setDragStart(worldPoint);
+              setDragCurrent(worldPoint);
+              setIsDraggingCard(true);
+            }}
+            onPointerMove={(e) => {
+              if (isPanning && panStartRef.current) {
+                e.preventDefault();
+
+                const start = panStartRef.current;
+                const dx = e.clientX - start.x;
+                const dy = e.clientY - start.y;
+
+                setPanOffset((prev) => ({
+                  x: prev.x + dx,
+                  y: prev.y + dy,
+                }));
+
+                panStartRef.current = { x: e.clientX, y: e.clientY };
+                document.body.style.cursor = "grabbing";
+                return;
+              }
+
+              if (resizingCardId && resizeStartRef.current) {
+                e.preventDefault();
+                document.body.style.cursor = "se-resize";
+
+                const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+                const start = resizeStartRef.current;
+
+                const nextW = Math.max(MIN_CARD_W, start.startW + (worldPoint.x - start.startX));
+                const nextH = Math.max(MIN_CARD_H, start.startH + (worldPoint.y - start.startY));
+
+                setArtisticCards((prev) =>
+                  prev.map((card) =>
+                    card.id === resizingCardId
+                      ? {
+                          ...card,
+                          w: nextW,
+                          h: nextH,
+                        }
+                      : card
+                  )
+                );
+                return;
+              }
+
+              if (draggingCardId) {
+                e.preventDefault();
+
+                const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+
+                setArtisticCards((prev) =>
+                  prev.map((card) =>
+                    card.id === draggingCardId
+                      ? {
+                          ...card,
+                          x: worldPoint.x - cardDragOffsetRef.current.x,
+                          y: worldPoint.y - cardDragOffsetRef.current.y,
+                        }
+                      : card
+                  )
+                );
+                return;
+              }
+
+              if (!isDraggingCard || !dragStart) return;
+
+              const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+              setDragCurrent(worldPoint);
+            }}
+            onWheel={(e) => {
+              e.preventDefault();
+
+              const viewportPoint = viewportPointFromClient(e.clientX, e.clientY);
+              const zoomFactor = 1.05;
+
+              const nextZoom =
+                e.deltaY < 0
+                  ? Math.min(MAX_ZOOM, zoom * zoomFactor)
+                  : Math.max(MIN_ZOOM, zoom / zoomFactor);
+
+              if (nextZoom === zoom) return;
+
+              const anchorWorld = viewportPointToWorldAtZoom(
+                viewportPoint.x,
+                viewportPoint.y,
+                panOffset,
+                zoom
+              );
+
+              setPanOffset({
+                x: viewportPoint.x - anchorWorld.x * nextZoom,
+                y: viewportPoint.y - anchorWorld.y * nextZoom,
+              });
+
+              setZoom(nextZoom);
+            }}
+            onPointerUp={() => {
+              if (isPanning) {
+                panStartRef.current = null;
+                document.body.style.cursor = isPanning ? "grab" : "";
+                document.body.style.userSelect = "";
+                document.body.style.webkitUserSelect = "";
+                return;
+              }
+
+              if (resizingCardId) {
+                setResizingCardId(null);
+                resizeStartRef.current = null;
+                document.body.style.cursor = "";
+                document.body.style.userSelect = "";
+                document.body.style.webkitUserSelect = "";
+                return;
+              }
+
+              if (draggingCardId) {
+                setDraggingCardId(null);
+                document.body.style.userSelect = "";
+                document.body.style.webkitUserSelect = "";
+                return;
+              }
+
+              if (!isDraggingCard || !dragStart || !dragCurrent) {
+                setIsDraggingCard(false);
+                setDragStart(null);
+                setDragCurrent(null);
+                document.body.style.userSelect = "";
+                document.body.style.webkitUserSelect = "";
+                return;
+              }
+
+              const worldRect = clampRect(dragStart, dragCurrent);
+
+              if (worldRect.w >= 80 && worldRect.h >= 60) {
+              const newCardId = makeCardId();
+
+              setArtisticCards((prev) => [
+                ...prev,
+                {
+                  id: newCardId,
+                  x: worldRect.x,
+                  y: worldRect.y,
+                  w: worldRect.w,
+                  h: worldRect.h,
+                  title: "Untitled card",
+                  body: "Floating canvas card",
+                }
+              ]);
+
+              setPendingNewCardId(newCardId);
+            }
+
+              setIsDraggingCard(false);
+              setDragStart(null);
+              setDragCurrent(null);
+              document.body.style.userSelect = "";
+              document.body.style.webkitUserSelect = "";
+            }}
+            onPointerLeave={() => {
+              document.body.style.cursor = isPanning ? "grab" : "";
+              document.body.style.userSelect = "";
+              document.body.style.webkitUserSelect = "";
+
+              panStartRef.current = null;
+              resizeStartRef.current = null;
+              setResizingCardId(null);
+              setDraggingCardId(null); 
+              setIsDraggingCard(false);
+              setDragStart(null);
+              setDragCurrent(null);
+            }}
+            onClick={() => {
+              if (artisticMenu) {
+                setArtisticMenu(null);
+                setArtisticPrompt("");
+                setArtisticMessages([]);
+                setArtisticError(null);
+              }
+
+              if (editingCardId) {
+                setEditingCardId(null);
+              }
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+
+              const rect = e.currentTarget.getBoundingClientRect();
+
+              setArtisticMenu({
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top,
+              });
+            }}
+          >
+            <div className="absolute inset-0 bg-[#f3f5f9]" />
+
+            <div
+              className="absolute left-0 top-0"
+              style={{
+                width: WORLD_W,
+                height: WORLD_H,
+                transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`,
+                transformOrigin: "0 0",
+                willChange: "transform",
               }}
-              className="rounded-md px-2 py-1 text-[11px] text-black/35 hover:bg-black/5 hover:text-black/65"
             >
-              ✕
-            </button>
-          </div>
+              <div className="absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(15,23,42,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.12)_1px,transparent_1px)] [background-size:48px_48px]" />
 
-          <div className="p-3 text-sm text-black/50">
-            Floating canvas card
-          </div>
-        </div>
-      ))}
-    </div>
+              {isDraggingCard && dragStart && dragCurrent ? (() => {
+              const rect = clampRect(dragStart, dragCurrent);
 
-    <div className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
-      Right-click anywhere on the canvas to summon Vestaryn
-    </div>
+              return (
+                <div
+                  className="pointer-events-none absolute z-[900] rounded-2xl border border-blue-400/50 bg-blue-500/10 shadow-[0_0_24px_rgba(96,165,250,0.18)]"
+                  style={{
+                    left: rect.x,
+                    top: rect.y,
+                    width: rect.w,
+                    height: rect.h,
+                  }}
+                />
+              );
+            })() : null}
 
-    {artisticMenu ? (
-      <div
-        data-artistic-popup
-        className="absolute z-[1200] w-[320px] rounded-2xl border border-black/10 bg-white/75 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
-        style={{
-          left: artisticMenu.x,
-          top: artisticMenu.y,
-          transform: "translate(8px, 8px)",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
-            VESTARYN
-          </div>
+              {artisticCards.map((card) => (
+                <div
+                  key={card.id}
+                  data-artistic-card
+                  onPointerDown={(e) => {
+                    if (isPanning || resizingCardId) return;
+
+                    const target = e.target as HTMLElement;
+                      if (target.closest("[data-card-resize-handle]")) return;
+                      if (target.closest("input")) return;
+                      if (target.closest("textarea")) return;
+
+                    e.stopPropagation();
+                    e.preventDefault();
+
+                    document.body.style.userSelect = "none";
+                    document.body.style.webkitUserSelect = "none";
+
+                    const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+
+                    cardDragOffsetRef.current = {
+                      x: worldPoint.x - card.x,
+                      y: worldPoint.y - card.y,
+                    };
+
+                    setDraggingCardId(card.id);
+                  }}
+                  className={[
+                    "absolute overflow-hidden rounded-2xl border border-black/10 bg-white/72 backdrop-blur-xl",
+                    resizingCardId === card.id
+                      ? "z-[980] cursor-se-resize shadow-[0_24px_70px_rgba(0,0,0,0.22)]"
+                      : draggingCardId === card.id
+                      ? "z-[950] cursor-grabbing shadow-[0_24px_70px_rgba(0,0,0,0.22)]"
+                      : "z-[850] cursor-move shadow-[0_18px_50px_rgba(0,0,0,0.16)]",
+                  ].join(" ")}
+                  style={{
+                    left: card.x,
+                    top: card.y,
+                    width: card.w,
+                    height: card.h,
+                  }}
+                >
+                  <div className="flex items-center justify-between border-b border-black/8 px-3 py-2">
+                    {editingCardId === card.id ? (
+                      <input
+                        autoFocus
+                        value={card.title}
+                        onChange={(e) => updateCard(card.id, { title: e.target.value })}
+                        onBlur={() => {
+                          commitCardTitle(card.id, card.title);
+                          setEditingCardId(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            commitCardTitle(card.id, card.title);
+                            setEditingCardId(null);
+                          }
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setEditingCardId(null);
+                          }
+                        }}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="w-full rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[11px] font-medium tracking-[0.12em] text-black/55 outline-none"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingCardId(card.id);
+                        }}
+                        className="min-w-0 flex-1 truncate text-left text-[11px] font-medium tracking-[0.16em] text-black/45 hover:text-black/65"
+                      >
+                        {card.title}
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setArtisticCards((prev) => prev.filter((c) => c.id !== card.id));
+                        if (editingCardId === card.id) {
+                          setEditingCardId(null);
+                        }
+                      }}
+                      className="ml-2 rounded-md px-2 py-1 text-[11px] text-black/35 hover:bg-black/5 hover:text-black/65"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="p-3 h-[calc(100%-41px)]">
+                    <textarea
+                      value={card.body}
+                      onChange={(e) => commitCardBody(card.id, e.target.value)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      placeholder="Write here..."
+                      className="h-full w-full resize-none bg-transparent text-sm text-black/55 outline-none placeholder:text-black/25"
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    data-card-resize-handle
+                    onPointerDown={(e) => {
+                      if (isPanning) return;
+
+                      e.stopPropagation();
+                      e.preventDefault();
+
+                      document.body.style.userSelect = "none";
+                      document.body.style.webkitUserSelect = "none";
+
+                      const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+
+                      resizeStartRef.current = {
+                        startX: worldPoint.x,
+                        startY: worldPoint.y,
+                        startW: card.w,
+                        startH: card.h,
+                      };
+
+                      setResizingCardId(card.id);
+                    }}
+                    className="absolute bottom-2 right-2 z-[980] flex h-5 w-5 items-center justify-center rounded-md border border-black/10 bg-white/80 shadow-sm hover:bg-white cursor-se-resize"
+                    title="Resize card"
+                  >
+                    <div className="h-2.5 w-2.5 rounded-[2px] border-r border-b border-black/35" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="absolute right-5 bottom-5 z-[1250] flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-2 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.14)] backdrop-blur-xl">
           <button
             type="button"
             onClick={() => {
-              setArtisticMenu(null);
-              setArtisticPrompt("");
-              setArtisticMessages([]);
-              setArtisticError(null);
+              const rect = viewportRef.current?.getBoundingClientRect();
+              if (!rect) return;
+
+              const viewportX = rect.width / 2;
+              const viewportY = rect.height / 2;
+              const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
+              if (nextZoom === zoom) return;
+
+              const anchorWorld = viewportPointToWorldAtZoom(
+                viewportX,
+                viewportY,
+                panOffset,
+                zoom
+              );
+
+              setPanOffset({
+                x: viewportX - anchorWorld.x * nextZoom,
+                y: viewportY - anchorWorld.y * nextZoom,
+              });
+              setZoom(nextZoom);
             }}
-            className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
+            className="rounded-lg border border-black/10 bg-white/80 px-3 py-2 text-sm text-black/70 hover:bg-white"
           >
-            ✕
+            −
           </button>
-        </div>
 
-        {artisticMessages.length > 0 ? (
-          <div id="artistic-scroll" className="mb-3 max-h-[260px] overflow-auto space-y-2">
-            {artisticMessages.map((m, i) => (
-              <div
-                key={i}
-                className={[
-                  "rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
-                  m.role === "user"
-                    ? "bg-black/5 text-black/70"
-                    : "bg-white/70 text-black/80 border border-black/10",
-                ].join(" ")}
-              >
-                {m.content}
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <textarea
-          value={artisticPrompt}
-          onChange={(e) => {
-            setArtisticPrompt(e.target.value);
-            if (artisticError) setArtisticError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void sendArtisticPrompt();
-            }
-          }}
-          placeholder="Shape the chamber..."
-          className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
-        />
-
-        {artisticError ? (
-          <div className="mt-3 rounded-xl border border-rose-300/40 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">
-            {artisticError}
-          </div>
-        ) : null}
-
-        <div className="mt-3 flex items-center justify-between">
-          <div className="text-[11px] text-black/35">
-            Spatial ideation surface
+          <div className="min-w-[64px] text-center text-xs font-medium text-black/55">
+            {Math.round(zoom * 100)}%
           </div>
 
           <button
             type="button"
-            onClick={() => void sendArtisticPrompt()}
-            disabled={artisticSending || !artisticPrompt.trim()}
-            className={[
-              "rounded-xl border px-3 py-2 text-xs transition",
-              artisticSending || !artisticPrompt.trim()
-                ? "border-black/10 bg-black/5 text-black/25 cursor-not-allowed"
-                : "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
-            ].join(" ")}
+            onClick={() => {
+              const rect = viewportRef.current?.getBoundingClientRect();
+              if (!rect) return;
+
+              const viewportX = rect.width / 2;
+              const viewportY = rect.height / 2;
+              const nextZoom = Math.min(MAX_ZOOM, zoom * 1.08);
+              if (nextZoom === zoom) return;
+
+              const anchorWorld = viewportPointToWorldAtZoom(
+                viewportX,
+                viewportY,
+                panOffset,
+                zoom
+              );
+
+              setPanOffset({
+                x: viewportX - anchorWorld.x * nextZoom,
+                y: viewportY - anchorWorld.y * nextZoom,
+              });
+              setZoom(nextZoom);
+            }}
+            className="rounded-lg border border-black/10 bg-white/80 px-3 py-2 text-sm text-black/70 hover:bg-white"
           >
-            {artisticSending ? "Sending..." : "Send"}
+            +
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setZoom(1);
+              setPanOffset({ x: 2400, y: 2400 });
+            }}
+            className="rounded-lg border border-black/10 bg-white/80 px-3 py-2 text-xs text-black/60 hover:bg-white"
+          >
+            Reset
           </button>
         </div>
-      </div>
-    ) : null}
-  </div>
-)} 
+
+            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
+              Right-click anywhere on the canvas to summon Vestaryn
+            </div>
+
+            {artisticMenu ? (
+              <div
+                data-artistic-popup
+                className="absolute z-[1200] w-[320px] rounded-2xl border border-black/10 bg-white/75 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
+                style={{
+                  left: artisticMenu.x,
+                  top: artisticMenu.y,
+                  transform: "translate(8px, 8px)",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
+                    VESTARYN
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setArtisticMenu(null);
+                      setArtisticPrompt("");
+                      setArtisticMessages([]);
+                      setArtisticError(null);
+                    }}
+                    className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {artisticMessages.length > 0 ? (
+                  <div id="artistic-scroll" className="mb-3 max-h-[260px] overflow-auto space-y-2">
+                    {artisticMessages.map((m, i) => (
+                      <div
+                        key={i}
+                        className={[
+                          "rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
+                          m.role === "user"
+                            ? "bg-black/5 text-black/70"
+                            : "bg-white/70 text-black/80 border border-black/10",
+                        ].join(" ")}
+                      >
+                        {m.content}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <textarea
+                  value={artisticPrompt}
+                  onChange={(e) => {
+                    setArtisticPrompt(e.target.value);
+                    if (artisticError) setArtisticError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void sendArtisticPrompt();
+                    }
+                  }}
+                  placeholder="Shape the chamber..."
+                  className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
+                />
+
+                {artisticError ? (
+                  <div className="mt-3 rounded-xl border border-rose-300/40 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">
+                    {artisticError}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="text-[11px] text-black/35">
+                    Spatial ideation surface
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => void sendArtisticPrompt()}
+                    disabled={artisticSending || !artisticPrompt.trim()}
+                    className={[
+                      "rounded-xl border px-3 py-2 text-xs transition",
+                      artisticSending || !artisticPrompt.trim()
+                        ? "border-black/10 bg-black/5 text-black/25 cursor-not-allowed"
+                        : "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
+                    ].join(" ")}
+                  >
+                    {artisticSending ? "Sending..." : "Send"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )} 
       </div>
     </div>
   );
