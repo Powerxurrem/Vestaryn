@@ -7,6 +7,22 @@ import {
   type ReactNode,
 } from "react";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import ArtisticCanvasControls from "@/components/artistic/ArtisticCanvasControls";
+import ArtisticCanvasSurface from "@/components/artistic/ArtisticCanvasSurface";
+import type {
+  ArtisticCard,
+  ArtisticCardType,
+  PanOffset,
+  ScreenPoint,
+} from "@/lib/artistic/types";
+import {
+  clampRect,
+  getCanvasPresetClasses,
+  getCardPresetClasses,
+  makeCardId,
+  viewportPointFromClient,
+  viewportPointToWorldAtZoom,
+} from "@/lib/artistic/canvasUtils";
 
 
 type Tier = "free" | "early_access" | "builder" | "pro" | "elite";
@@ -26,99 +42,6 @@ function titleCaseTier(tier: Tier) {
 }
 function titleCase(s: string) {
   return s.slice(0, 1).toUpperCase() + s.slice(1);
-}
-
-function getCanvasPresetClasses(preset: "soft" | "grid" | "obsidian") {
-  switch (preset) {
-    case "obsidian":
-      return {
-        viewportBg: "bg-[#0b1017]",
-        gridClass:
-          "absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(148,163,184,0.16)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.16)_1px,transparent_1px)] [background-size:48px_48px]",
-      };
-    case "grid":
-      return {
-        viewportBg: "bg-[#edf2f8]",
-        gridClass:
-          "absolute inset-0 opacity-[0.09] [background-image:linear-gradient(rgba(15,23,42,0.14)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.14)_1px,transparent_1px)] [background-size:48px_48px]",
-      };
-    default:
-      return {
-        viewportBg: "bg-[#f3f5f9]",
-        gridClass:
-          "absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(15,23,42,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.12)_1px,transparent_1px)] [background-size:48px_48px]",
-      };
-  }
-}
-
-function getCardPresetClasses(
-  preset: "glass" | "solid" | "obsidian",
-  active: boolean
-) {
-  switch (preset) {
-    case "obsidian":
-      return active
-        ? {
-            shell:
-              "border border-blue-400/40 bg-[#0f1724]/88 text-white shadow-[0_0_0_1px_rgba(96,165,250,0.20),0_0_30px_rgba(96,165,250,0.18),0_24px_70px_rgba(0,0,0,0.30)]",
-            header:
-              "border-b border-blue-400/20 bg-blue-500/[0.05]",
-            title: "text-blue-100/85 hover:text-blue-50",
-            body: "text-white/72 placeholder:text-white/30",
-            input: "text-blue-100/90",
-          }
-        : {
-            shell:
-              "border border-white/10 bg-[#111827]/84 text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]",
-            header:
-              "border-b border-white/10",
-            title: "text-white/70 hover:text-white/90",
-            body: "text-white/68 placeholder:text-white/28",
-            input: "text-white/85",
-          };
-
-    case "solid":
-      return active
-        ? {
-            shell:
-              "border border-blue-400/40 bg-white text-black shadow-[0_0_0_1px_rgba(96,165,250,0.18),0_0_30px_rgba(96,165,250,0.16),0_24px_70px_rgba(0,0,0,0.20)]",
-            header:
-              "border-b border-blue-400/20 bg-blue-500/[0.03]",
-            title: "text-black/60 hover:text-black/80",
-            body: "text-black/60 placeholder:text-black/25",
-            input: "text-black/65",
-          }
-        : {
-            shell:
-              "border border-black/10 bg-white text-black shadow-[0_18px_50px_rgba(0,0,0,0.14)]",
-            header:
-              "border-b border-black/8",
-            title: "text-black/45 hover:text-black/65",
-            body: "text-black/55 placeholder:text-black/25",
-            input: "text-black/60",
-          }; 
-
-    default:
-      return active
-        ? {
-            shell:
-              "border border-blue-400/40 bg-white/80 text-black shadow-[0_0_0_1px_rgba(96,165,250,0.18),0_0_30px_rgba(96,165,250,0.16),0_24px_70px_rgba(0,0,0,0.22)]",
-            header:
-              "border-b border-blue-400/20 bg-blue-500/[0.03]",
-            title: "text-black/55 hover:text-black/75",
-            body: "text-black/55 placeholder:text-black/25",
-            input: "text-black/60",
-          }
-        : {
-            shell:
-              "border border-black/10 bg-white/72 text-black shadow-[0_18px_50px_rgba(0,0,0,0.16)]",
-            header:
-              "border-b border-black/8",
-            title: "text-black/45 hover:text-black/65",
-            body: "text-black/55 placeholder:text-black/25",
-            input: "text-black/60",
-          };
-  }
 }
 
 function MenuItem({
@@ -234,20 +157,9 @@ const [editingCardId, setEditingCardId] = useState<string | null>(null);
 const [artisticMessages, setArtisticMessages] = useState<
   { role: "user" | "assistant"; content: string }[]
 >([]);
-const [artisticCards, setArtisticCards] = useState<
-  {
-    id: string;
-    type: "default" | "notes" | "frame";
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-    title: string;
-    body: string;
-  }[]
->([]);
+const [artisticCards, setArtisticCards] = useState<ArtisticCard[]>([]);
 
-const [clickMenu, setClickMenu] = useState<{ x: number; y: number } | null>(null);
+const [clickMenu, setClickMenu] = useState<ScreenPoint | null>(null);
 const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
 const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
 const [isDraggingCard, setIsDraggingCard] = useState(false);
@@ -276,88 +188,11 @@ function cleanArtisticReply(text: string) {
     .trim();
 }
 
-function clampRect(
-  start: { x: number; y: number },
-  end: { x: number; y: number }
-) {
-  const x = Math.min(start.x, end.x);
-  const y = Math.min(start.y, end.y);
-  const w = Math.abs(end.x - start.x);
-  const h = Math.abs(end.y - start.y);
-
-  return { x, y, w, h };
-}
-
-function createMenuCard(
-  worldX: number,
-  worldY: number,
-  opts?: {
-    type?: "default" | "notes" | "frame";
-    w?: number;
-    h?: number;
-    title?: string;
-    body?: string;
-  }
-) {
-  const newCardId = makeCardId();
-
-  setArtisticCards((prev) => [
-    ...prev,
-    {
-      id: newCardId,
-      type: opts?.type ?? "default",
-      x: worldX,
-      y: worldY,
-      w: opts?.w ?? 240,
-      h: opts?.h ?? 160,
-      title: opts?.title ?? "Untitled card",
-      body: opts?.body ?? "",
-    },
-  ]);
-
-  setSelectedCardId(newCardId);
-  setPendingNewCardId(newCardId);
-  setClickMenu(null);
-  setClickMenuSubmenu(null);
-}
-
-function makeCardId() {
-  return `card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function updateCard(
-  cardId: string,
-  patch: Partial<{
-    title: string;
-    body: string;
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  }>
-) {
-  setArtisticCards((prev) =>
-    prev.map((card) =>
-      card.id === cardId
-        ? {
-            ...card,
-            ...patch,
-          }
-        : card
-    )
-  );
-}
-
-function commitCardTitle(cardId: string, title: string) {
-  updateCard(cardId, {
-    title: title.trim() || "Untitled card",
-  });
-}
-
-function commitCardBody(cardId: string, body: string) {
-  updateCard(cardId, {
-    body,
-  });
+function resetArtisticPopup() {
+  setArtisticMenu(null);
+  setArtisticPrompt("");
+  setArtisticMessages([]);
+  setArtisticError(null);
 }
 
 const [focusedBodyCardId, setFocusedBodyCardId] = useState<string | null>(null);
@@ -372,7 +207,7 @@ const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 3; 
 const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
 const cardDragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({
+const [panOffset, setPanOffset] = useState<PanOffset>({
   x: 2400,
   y: 2400,
 });
@@ -395,39 +230,42 @@ const resizeStartRef = useRef<{
 const MIN_CARD_W = 140;
 const MIN_CARD_H = 90;
 
-function viewportPointFromClient(clientX: number, clientY: number) {
+function zoomFromViewportCenter(nextZoom: number) {
   const rect = viewportRef.current?.getBoundingClientRect();
-  if (!rect) {
-    return { x: 0, y: 0 };
-  }
+  if (!rect) return;
 
-  return {
-    x: clientX - rect.left,
-    y: clientY - rect.top,
-  };
-}
+  const viewportX = rect.width / 2;
+  const viewportY = rect.height / 2;
 
-function viewportPointToWorldAtZoom(
-  viewportX: number,
-  viewportY: number,
-  pan: { x: number; y: number },
-  zoomLevel: number
-) {
-  return {
-    x: (viewportX - pan.x) / zoomLevel,
-    y: (viewportY - pan.y) / zoomLevel,
-  };
-}
-
-function viewportPointToWorld(clientX: number, clientY: number) {
-  const viewportPoint = viewportPointFromClient(clientX, clientY);
-
-  return viewportPointToWorldAtZoom(
-    viewportPoint.x,
-    viewportPoint.y,
+  const anchorWorld = viewportPointToWorldAtZoom(
+    viewportX,
+    viewportY,
     panOffset,
     zoom
   );
+
+  setPanOffset({
+    x: viewportX - anchorWorld.x * nextZoom,
+    y: viewportY - anchorWorld.y * nextZoom,
+  });
+  setZoom(nextZoom);
+}
+
+function handleZoomOut() {
+  const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
+  if (nextZoom === zoom) return;
+  zoomFromViewportCenter(nextZoom);
+}
+
+function handleZoomIn() {
+  const nextZoom = Math.min(MAX_ZOOM, zoom * 1.08);
+  if (nextZoom === zoom) return;
+  zoomFromViewportCenter(nextZoom);
+}
+
+function handleResetView() {
+  setZoom(1);
+  setPanOffset({ x: 2400, y: 2400 });
 }
 
 useEffect(() => {
@@ -1073,124 +911,17 @@ style={
 
           {/* Artistic sub-rail */}
 {appMode === "artistic" && (
-  <div className="relative z-[990] shrink-0 border-b border-blue-400/15 bg-[linear-gradient(to_right,rgba(5,10,18,0.96),rgba(9,16,28,0.92),rgba(5,10,18,0.96))] px-4 py-2 backdrop-blur-md">
-    <div className="flex items-center justify-between gap-4">
-      <div className="flex items-center gap-3">
-        <div className="text-[10px] uppercase tracking-[0.22em] text-white/38">
-          Canvas
-        </div>
-
-        <select
-          value={canvasPreset}
-          onChange={(e) =>
-            setCanvasPreset(e.target.value as "soft" | "grid" | "obsidian")
-          }
-          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/78 outline-none"
-        >
-          <option value="soft">Soft</option>
-          <option value="grid">Grid</option>
-          <option value="obsidian">Obsidian</option>
-        </select>
-
-        <div className="text-[10px] uppercase tracking-[0.22em] text-white/30">
-          Cards
-        </div>
-
-        <div className="inline-flex items-center rounded-lg border border-white/10 bg-white/[0.06] p-1">
-          {(["glass", "solid", "obsidian"] as const).map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => setCardPreset(preset)}
-              className={[
-                "rounded-md px-3 py-1.5 text-xs transition",
-                cardPreset === preset
-                  ? "bg-blue-500/18 text-blue-100 border border-blue-400/25"
-                  : "text-white/55 hover:text-white/85",
-              ].join(" ")}
-            >
-              {titleCase(preset)}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            const rect = viewportRef.current?.getBoundingClientRect();
-            if (!rect) return;
-
-            const viewportX = rect.width / 2;
-            const viewportY = rect.height / 2;
-            const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
-            if (nextZoom === zoom) return;
-
-            const anchorWorld = viewportPointToWorldAtZoom(
-              viewportX,
-              viewportY,
-              panOffset,
-              zoom
-            );
-
-            setPanOffset({
-              x: viewportX - anchorWorld.x * nextZoom,
-              y: viewportY - anchorWorld.y * nextZoom,
-            });
-            setZoom(nextZoom);
-          }}
-          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/78 hover:bg-white/[0.10]"
-        >
-          −
-        </button>
-
-        <div className="min-w-[64px] text-center text-xs font-medium text-white/60">
-          {Math.round(zoom * 100)}%
-        </div>
-
-        <button
-          type="button"
-          onClick={() => {
-            const rect = viewportRef.current?.getBoundingClientRect();
-            if (!rect) return;
-
-            const viewportX = rect.width / 2;
-            const viewportY = rect.height / 2;
-            const nextZoom = Math.min(MAX_ZOOM, zoom * 1.08);
-            if (nextZoom === zoom) return;
-
-            const anchorWorld = viewportPointToWorldAtZoom(
-              viewportX,
-              viewportY,
-              panOffset,
-              zoom
-            );
-
-            setPanOffset({
-              x: viewportX - anchorWorld.x * nextZoom,
-              y: viewportY - anchorWorld.y * nextZoom,
-            });
-            setZoom(nextZoom);
-          }}
-          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/78 hover:bg-white/[0.10]"
-        >
-          +
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            setZoom(1);
-            setPanOffset({ x: 2400, y: 2400 });
-          }}
-          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/62 hover:bg-white/[0.10]"
-        >
-          Reset view
-        </button>
-      </div>
-    </div>
-  </div>
+  <ArtisticCanvasControls
+    canvasPreset={canvasPreset}
+    setCanvasPreset={setCanvasPreset}
+    cardPreset={cardPreset}
+    setCardPreset={setCardPreset}
+    zoom={zoom}
+    onZoomOut={handleZoomOut}
+    onZoomIn={handleZoomIn}
+    onResetView={handleResetView}
+    titleCase={titleCase}
+  />
 )}
 
 {/* Body */}
@@ -1204,735 +935,62 @@ style={
         {appMode === "engineering" ? (
           children
         ) : (
-          <div
-            ref={viewportRef}
-            className={[
-              "relative h-full w-full overflow-hidden",
-              isPanning ? "cursor-grab" : "",
-            ].join(" ")}
-            style={{
-              userSelect: isPanning || !!draggingCardId || !!resizingCardId ? "none" : undefined,
-              WebkitUserSelect:
-                isPanning || !!draggingCardId || !!resizingCardId ? "none" : undefined,
-            }}
-
-            onDoubleClick={(e) => {
-              const target = e.target as HTMLElement;
-
-              // ignore if clicking on UI elements
-              if (target.closest("[data-artistic-card]")) return;
-              if (target.closest("[data-artistic-popup]")) return;
-              if (target.closest("[data-click-menu]")) return;
-
-              const world = viewportPointToWorld(e.clientX, e.clientY);
-
-              const newCardId = makeCardId();
-
-              setArtisticCards((prev) => [
-                ...prev,
-                {
-                  id: newCardId,
-                  type: "default",
-                  x: world.x,
-                  y: world.y,
-                  w: 240,
-                  h: 160,
-                  title: "Untitled card",
-                  body: "",
-                }
-              ]);
-
-              setSelectedCardId(newCardId);
-              setPendingNewCardId(newCardId);
-
-              // close menu if open
-              setClickMenu(null);
-              setClickMenuSubmenu(null);
-            }}
-
-            onPointerDown={(e) => {
-              hasMovedRef.current = false;
-              if (isPanning) {
-                e.preventDefault();
-                panStartRef.current = { x: e.clientX, y: e.clientY };
-                document.body.style.cursor = "grabbing";
-                return;
-              }
-
-              if (e.button !== 0) return; 
-              if (artisticMenu) return;
-
-              const target = e.target as HTMLElement;
-                if (target.closest("[data-artistic-card]")) return;
-                if (target.closest("[data-artistic-popup]")) return;
-                if (target.closest("[data-click-menu]")) return;
-
-              const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
-
-              setDragStart(worldPoint);
-              setDragCurrent(worldPoint);
-              setIsDraggingCard(true);
-            }}
-
-            onPointerMove={(e) => {
-              if (dragStart) {
-                const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
-
-                const dx = Math.abs(worldPoint.x - dragStart.x);
-                const dy = Math.abs(worldPoint.y - dragStart.y);
-
-                if (dx > 2 / zoom || dy > 2 / zoom) {
-                  hasMovedRef.current = true;
-                }
-              }
-              if (isPanning && panStartRef.current) {
-                e.preventDefault();
-
-                const start = panStartRef.current;
-                const dx = e.clientX - start.x;
-                const dy = e.clientY - start.y;
-
-                setPanOffset((prev) => ({
-                  x: prev.x + dx,
-                  y: prev.y + dy,
-                }));
-
-                panStartRef.current = { x: e.clientX, y: e.clientY };
-                document.body.style.cursor = "grabbing";
-                return;
-              }
-
-              if (resizingCardId && resizeStartRef.current) {
-                e.preventDefault();
-                document.body.style.cursor = "se-resize";
-
-                const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
-                const start = resizeStartRef.current;
-
-                const nextW = Math.max(MIN_CARD_W, start.startW + (worldPoint.x - start.startX));
-                const nextH = Math.max(MIN_CARD_H, start.startH + (worldPoint.y - start.startY));
-
-                setArtisticCards((prev) =>
-                  prev.map((card) =>
-                    card.id === resizingCardId
-                      ? {
-                          ...card,
-                          w: nextW,
-                          h: nextH,
-                        }
-                      : card
-                  )
-                );
-                return;
-              }
-
-              if (draggingCardId) {
-                e.preventDefault();
-
-                const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
-
-                setArtisticCards((prev) =>
-                  prev.map((card) =>
-                    card.id === draggingCardId
-                      ? {
-                          ...card,
-                          x: worldPoint.x - cardDragOffsetRef.current.x,
-                          y: worldPoint.y - cardDragOffsetRef.current.y,
-                        }
-                      : card
-                  )
-                );
-                return;
-              }
-
-              if (!isDraggingCard || !dragStart) return;
-
-              const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
-              setDragCurrent(worldPoint);
-            }}
-
-            onWheel={(e) => {
-              e.preventDefault();
-
-              const viewportPoint = viewportPointFromClient(e.clientX, e.clientY);
-              const zoomFactor = 1.05;
-
-              const nextZoom =
-                e.deltaY < 0
-                  ? Math.min(MAX_ZOOM, zoom * zoomFactor)
-                  : Math.max(MIN_ZOOM, zoom / zoomFactor);
-
-              if (nextZoom === zoom) return;
-
-              const anchorWorld = viewportPointToWorldAtZoom(
-                viewportPoint.x,
-                viewportPoint.y,
-                panOffset,
-                zoom
-              );
-
-              setPanOffset({
-                x: viewportPoint.x - anchorWorld.x * nextZoom,
-                y: viewportPoint.y - anchorWorld.y * nextZoom,
-              });
-
-              setZoom(nextZoom);
-            }}
-
-            onPointerUp={(e) => {
-              if (isPanning) {
-                panStartRef.current = null;
-                document.body.style.cursor = isPanning ? "grab" : "";
-                document.body.style.userSelect = "";
-                document.body.style.webkitUserSelect = "";
-                return;
-              }
-
-              if (resizingCardId) {
-                setResizingCardId(null);
-                resizeStartRef.current = null;
-                document.body.style.cursor = "";
-                document.body.style.userSelect = "";
-                document.body.style.webkitUserSelect = "";
-                return;
-              }
-
-              if (draggingCardId) {
-                setDraggingCardId(null);
-                document.body.style.userSelect = "";
-                document.body.style.webkitUserSelect = "";
-                return;
-              }
-
-              if (!isDraggingCard || !dragStart || !dragCurrent) {
-                setIsDraggingCard(false);
-                setDragStart(null);
-                setDragCurrent(null);
-                return;
-              }
-console.log("CLICK MENU", hasMovedRef.current);
-              const worldRect = clampRect(dragStart, dragCurrent);
-              const rect = e.currentTarget.getBoundingClientRect();
-
-
-              // tiny drag = treat as click menu
-              const threshold = 8 / zoom;
-
-              if (!hasMovedRef.current) {
-                const clientX = e.clientX;
-                const clientY = e.clientY;
-
-                setIsDraggingCard(false);
-                setDragStart(null);
-                setDragCurrent(null);
-                document.body.style.userSelect = "";
-                document.body.style.webkitUserSelect = "";
-
-                setClickMenu((prev) => {
-                // If already open → close (second click)
-                if (prev) return null;
-
-                ignoreNextCanvasClickRef.current = true;
-
-                return {
-                  x: clientX,
-                  y: clientY,
-                };
-              });
-
-                return;
-              }
-
-              if (worldRect.w >= 80 && worldRect.h >= 60) {
-                const newCardId = makeCardId();
-
-                setArtisticCards((prev) => [
-                  ...prev,
-                  {
-                    id: newCardId,
-                    type: "default",
-                    x: worldRect.x,
-                    y: worldRect.y,
-                    w: worldRect.w,
-                    h: worldRect.h,
-                    title: "Untitled card",
-                    body: "Floating canvas card",
-                  }
-                ]);
-
-                setPendingNewCardId(newCardId);
-              }
-
-              setIsDraggingCard(false);
-              setDragStart(null);
-              setDragCurrent(null);
-              document.body.style.userSelect = "";
-              document.body.style.webkitUserSelect = "";
-            }}
-
-            onPointerLeave={() => {
-              document.body.style.cursor = isPanning ? "grab" : "";
-              document.body.style.userSelect = "";
-              document.body.style.webkitUserSelect = "";
-
-              panStartRef.current = null;
-              resizeStartRef.current = null;
-              setResizingCardId(null);
-              setDraggingCardId(null); 
-              setIsDraggingCard(false);
-              setDragStart(null);
-              setDragCurrent(null);
-            }}
-
-            onClick={(e) => {
-              if (ignoreNextCanvasClickRef.current) {
-                ignoreNextCanvasClickRef.current = false;
-                return;
-              }
-
-              const target = e.target as HTMLElement;
-
-              const clickedCard = target.closest("[data-artistic-card]");
-              const clickedPopup = target.closest("[data-artistic-popup]");
-              const clickedClickMenu = target.closest("[data-click-menu]");
-
-              if (!clickedClickMenu) {
-                setClickMenu(null);
-                setClickMenuSubmenu(null);
-              }
-
-              if (artisticMenu) {
-                setArtisticMenu(null);
-                setArtisticPrompt("");
-                setArtisticMessages([]);
-                setArtisticError(null);
-              }
-
-              if (!clickedCard && !clickedPopup && !clickedClickMenu) {
-                if (editingCardId) {
-                  setEditingCardId(null);
-                }
-                setFocusedBodyCardId(null);
-                setSelectedCardId(null);
-              }
-            }}
-
-            onContextMenu={(e) => {
-              e.preventDefault();
-
-              const rect = e.currentTarget.getBoundingClientRect();
-
-              setClickMenu(null);
-              setArtisticMenu({
-                x: e.clientX - rect.left,
-                y: e.clientY - rect.top,
-              });
-            }}
-          >
-            <div className={`absolute inset-0 ${canvasPresetUi.viewportBg}`} />
-
-            <div
-              className="absolute left-0 top-0"
-              style={{
-                width: WORLD_W,
-                height: WORLD_H,
-                transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`,
-                transformOrigin: "0 0",
-                willChange: "transform",
-              }}
-            >
-              <div className={canvasPresetUi.gridClass} />
-
-              {isDraggingCard && dragStart && dragCurrent ? (() => {
-              const rect = clampRect(dragStart, dragCurrent);
-
-              return (
-                <div
-                  className="pointer-events-none absolute z-[900] rounded-2xl border border-blue-400/50 bg-blue-500/10 shadow-[0_0_24px_rgba(96,165,250,0.18)]"
-                  style={{
-                    left: rect.x,
-                    top: rect.y,
-                    width: rect.w,
-                    height: rect.h,
-                  }}
-                />
-              );
-            })() : null}
-
-              {artisticCards.map((card) => {
-                const cardPresetUi = getCardPresetClasses(cardPreset, isCardActive(card.id));
-                const isFrameCard = card.type === "frame";
-                const isNotesCard = card.type === "notes";
-
-                return (
-                  <div
-                  key={card.id}
-                  data-artistic-card
-                  onPointerDown={(e) => {
-                    if (isPanning || resizingCardId) return;
-
-                    const target = e.target as HTMLElement;
-                      if (target.closest("[data-card-resize-handle]")) return;
-                      if (target.closest("input")) return;
-                      if (target.closest("textarea")) return;
-
-                    e.stopPropagation();
-                    e.preventDefault();
-
-                    document.body.style.userSelect = "none";
-                    document.body.style.webkitUserSelect = "none";
-
-                    const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
-
-                    cardDragOffsetRef.current = {
-                      x: worldPoint.x - card.x,
-                      y: worldPoint.y - card.y,
-                    };
-
-                    setSelectedCardId(card.id);
-                    setDraggingCardId(card.id);
-                  }}
-                  className={[
-                    "absolute overflow-hidden backdrop-blur-xl transition-[box-shadow,border-color,background-color] duration-150",
-                    isFrameCard ? "rounded-[28px]" : "rounded-2xl",
-                    cardPresetUi.shell,
-                    isFrameCard ? "border-blue-400/20" : "",
-                    isCardActive(card.id) ? "z-[980]" : "z-[850]",
-                    resizingCardId === card.id
-                      ? "cursor-se-resize"
-                      : draggingCardId === card.id
-                      ? "cursor-grabbing"
-                      : "cursor-move",
-                  ].join(" ")}
-                  style={{
-                    left: card.x,
-                    top: card.y,
-                    width: card.w,
-                    height: card.h,
-                  }}
-                >
-                  <div
-                    className={[
-                      "flex items-center justify-between px-3 py-2 transition-colors duration-150",
-                      cardPresetUi.header,
-                    ].join(" ")}
-                  >
-                    {editingCardId === card.id ? (
-                      <input
-                        autoFocus
-                        spellCheck={false}
-                        value={card.title}
-                        onFocus={(e) => {
-                          setSelectedCardId(card.id);
-                          e.target.select();
-                        }}
-                        onChange={(e) => updateCard(card.id, { title: e.target.value })}
-                        onBlur={() => {
-                          commitCardTitle(card.id, card.title);
-                          setEditingCardId(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            commitCardTitle(card.id, card.title);
-                            setEditingCardId(null);
-                          }
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            setEditingCardId(null);
-                          }
-                        }}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        className={`w-full rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[11px] font-medium tracking-[0.12em] outline-none ${cardPresetUi.input}`}
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        onDoubleClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedCardId(card.id);
-                          setEditingCardId(card.id);
-                        }}
-                        className={`min-w-0 flex-1 truncate text-left text-[11px] font-medium tracking-[0.16em] cursor-text ${cardPresetUi.title}`}
-                      >
-                        {isFrameCard ? `Frame · ${card.title}` : card.title}
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setArtisticCards((prev) => prev.filter((c) => c.id !== card.id));
-                        if (editingCardId === card.id) {
-                          setEditingCardId(null);
-                        }
-                      }}
-                      className="ml-2 rounded-md px-2 py-1 text-[11px] text-black/35 hover:bg-black/5 hover:text-black/65"
-                    >
-                      ✕
-                    </button>
-                  </div>
-
-                  <div className="p-3 h-[calc(100%-41px)]">
-                    <textarea
-                      spellCheck={false}
-                      value={card.body}
-                      onFocus={() => {
-                        setSelectedCardId(card.id);
-                        setFocusedBodyCardId(card.id);
-                      }}
-                      onBlur={() => {
-                        setFocusedBodyCardId((prev) => (prev === card.id ? null : prev));
-                      }}
-                      onChange={(e) => commitCardBody(card.id, e.target.value)}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      placeholder={
-                        isFrameCard
-                          ? "Frame surface..."
-                          : isNotesCard
-                          ? "Notes..."
-                          : "Write here..."
-                      }
-                      className={`h-full w-full resize-none bg-transparent text-sm outline-none ${cardPresetUi.body}`}
-                    />
-                  </div>
-
-                  <button
-                    type="button"
-                    data-card-resize-handle
-                    onPointerDown={(e) => {
-                      if (isPanning) return;
-
-                      e.stopPropagation();
-                      e.preventDefault();
-
-                      document.body.style.userSelect = "none";
-                      document.body.style.webkitUserSelect = "none";
-
-                      const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
-
-                      resizeStartRef.current = {
-                        startX: worldPoint.x,
-                        startY: worldPoint.y,
-                        startW: card.w,
-                        startH: card.h,
-                      };
-
-                      setSelectedCardId(card.id);
-                      setResizingCardId(card.id);
-                    }}
-                    className={[
-                      "absolute bottom-2 right-2 z-[980] flex h-5 w-5 items-center justify-center rounded-md bg-white/80 hover:bg-white cursor-se-resize transition",
-                      isCardActive(card.id)
-                        ? "border border-blue-400/30 shadow-[0_0_14px_rgba(96,165,250,0.14)]"
-                        : "border border-black/10 shadow-sm",
-                    ].join(" ")}
-                    title="Resize card"
-                  >
-                    <div className="h-2.5 w-2.5 rounded-[2px] border-r border-b border-black/35" />
-                  </button>
-                    </div>
-                  );
-                })}
-            </div>
-
-
-            <div className="pointer-events-none select-none absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
-            Right-click anywhere on the canvas to summon Vestaryn
-          </div>
-
-            {clickMenu ? (
-              <div
-                data-click-menu
-                className="absolute z-[10]"
-                style={(() => {
-                  const rect = viewportRef.current?.getBoundingClientRect();
-
-                  if (!rect) {
-                    return {
-                      left: 0,
-                      top: 0,
-                      transform: "translate(8px, 8px)",
-                    };
-                  }
-
-                  return {
-                    left: clickMenu.x - rect.left,
-                    top: clickMenu.y - rect.top,
-                    transform: "translate(8px, 8px)",
-                  };
-                })()}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="relative">
-                  <div className="w-[190px] rounded-xl border border-black/10 bg-white/80 p-2 shadow-[0_20px_60px_rgba(0,0,0,0.18)] backdrop-blur-xl">
-                    <button
-                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-black/70 hover:bg-black/5"
-                      onMouseEnter={() => setClickMenuSubmenu("new-card")}
-                    >
-                      <span>New Card</span>
-                      <span className="text-black/35">›</span>
-                    </button>
-
-                    <button
-                      className="w-full rounded-md px-3 py-2 text-left text-sm text-black/40 hover:bg-black/5"
-                      disabled
-                    >
-                      Prompt Card (soon)
-                    </button>
-
-                    <button
-                      className="w-full rounded-md px-3 py-2 text-left text-sm text-black/40 hover:bg-black/5"
-                      disabled
-                    >
-                      Output Card (soon)
-                    </button>
-                  </div>
-
-                  {clickMenuSubmenu === "new-card" ? (
-                    <div
-                      className="absolute left-full top-0 ml-2 w-[210px] rounded-xl border border-black/10 bg-white/88 p-2 shadow-[0_20px_60px_rgba(0,0,0,0.18)] backdrop-blur-xl"
-                      onMouseLeave={() => setClickMenuSubmenu(null)}
-                    >
-                      <button
-                        className="w-full rounded-md px-3 py-2 text-left text-sm text-black/70 hover:bg-black/5"
-                        onClick={() => {
-                          const world = viewportPointToWorld(
-                            clickMenu.x + 8,
-                            clickMenu.y + 8
-                          );
-
-                          createMenuCard(world.x, world.y, {
-                            type: "notes",
-                            w: 260,
-                            h: 180,
-                            title: "Notes",
-                            body: "",
-                          });
-                        }}
-                      >
-                        Notes
-                      </button>
-
-                      <button
-                        className="w-full rounded-md px-3 py-2 text-left text-sm text-black/70 hover:bg-black/5"
-                        onClick={() => {
-                          const world = viewportPointToWorld(
-                            clickMenu.x + 8,
-                            clickMenu.y + 8
-                          );
-
-                          createMenuCard(world.x, world.y, {
-                            type: "frame",
-                            w: 1920,
-                            h: 1080,
-                            title: "1920×1080",
-                            body: "",
-                          });
-                        }}
-                      >
-                        1920×1080 card
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            {artisticMenu ? (
-              <div
-                data-artistic-popup
-                className="absolute z-[1200] w-[320px] rounded-2xl border border-black/10 bg-white/75 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
-                style={{
-                  left: artisticMenu.x,
-                  top: artisticMenu.y,
-                  transform: "translate(8px, 8px)",
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
-                    VESTARYN
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setArtisticMenu(null);
-                      setArtisticPrompt("");
-                      setArtisticMessages([]);
-                      setArtisticError(null);
-                    }}
-                    className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
-                  >
-                    ✕
-                  </button>
-                </div>
-
-                {artisticMessages.length > 0 ? (
-                  <div id="artistic-scroll" className="mb-3 max-h-[260px] overflow-auto space-y-2">
-                    {artisticMessages.map((m, i) => (
-                      <div
-                        key={i}
-                        className={[
-                          "rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
-                          m.role === "user"
-                            ? "bg-black/5 text-black/70"
-                            : "bg-white/70 text-black/80 border border-black/10",
-                        ].join(" ")}
-                      >
-                        {m.content}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-
-                <textarea
-                  value={artisticPrompt}
-                  onChange={(e) => {
-                    setArtisticPrompt(e.target.value);
-                    if (artisticError) setArtisticError(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void sendArtisticPrompt();
-                    }
-                  }}
-                  placeholder="Shape the chamber..."
-                  className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
-                />
-
-                {artisticError ? (
-                  <div className="mt-3 rounded-xl border border-rose-300/40 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">
-                    {artisticError}
-                  </div>
-                ) : null}
-
-                <div className="mt-3 flex items-center justify-between">
-                  <div className="text-[11px] text-black/35">
-                    Spatial ideation surface
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => void sendArtisticPrompt()}
-                    disabled={artisticSending || !artisticPrompt.trim()}
-                    className={[
-                      "rounded-xl border px-3 py-2 text-xs transition",
-                      artisticSending || !artisticPrompt.trim()
-                        ? "border-black/10 bg-black/5 text-black/25 cursor-not-allowed"
-                        : "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
-                    ].join(" ")}
-                  >
-                    {artisticSending ? "Sending..." : "Send"}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        )} 
+          <ArtisticCanvasSurface
+            viewportRef={viewportRef}
+            canvasPresetUi={canvasPresetUi}
+            cardPreset={cardPreset}
+            panOffset={panOffset}
+            setPanOffset={setPanOffset}
+            zoom={zoom}
+            setZoom={setZoom}
+            MIN_ZOOM={MIN_ZOOM}
+            MAX_ZOOM={MAX_ZOOM}
+            WORLD_W={WORLD_W}
+            WORLD_H={WORLD_H}
+            MIN_CARD_W={MIN_CARD_W}
+            MIN_CARD_H={MIN_CARD_H}
+            isPanning={isPanning}
+            dragStart={dragStart}
+            setDragStart={setDragStart}
+            dragCurrent={dragCurrent}
+            setDragCurrent={setDragCurrent}
+            isDraggingCard={isDraggingCard}
+            setIsDraggingCard={setIsDraggingCard}
+            draggingCardId={draggingCardId}
+            setDraggingCardId={setDraggingCardId}
+            resizingCardId={resizingCardId}
+            setResizingCardId={setResizingCardId}
+            selectedCardId={selectedCardId}
+            setSelectedCardId={setSelectedCardId}
+            editingCardId={editingCardId}
+            setEditingCardId={setEditingCardId}
+            focusedBodyCardId={focusedBodyCardId}
+            setFocusedBodyCardId={setFocusedBodyCardId}
+            setPendingNewCardId={setPendingNewCardId}
+            artisticCards={artisticCards}
+            setArtisticCards={setArtisticCards}
+            clickMenu={clickMenu}
+            setClickMenu={setClickMenu}
+            clickMenuSubmenu={clickMenuSubmenu}
+            setClickMenuSubmenu={setClickMenuSubmenu}
+            artisticMenu={artisticMenu}
+            setArtisticMenu={setArtisticMenu}
+            artisticPrompt={artisticPrompt}
+            setArtisticPrompt={setArtisticPrompt}
+            artisticMessages={artisticMessages}
+            setArtisticMessages={setArtisticMessages}
+            artisticSending={artisticSending}
+            artisticError={artisticError}
+            setArtisticError={setArtisticError}
+            sendArtisticPrompt={sendArtisticPrompt}
+            panStartRef={panStartRef}
+            cardDragOffsetRef={cardDragOffsetRef}
+            resizeStartRef={resizeStartRef}
+            hasMovedRef={hasMovedRef}
+            ignoreNextCanvasClickRef={ignoreNextCanvasClickRef}
+            resetArtisticPopup={resetArtisticPopup}
+          />
+        )}
       </div>
     </div>
   );
