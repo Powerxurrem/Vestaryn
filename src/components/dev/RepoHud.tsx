@@ -28,6 +28,99 @@ function titleCase(s: string) {
   return s.slice(0, 1).toUpperCase() + s.slice(1);
 }
 
+function getCanvasPresetClasses(preset: "soft" | "grid" | "obsidian") {
+  switch (preset) {
+    case "obsidian":
+      return {
+        viewportBg: "bg-[#0b1017]",
+        gridClass:
+          "absolute inset-0 opacity-[0.06] [background-image:linear-gradient(rgba(148,163,184,0.16)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.16)_1px,transparent_1px)] [background-size:48px_48px]",
+      };
+    case "grid":
+      return {
+        viewportBg: "bg-[#edf2f8]",
+        gridClass:
+          "absolute inset-0 opacity-[0.09] [background-image:linear-gradient(rgba(15,23,42,0.14)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.14)_1px,transparent_1px)] [background-size:48px_48px]",
+      };
+    default:
+      return {
+        viewportBg: "bg-[#f3f5f9]",
+        gridClass:
+          "absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(15,23,42,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.12)_1px,transparent_1px)] [background-size:48px_48px]",
+      };
+  }
+}
+
+function getCardPresetClasses(
+  preset: "glass" | "solid" | "obsidian",
+  active: boolean
+) {
+  switch (preset) {
+    case "obsidian":
+      return active
+        ? {
+            shell:
+              "border border-blue-400/40 bg-[#0f1724]/88 text-white shadow-[0_0_0_1px_rgba(96,165,250,0.20),0_0_30px_rgba(96,165,250,0.18),0_24px_70px_rgba(0,0,0,0.30)]",
+            header:
+              "border-b border-blue-400/20 bg-blue-500/[0.05]",
+            title: "text-blue-100/85 hover:text-blue-50",
+            body: "text-white/72 placeholder:text-white/30",
+            input: "text-blue-100/90",
+          }
+        : {
+            shell:
+              "border border-white/10 bg-[#111827]/84 text-white shadow-[0_18px_50px_rgba(0,0,0,0.28)]",
+            header:
+              "border-b border-white/10",
+            title: "text-white/70 hover:text-white/90",
+            body: "text-white/68 placeholder:text-white/28",
+            input: "text-white/85",
+          };
+
+    case "solid":
+      return active
+        ? {
+            shell:
+              "border border-blue-400/40 bg-white text-black shadow-[0_0_0_1px_rgba(96,165,250,0.18),0_0_30px_rgba(96,165,250,0.16),0_24px_70px_rgba(0,0,0,0.20)]",
+            header:
+              "border-b border-blue-400/20 bg-blue-500/[0.03]",
+            title: "text-black/60 hover:text-black/80",
+            body: "text-black/60 placeholder:text-black/25",
+            input: "text-black/65",
+          }
+        : {
+            shell:
+              "border border-black/10 bg-white text-black shadow-[0_18px_50px_rgba(0,0,0,0.14)]",
+            header:
+              "border-b border-black/8",
+            title: "text-black/45 hover:text-black/65",
+            body: "text-black/55 placeholder:text-black/25",
+            input: "text-black/60",
+          }; 
+
+    default:
+      return active
+        ? {
+            shell:
+              "border border-blue-400/40 bg-white/80 text-black shadow-[0_0_0_1px_rgba(96,165,250,0.18),0_0_30px_rgba(96,165,250,0.16),0_24px_70px_rgba(0,0,0,0.22)]",
+            header:
+              "border-b border-blue-400/20 bg-blue-500/[0.03]",
+            title: "text-black/55 hover:text-black/75",
+            body: "text-black/55 placeholder:text-black/25",
+            input: "text-black/60",
+          }
+        : {
+            shell:
+              "border border-black/10 bg-white/72 text-black shadow-[0_18px_50px_rgba(0,0,0,0.16)]",
+            header:
+              "border-b border-black/8",
+            title: "text-black/45 hover:text-black/65",
+            body: "text-black/55 placeholder:text-black/25",
+            input: "text-black/60",
+          };
+  }
+}
+
 function MenuItem({
   children,
   onClick,
@@ -144,6 +237,7 @@ const [artisticMessages, setArtisticMessages] = useState<
 const [artisticCards, setArtisticCards] = useState<
   {
     id: string;
+    type: "default" | "notes" | "frame";
     x: number;
     y: number;
     w: number;
@@ -153,6 +247,7 @@ const [artisticCards, setArtisticCards] = useState<
   }[]
 >([]);
 
+const [clickMenu, setClickMenu] = useState<{ x: number; y: number } | null>(null);
 const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
 const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
 const [isDraggingCard, setIsDraggingCard] = useState(false);
@@ -191,6 +286,39 @@ function clampRect(
   const h = Math.abs(end.y - start.y);
 
   return { x, y, w, h };
+}
+
+function createMenuCard(
+  worldX: number,
+  worldY: number,
+  opts?: {
+    type?: "default" | "notes" | "frame";
+    w?: number;
+    h?: number;
+    title?: string;
+    body?: string;
+  }
+) {
+  const newCardId = makeCardId();
+
+  setArtisticCards((prev) => [
+    ...prev,
+    {
+      id: newCardId,
+      type: opts?.type ?? "default",
+      x: worldX,
+      y: worldY,
+      w: opts?.w ?? 240,
+      h: opts?.h ?? 160,
+      title: opts?.title ?? "Untitled card",
+      body: opts?.body ?? "",
+    },
+  ]);
+
+  setSelectedCardId(newCardId);
+  setPendingNewCardId(newCardId);
+  setClickMenu(null);
+  setClickMenuSubmenu(null);
 }
 
 function makeCardId() {
@@ -232,6 +360,7 @@ function commitCardBody(cardId: string, body: string) {
   });
 }
 
+const [focusedBodyCardId, setFocusedBodyCardId] = useState<string | null>(null);
 const [artisticSending, setArtisticSending] = useState(false);
 const [artisticError, setArtisticError] = useState<string | null>(null);
 const [isPanning, setIsPanning] = useState(false);
@@ -247,10 +376,14 @@ const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({
   x: 2400,
   y: 2400,
 });
-
+const [clickMenuSubmenu, setClickMenuSubmenu] = useState<null | "new-card">(null);
+const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+const [canvasPreset, setCanvasPreset] = useState<"soft" | "grid" | "obsidian">("soft");
+const [cardPreset, setCardPreset] = useState<"glass" | "solid" | "obsidian">("glass");
 const WORLD_W = 8000;
 const WORLD_H = 8000;
-
+const hasMovedRef = useRef(false);
+const ignoreNextCanvasClickRef = useRef(false);
 const [resizingCardId, setResizingCardId] = useState<string | null>(null);
 const resizeStartRef = useRef<{
   startX: number;
@@ -312,10 +445,19 @@ useEffect(() => {
       }
 
       e.preventDefault();
-      setIsPanning(true);
+
+      setClickMenu(null);
+      setClickMenuSubmenu(null);
+      setArtisticMenu(null);
+      setArtisticPrompt("");
+      setArtisticMessages([]);
+      setArtisticError(null);
+      setEditingCardId(null);
+
       document.body.style.cursor = "grab";
       document.body.style.userSelect = "none";
       document.body.style.webkitUserSelect = "none";
+      setIsPanning(true);
     }
   }
 
@@ -425,6 +567,22 @@ async function sendArtisticPrompt() {
     setArtisticSending(false);
   }
 }
+function isCardActive(cardId: string) {
+  return (
+    selectedCardId === cardId ||
+    draggingCardId === cardId ||
+    resizingCardId === cardId ||
+    editingCardId === cardId ||
+    focusedBodyCardId === cardId
+  );
+}
+
+useEffect(() => {
+  if (!pendingNewCardId) return;
+
+  setEditingCardId(pendingNewCardId);
+  setPendingNewCardId(null);
+}, [pendingNewCardId]);
 
 useEffect(() => {
   function onDown(e: PointerEvent) {
@@ -444,6 +602,8 @@ useEffect(() => {
     }
   }
 
+
+
   document.addEventListener("pointerdown", onDown, true);
   document.addEventListener("keydown", onKey);
 
@@ -453,6 +613,7 @@ useEffect(() => {
   };
 }, [coreOpen]);
 
+const canvasPresetUi = getCanvasPresetClasses(canvasPreset);
   return (
     <div
   className={[
@@ -910,13 +1071,135 @@ style={
             <div className="ml-auto flex items-center gap-2">{right}</div>
           </div>
 
-          {/* Body */}
-    <div
-      className={[
-        "flex-1 min-h-0 min-w-0 transition-colors duration-500",
-        appMode === "artistic" ? "bg-transparent" : "bg-black/10",
-      ].join(" ")}
-    >
+          {/* Artistic sub-rail */}
+{appMode === "artistic" && (
+  <div className="relative z-[990] shrink-0 border-b border-blue-400/15 bg-[linear-gradient(to_right,rgba(5,10,18,0.96),rgba(9,16,28,0.92),rgba(5,10,18,0.96))] px-4 py-2 backdrop-blur-md">
+    <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center gap-3">
+        <div className="text-[10px] uppercase tracking-[0.22em] text-white/38">
+          Canvas
+        </div>
+
+        <select
+          value={canvasPreset}
+          onChange={(e) =>
+            setCanvasPreset(e.target.value as "soft" | "grid" | "obsidian")
+          }
+          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/78 outline-none"
+        >
+          <option value="soft">Soft</option>
+          <option value="grid">Grid</option>
+          <option value="obsidian">Obsidian</option>
+        </select>
+
+        <div className="text-[10px] uppercase tracking-[0.22em] text-white/30">
+          Cards
+        </div>
+
+        <div className="inline-flex items-center rounded-lg border border-white/10 bg-white/[0.06] p-1">
+          {(["glass", "solid", "obsidian"] as const).map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => setCardPreset(preset)}
+              className={[
+                "rounded-md px-3 py-1.5 text-xs transition",
+                cardPreset === preset
+                  ? "bg-blue-500/18 text-blue-100 border border-blue-400/25"
+                  : "text-white/55 hover:text-white/85",
+              ].join(" ")}
+            >
+              {titleCase(preset)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            const rect = viewportRef.current?.getBoundingClientRect();
+            if (!rect) return;
+
+            const viewportX = rect.width / 2;
+            const viewportY = rect.height / 2;
+            const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
+            if (nextZoom === zoom) return;
+
+            const anchorWorld = viewportPointToWorldAtZoom(
+              viewportX,
+              viewportY,
+              panOffset,
+              zoom
+            );
+
+            setPanOffset({
+              x: viewportX - anchorWorld.x * nextZoom,
+              y: viewportY - anchorWorld.y * nextZoom,
+            });
+            setZoom(nextZoom);
+          }}
+          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/78 hover:bg-white/[0.10]"
+        >
+          −
+        </button>
+
+        <div className="min-w-[64px] text-center text-xs font-medium text-white/60">
+          {Math.round(zoom * 100)}%
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            const rect = viewportRef.current?.getBoundingClientRect();
+            if (!rect) return;
+
+            const viewportX = rect.width / 2;
+            const viewportY = rect.height / 2;
+            const nextZoom = Math.min(MAX_ZOOM, zoom * 1.08);
+            if (nextZoom === zoom) return;
+
+            const anchorWorld = viewportPointToWorldAtZoom(
+              viewportX,
+              viewportY,
+              panOffset,
+              zoom
+            );
+
+            setPanOffset({
+              x: viewportX - anchorWorld.x * nextZoom,
+              y: viewportY - anchorWorld.y * nextZoom,
+            });
+            setZoom(nextZoom);
+          }}
+          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/78 hover:bg-white/[0.10]"
+        >
+          +
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setZoom(1);
+            setPanOffset({ x: 2400, y: 2400 });
+          }}
+          className="rounded-lg border border-white/10 bg-white/[0.06] px-3 py-2 text-xs text-white/62 hover:bg-white/[0.10]"
+        >
+          Reset view
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* Body */}
+<div
+  className={[
+    "flex-1 min-h-0 min-w-0 transition-colors duration-500",
+    appMode === "artistic" ? "bg-transparent" : "bg-black/10",
+  ].join(" ")}
+>
 
         {appMode === "engineering" ? (
           children
@@ -924,7 +1207,7 @@ style={
           <div
             ref={viewportRef}
             className={[
-              "relative h-full w-full overflow-hidden bg-[#eef1f6]",
+              "relative h-full w-full overflow-hidden",
               isPanning ? "cursor-grab" : "",
             ].join(" ")}
             style={{
@@ -932,7 +1215,43 @@ style={
               WebkitUserSelect:
                 isPanning || !!draggingCardId || !!resizingCardId ? "none" : undefined,
             }}
+
+            onDoubleClick={(e) => {
+              const target = e.target as HTMLElement;
+
+              // ignore if clicking on UI elements
+              if (target.closest("[data-artistic-card]")) return;
+              if (target.closest("[data-artistic-popup]")) return;
+              if (target.closest("[data-click-menu]")) return;
+
+              const world = viewportPointToWorld(e.clientX, e.clientY);
+
+              const newCardId = makeCardId();
+
+              setArtisticCards((prev) => [
+                ...prev,
+                {
+                  id: newCardId,
+                  type: "default",
+                  x: world.x,
+                  y: world.y,
+                  w: 240,
+                  h: 160,
+                  title: "Untitled card",
+                  body: "",
+                }
+              ]);
+
+              setSelectedCardId(newCardId);
+              setPendingNewCardId(newCardId);
+
+              // close menu if open
+              setClickMenu(null);
+              setClickMenuSubmenu(null);
+            }}
+
             onPointerDown={(e) => {
+              hasMovedRef.current = false;
               if (isPanning) {
                 e.preventDefault();
                 panStartRef.current = { x: e.clientX, y: e.clientY };
@@ -944,8 +1263,9 @@ style={
               if (artisticMenu) return;
 
               const target = e.target as HTMLElement;
-              if (target.closest("[data-artistic-card]")) return;
-              if (target.closest("[data-artistic-popup]")) return;
+                if (target.closest("[data-artistic-card]")) return;
+                if (target.closest("[data-artistic-popup]")) return;
+                if (target.closest("[data-click-menu]")) return;
 
               const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
 
@@ -953,7 +1273,18 @@ style={
               setDragCurrent(worldPoint);
               setIsDraggingCard(true);
             }}
+
             onPointerMove={(e) => {
+              if (dragStart) {
+                const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+
+                const dx = Math.abs(worldPoint.x - dragStart.x);
+                const dy = Math.abs(worldPoint.y - dragStart.y);
+
+                if (dx > 2 / zoom || dy > 2 / zoom) {
+                  hasMovedRef.current = true;
+                }
+              }
               if (isPanning && panStartRef.current) {
                 e.preventDefault();
 
@@ -1019,6 +1350,7 @@ style={
               const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
               setDragCurrent(worldPoint);
             }}
+
             onWheel={(e) => {
               e.preventDefault();
 
@@ -1046,7 +1378,8 @@ style={
 
               setZoom(nextZoom);
             }}
-            onPointerUp={() => {
+
+            onPointerUp={(e) => {
               if (isPanning) {
                 panStartRef.current = null;
                 document.body.style.cursor = isPanning ? "grab" : "";
@@ -1075,31 +1408,60 @@ style={
                 setIsDraggingCard(false);
                 setDragStart(null);
                 setDragCurrent(null);
+                return;
+              }
+console.log("CLICK MENU", hasMovedRef.current);
+              const worldRect = clampRect(dragStart, dragCurrent);
+              const rect = e.currentTarget.getBoundingClientRect();
+
+
+              // tiny drag = treat as click menu
+              const threshold = 8 / zoom;
+
+              if (!hasMovedRef.current) {
+                const clientX = e.clientX;
+                const clientY = e.clientY;
+
+                setIsDraggingCard(false);
+                setDragStart(null);
+                setDragCurrent(null);
                 document.body.style.userSelect = "";
                 document.body.style.webkitUserSelect = "";
+
+                setClickMenu((prev) => {
+                // If already open → close (second click)
+                if (prev) return null;
+
+                ignoreNextCanvasClickRef.current = true;
+
+                return {
+                  x: clientX,
+                  y: clientY,
+                };
+              });
+
                 return;
               }
 
-              const worldRect = clampRect(dragStart, dragCurrent);
-
               if (worldRect.w >= 80 && worldRect.h >= 60) {
-              const newCardId = makeCardId();
+                const newCardId = makeCardId();
 
-              setArtisticCards((prev) => [
-                ...prev,
-                {
-                  id: newCardId,
-                  x: worldRect.x,
-                  y: worldRect.y,
-                  w: worldRect.w,
-                  h: worldRect.h,
-                  title: "Untitled card",
-                  body: "Floating canvas card",
-                }
-              ]);
+                setArtisticCards((prev) => [
+                  ...prev,
+                  {
+                    id: newCardId,
+                    type: "default",
+                    x: worldRect.x,
+                    y: worldRect.y,
+                    w: worldRect.w,
+                    h: worldRect.h,
+                    title: "Untitled card",
+                    body: "Floating canvas card",
+                  }
+                ]);
 
-              setPendingNewCardId(newCardId);
-            }
+                setPendingNewCardId(newCardId);
+              }
 
               setIsDraggingCard(false);
               setDragStart(null);
@@ -1107,6 +1469,7 @@ style={
               document.body.style.userSelect = "";
               document.body.style.webkitUserSelect = "";
             }}
+
             onPointerLeave={() => {
               document.body.style.cursor = isPanning ? "grab" : "";
               document.body.style.userSelect = "";
@@ -1120,7 +1483,24 @@ style={
               setDragStart(null);
               setDragCurrent(null);
             }}
-            onClick={() => {
+
+            onClick={(e) => {
+              if (ignoreNextCanvasClickRef.current) {
+                ignoreNextCanvasClickRef.current = false;
+                return;
+              }
+
+              const target = e.target as HTMLElement;
+
+              const clickedCard = target.closest("[data-artistic-card]");
+              const clickedPopup = target.closest("[data-artistic-popup]");
+              const clickedClickMenu = target.closest("[data-click-menu]");
+
+              if (!clickedClickMenu) {
+                setClickMenu(null);
+                setClickMenuSubmenu(null);
+              }
+
               if (artisticMenu) {
                 setArtisticMenu(null);
                 setArtisticPrompt("");
@@ -1128,22 +1508,28 @@ style={
                 setArtisticError(null);
               }
 
-              if (editingCardId) {
-                setEditingCardId(null);
+              if (!clickedCard && !clickedPopup && !clickedClickMenu) {
+                if (editingCardId) {
+                  setEditingCardId(null);
+                }
+                setFocusedBodyCardId(null);
+                setSelectedCardId(null);
               }
             }}
+
             onContextMenu={(e) => {
               e.preventDefault();
 
               const rect = e.currentTarget.getBoundingClientRect();
 
+              setClickMenu(null);
               setArtisticMenu({
                 x: e.clientX - rect.left,
                 y: e.clientY - rect.top,
               });
             }}
           >
-            <div className="absolute inset-0 bg-[#f3f5f9]" />
+            <div className={`absolute inset-0 ${canvasPresetUi.viewportBg}`} />
 
             <div
               className="absolute left-0 top-0"
@@ -1155,7 +1541,7 @@ style={
                 willChange: "transform",
               }}
             >
-              <div className="absolute inset-0 opacity-[0.05] [background-image:linear-gradient(rgba(15,23,42,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.12)_1px,transparent_1px)] [background-size:48px_48px]" />
+              <div className={canvasPresetUi.gridClass} />
 
               {isDraggingCard && dragStart && dragCurrent ? (() => {
               const rect = clampRect(dragStart, dragCurrent);
@@ -1173,8 +1559,13 @@ style={
               );
             })() : null}
 
-              {artisticCards.map((card) => (
-                <div
+              {artisticCards.map((card) => {
+                const cardPresetUi = getCardPresetClasses(cardPreset, isCardActive(card.id));
+                const isFrameCard = card.type === "frame";
+                const isNotesCard = card.type === "notes";
+
+                return (
+                  <div
                   key={card.id}
                   data-artistic-card
                   onPointerDown={(e) => {
@@ -1198,15 +1589,20 @@ style={
                       y: worldPoint.y - card.y,
                     };
 
+                    setSelectedCardId(card.id);
                     setDraggingCardId(card.id);
                   }}
                   className={[
-                    "absolute overflow-hidden rounded-2xl border border-black/10 bg-white/72 backdrop-blur-xl",
+                    "absolute overflow-hidden backdrop-blur-xl transition-[box-shadow,border-color,background-color] duration-150",
+                    isFrameCard ? "rounded-[28px]" : "rounded-2xl",
+                    cardPresetUi.shell,
+                    isFrameCard ? "border-blue-400/20" : "",
+                    isCardActive(card.id) ? "z-[980]" : "z-[850]",
                     resizingCardId === card.id
-                      ? "z-[980] cursor-se-resize shadow-[0_24px_70px_rgba(0,0,0,0.22)]"
+                      ? "cursor-se-resize"
                       : draggingCardId === card.id
-                      ? "z-[950] cursor-grabbing shadow-[0_24px_70px_rgba(0,0,0,0.22)]"
-                      : "z-[850] cursor-move shadow-[0_18px_50px_rgba(0,0,0,0.16)]",
+                      ? "cursor-grabbing"
+                      : "cursor-move",
                   ].join(" ")}
                   style={{
                     left: card.x,
@@ -1215,11 +1611,21 @@ style={
                     height: card.h,
                   }}
                 >
-                  <div className="flex items-center justify-between border-b border-black/8 px-3 py-2">
+                  <div
+                    className={[
+                      "flex items-center justify-between px-3 py-2 transition-colors duration-150",
+                      cardPresetUi.header,
+                    ].join(" ")}
+                  >
                     {editingCardId === card.id ? (
                       <input
                         autoFocus
+                        spellCheck={false}
                         value={card.title}
+                        onFocus={(e) => {
+                          setSelectedCardId(card.id);
+                          e.target.select();
+                        }}
                         onChange={(e) => updateCard(card.id, { title: e.target.value })}
                         onBlur={() => {
                           commitCardTitle(card.id, card.title);
@@ -1237,18 +1643,19 @@ style={
                           }
                         }}
                         onPointerDown={(e) => e.stopPropagation()}
-                        className="w-full rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[11px] font-medium tracking-[0.12em] text-black/55 outline-none"
+                        className={`w-full rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[11px] font-medium tracking-[0.12em] outline-none ${cardPresetUi.input}`}
                       />
                     ) : (
                       <button
                         type="button"
-                        onClick={(e) => {
+                        onDoubleClick={(e) => {
                           e.stopPropagation();
+                          setSelectedCardId(card.id);
                           setEditingCardId(card.id);
                         }}
-                        className="min-w-0 flex-1 truncate text-left text-[11px] font-medium tracking-[0.16em] text-black/45 hover:text-black/65"
+                        className={`min-w-0 flex-1 truncate text-left text-[11px] font-medium tracking-[0.16em] cursor-text ${cardPresetUi.title}`}
                       >
-                        {card.title}
+                        {isFrameCard ? `Frame · ${card.title}` : card.title}
                       </button>
                     )}
 
@@ -1269,11 +1676,25 @@ style={
 
                   <div className="p-3 h-[calc(100%-41px)]">
                     <textarea
+                      spellCheck={false}
                       value={card.body}
+                      onFocus={() => {
+                        setSelectedCardId(card.id);
+                        setFocusedBodyCardId(card.id);
+                      }}
+                      onBlur={() => {
+                        setFocusedBodyCardId((prev) => (prev === card.id ? null : prev));
+                      }}
                       onChange={(e) => commitCardBody(card.id, e.target.value)}
                       onPointerDown={(e) => e.stopPropagation()}
-                      placeholder="Write here..."
-                      className="h-full w-full resize-none bg-transparent text-sm text-black/55 outline-none placeholder:text-black/25"
+                      placeholder={
+                        isFrameCard
+                          ? "Frame surface..."
+                          : isNotesCard
+                          ? "Notes..."
+                          : "Write here..."
+                      }
+                      className={`h-full w-full resize-none bg-transparent text-sm outline-none ${cardPresetUi.body}`}
                     />
                   </div>
 
@@ -1298,95 +1719,126 @@ style={
                         startH: card.h,
                       };
 
+                      setSelectedCardId(card.id);
                       setResizingCardId(card.id);
                     }}
-                    className="absolute bottom-2 right-2 z-[980] flex h-5 w-5 items-center justify-center rounded-md border border-black/10 bg-white/80 shadow-sm hover:bg-white cursor-se-resize"
+                    className={[
+                      "absolute bottom-2 right-2 z-[980] flex h-5 w-5 items-center justify-center rounded-md bg-white/80 hover:bg-white cursor-se-resize transition",
+                      isCardActive(card.id)
+                        ? "border border-blue-400/30 shadow-[0_0_14px_rgba(96,165,250,0.14)]"
+                        : "border border-black/10 shadow-sm",
+                    ].join(" ")}
                     title="Resize card"
                   >
                     <div className="h-2.5 w-2.5 rounded-[2px] border-r border-b border-black/35" />
                   </button>
-                </div>
-              ))}
+                    </div>
+                  );
+                })}
             </div>
 
-            <div className="absolute right-5 bottom-5 z-[1250] flex items-center gap-2 rounded-2xl border border-black/10 bg-white/70 px-2 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.14)] backdrop-blur-xl">
-          <button
-            type="button"
-            onClick={() => {
-              const rect = viewportRef.current?.getBoundingClientRect();
-              if (!rect) return;
 
-              const viewportX = rect.width / 2;
-              const viewportY = rect.height / 2;
-              const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
-              if (nextZoom === zoom) return;
-
-              const anchorWorld = viewportPointToWorldAtZoom(
-                viewportX,
-                viewportY,
-                panOffset,
-                zoom
-              );
-
-              setPanOffset({
-                x: viewportX - anchorWorld.x * nextZoom,
-                y: viewportY - anchorWorld.y * nextZoom,
-              });
-              setZoom(nextZoom);
-            }}
-            className="rounded-lg border border-black/10 bg-white/80 px-3 py-2 text-sm text-black/70 hover:bg-white"
-          >
-            −
-          </button>
-
-          <div className="min-w-[64px] text-center text-xs font-medium text-black/55">
-            {Math.round(zoom * 100)}%
+            <div className="pointer-events-none select-none absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
+            Right-click anywhere on the canvas to summon Vestaryn
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              const rect = viewportRef.current?.getBoundingClientRect();
-              if (!rect) return;
+            {clickMenu ? (
+              <div
+                data-click-menu
+                className="absolute z-[10]"
+                style={(() => {
+                  const rect = viewportRef.current?.getBoundingClientRect();
 
-              const viewportX = rect.width / 2;
-              const viewportY = rect.height / 2;
-              const nextZoom = Math.min(MAX_ZOOM, zoom * 1.08);
-              if (nextZoom === zoom) return;
+                  if (!rect) {
+                    return {
+                      left: 0,
+                      top: 0,
+                      transform: "translate(8px, 8px)",
+                    };
+                  }
 
-              const anchorWorld = viewportPointToWorldAtZoom(
-                viewportX,
-                viewportY,
-                panOffset,
-                zoom
-              );
+                  return {
+                    left: clickMenu.x - rect.left,
+                    top: clickMenu.y - rect.top,
+                    transform: "translate(8px, 8px)",
+                  };
+                })()}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="relative">
+                  <div className="w-[190px] rounded-xl border border-black/10 bg-white/80 p-2 shadow-[0_20px_60px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+                    <button
+                      className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm text-black/70 hover:bg-black/5"
+                      onMouseEnter={() => setClickMenuSubmenu("new-card")}
+                    >
+                      <span>New Card</span>
+                      <span className="text-black/35">›</span>
+                    </button>
 
-              setPanOffset({
-                x: viewportX - anchorWorld.x * nextZoom,
-                y: viewportY - anchorWorld.y * nextZoom,
-              });
-              setZoom(nextZoom);
-            }}
-            className="rounded-lg border border-black/10 bg-white/80 px-3 py-2 text-sm text-black/70 hover:bg-white"
-          >
-            +
-          </button>
+                    <button
+                      className="w-full rounded-md px-3 py-2 text-left text-sm text-black/40 hover:bg-black/5"
+                      disabled
+                    >
+                      Prompt Card (soon)
+                    </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setZoom(1);
-              setPanOffset({ x: 2400, y: 2400 });
-            }}
-            className="rounded-lg border border-black/10 bg-white/80 px-3 py-2 text-xs text-black/60 hover:bg-white"
-          >
-            Reset
-          </button>
-        </div>
+                    <button
+                      className="w-full rounded-md px-3 py-2 text-left text-sm text-black/40 hover:bg-black/5"
+                      disabled
+                    >
+                      Output Card (soon)
+                    </button>
+                  </div>
 
-            <div className="absolute bottom-12 left-1/2 -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
-              Right-click anywhere on the canvas to summon Vestaryn
-            </div>
+                  {clickMenuSubmenu === "new-card" ? (
+                    <div
+                      className="absolute left-full top-0 ml-2 w-[210px] rounded-xl border border-black/10 bg-white/88 p-2 shadow-[0_20px_60px_rgba(0,0,0,0.18)] backdrop-blur-xl"
+                      onMouseLeave={() => setClickMenuSubmenu(null)}
+                    >
+                      <button
+                        className="w-full rounded-md px-3 py-2 text-left text-sm text-black/70 hover:bg-black/5"
+                        onClick={() => {
+                          const world = viewportPointToWorld(
+                            clickMenu.x + 8,
+                            clickMenu.y + 8
+                          );
+
+                          createMenuCard(world.x, world.y, {
+                            type: "notes",
+                            w: 260,
+                            h: 180,
+                            title: "Notes",
+                            body: "",
+                          });
+                        }}
+                      >
+                        Notes
+                      </button>
+
+                      <button
+                        className="w-full rounded-md px-3 py-2 text-left text-sm text-black/70 hover:bg-black/5"
+                        onClick={() => {
+                          const world = viewportPointToWorld(
+                            clickMenu.x + 8,
+                            clickMenu.y + 8
+                          );
+
+                          createMenuCard(world.x, world.y, {
+                            type: "frame",
+                            w: 1920,
+                            h: 1080,
+                            title: "1920×1080",
+                            body: "",
+                          });
+                        }}
+                      >
+                        1920×1080 card
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
 
             {artisticMenu ? (
               <div
@@ -1399,6 +1851,7 @@ style={
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
+                
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
                     VESTARYN
@@ -1571,6 +2024,8 @@ async function copyRepoId() {
     setTimeout(() => setCopied(false), 1200);
   } catch {}
 }
+
+
 
 useEffect(() => {
   function onDown(e: PointerEvent) {
