@@ -1,4 +1,9 @@
-export type ArtisticCardType = "default" | "notes" | "frame";
+export type ArtisticCardType =
+  | "default"
+  | "notes"
+  | "frame"
+  | "prompt"
+  | "output";
 
 export type ArtisticCard = {
   id: string;
@@ -9,6 +14,9 @@ export type ArtisticCard = {
   h: number;
   title: string;
   body: string;
+  links?: string[];
+  sourceCardId?: string;
+  outputKind?: "text" | "powerpoint";
 };
 
 export type ScreenPoint = {

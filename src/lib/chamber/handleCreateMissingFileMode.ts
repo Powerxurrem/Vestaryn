@@ -412,12 +412,22 @@ export async function handleCreateMissingFileMode({
               `- The script must create sheets and headers.\n` +
               `- The script must include realistic workbook structure.\n` +
               `- The script must save the workbook to a file.\n\n` +
+              `- The script MUST support CLI output path using argparse.\n` +
+              `- The script MUST accept -o or --output argument.\n` +
+              `- The script MUST save the file to the provided output path.\n` +
+              `- If no output path is provided, use a default filename.\n` +
+              `- Do NOT hardcode output file paths.\n` +
               `Minimum requirements:\n` +
               `- import openpyxl\n` +
               `- create Workbook()\n` +
               `- create at least 3 sheets\n` +
               `- add headers to each sheet\n` +
               `- save the file\n\n` +
+              `Implementation structure:\n` +
+              `- Use argparse in a main() function.\n` +
+              `- Pass the output path into the workbook creation function.\n` +
+              `- Save using wb.save(output_path).\n` +
+              `- Ensure __main__ entrypoint is present.\n\n` +
               `Return ONLY the full Python file.\n`;
 
             newContent = await generateNewFileContentWithRetry({

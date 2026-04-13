@@ -14,6 +14,7 @@ type ArtisticSummonPopupProps = {
   artisticMessages: ArtisticMessage[];
   artisticSending: boolean;
   artisticError: string | null;
+  cardPreset: "glass" | "solid" | "obsidian";
   setArtisticMenu: Dispatch<SetStateAction<ScreenPoint | null>>;
   setArtisticPrompt: Dispatch<SetStateAction<string>>;
   setArtisticMessages: Dispatch<SetStateAction<ArtisticMessage[]>>;
@@ -27,6 +28,7 @@ export default function ArtisticSummonPopup({
   artisticMessages,
   artisticSending,
   artisticError,
+  cardPreset,
   setArtisticMenu,
   setArtisticPrompt,
   setArtisticMessages,
@@ -34,6 +36,61 @@ export default function ArtisticSummonPopup({
   sendArtisticPrompt,
 }: ArtisticSummonPopupProps) {
   if (!artisticMenu) return null;
+
+  const popupPresetUi =
+    cardPreset === "obsidian"
+      ? {
+          shell:
+            "border border-blue-400/15 bg-[rgba(5,10,20,0.75)] text-white shadow-[0_20px_60px_rgba(0,0,0,0.35)] backdrop-blur-2xl",
+          label: "text-blue-100/55",
+          close: "text-white/35 hover:bg-white/5 hover:text-white/70",
+          userBubble: "bg-white/[0.05] text-white/72 border border-white/10",
+          assistantBubble: "bg-blue-500/10 text-white/88 border border-blue-400/15",
+          input:
+            "border border-white/10 bg-white/[0.04] text-white/85 placeholder:text-white/30 focus:border-blue-400/35",
+          meta: "text-white/35",
+          sendIdle:
+            "border-blue-400/20 bg-blue-500/10 text-blue-100 hover:bg-blue-500/15",
+          sendDisabled:
+            "border-white/10 bg-white/[0.04] text-white/25 cursor-not-allowed",
+          error:
+            "border border-rose-400/30 bg-rose-500/10 text-rose-200",
+        }
+            : cardPreset === "solid"
+      ? {
+          shell:
+            "border border-black/10 bg-white/[0.72] text-black shadow-[0_20px_60px_rgba(0,0,0,0.18)] backdrop-blur-2xl",
+          label: "text-black/45",
+          close: "text-black/35 hover:bg-black/5 hover:text-black/70",
+          userBubble: "bg-black/[0.04] text-black/70 border border-black/10",
+          assistantBubble: "bg-white/[0.72] text-black/80 border border-black/10",
+          input:
+            "border border-black/10 bg-white/[0.65] text-black/80 placeholder:text-black/30 focus:border-blue-400/35",
+          meta: "text-black/35",
+          sendIdle:
+            "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
+          sendDisabled:
+            "border-black/10 bg-black/[0.04] text-black/25 cursor-not-allowed",
+          error:
+            "border border-rose-300/40 bg-rose-50/80 text-rose-700",
+        }
+            : {
+          shell:
+            "border border-black/10 bg-white/[0.72] text-black shadow-[0_20px_60px_rgba(0,0,0,0.18)] backdrop-blur-2xl",
+          label: "text-black/45",
+          close: "text-black/35 hover:bg-black/5 hover:text-black/70",
+          userBubble: "bg-black/[0.04] text-black/70 border border-black/10",
+          assistantBubble: "bg-white/[0.72] text-black/80 border border-black/10",
+          input:
+            "border border-black/10 bg-white/[0.65] text-black/80 placeholder:text-black/30 focus:border-blue-400/35",
+          meta: "text-black/35",
+          sendIdle:
+            "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
+          sendDisabled:
+            "border-black/10 bg-black/[0.04] text-black/25 cursor-not-allowed",
+          error:
+            "border border-rose-300/40 bg-rose-50/80 text-rose-700",
+        };
 
   function closePopup() {
     setArtisticMenu(null);
@@ -45,7 +102,10 @@ export default function ArtisticSummonPopup({
   return (
     <div
       data-artistic-popup
-      className="absolute z-[1200] w-[320px] rounded-2xl border border-black/10 bg-white/75 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] backdrop-blur-2xl"
+      className={[
+        "absolute z-[1200] w-[320px] rounded-2xl p-3",
+        popupPresetUi.shell,
+      ].join(" ")}
       style={{
         left: artisticMenu.x,
         top: artisticMenu.y,
@@ -54,13 +114,13 @@ export default function ArtisticSummonPopup({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-[11px] font-medium tracking-[0.18em] text-black/50">
+        <div className={`text-[11px] font-medium tracking-[0.18em] ${popupPresetUi.label}`}>
           VESTARYN
         </div>
         <button
           type="button"
           onClick={closePopup}
-          className="rounded-md px-2 py-1 text-xs text-black/40 hover:bg-black/5 hover:text-black/70"
+          className={`rounded-md px-2 py-1 text-xs ${popupPresetUi.close}`}
         >
           ✕
         </button>
@@ -76,9 +136,7 @@ export default function ArtisticSummonPopup({
               key={i}
               className={[
                 "rounded-xl px-3 py-2 text-sm whitespace-pre-wrap",
-                m.role === "user"
-                  ? "bg-black/5 text-black/70"
-                  : "bg-white/70 text-black/80 border border-black/10",
+                m.role === "user" ? popupPresetUi.userBubble : popupPresetUi.assistantBubble,
               ].join(" ")}
             >
               {m.content}
@@ -100,17 +158,20 @@ export default function ArtisticSummonPopup({
           }
         }}
         placeholder="Shape the chamber..."
-        className="min-h-[110px] w-full resize-none rounded-xl border border-black/10 bg-white/70 px-3 py-3 text-sm text-black/80 outline-none placeholder:text-black/30 focus:border-blue-400/40"
+        className={[
+          "min-h-[110px] w-full resize-none rounded-xl px-3 py-3 text-sm outline-none",
+          popupPresetUi.input,
+        ].join(" ")}
       />
 
       {artisticError ? (
-        <div className="mt-3 rounded-xl border border-rose-300/40 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">
+        <div className={`mt-3 rounded-xl px-3 py-2 text-xs ${popupPresetUi.error}`}>
           {artisticError}
         </div>
       ) : null}
 
       <div className="mt-3 flex items-center justify-between">
-        <div className="text-[11px] text-black/35">
+        <div className={`text-[11px] ${popupPresetUi.meta}`}>
           Spatial ideation surface
         </div>
 
@@ -121,8 +182,8 @@ export default function ArtisticSummonPopup({
           className={[
             "rounded-xl border px-3 py-2 text-xs transition",
             artisticSending || !artisticPrompt.trim()
-              ? "border-black/10 bg-black/5 text-black/25 cursor-not-allowed"
-              : "border-blue-400/20 bg-blue-500/10 text-blue-900 hover:bg-blue-500/15",
+              ? popupPresetUi.sendDisabled
+              : popupPresetUi.sendIdle,
           ].join(" ")}
         >
           {artisticSending ? "Sending..." : "Send"}

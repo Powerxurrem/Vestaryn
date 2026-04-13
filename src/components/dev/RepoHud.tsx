@@ -150,7 +150,7 @@ export function VestarynFrame({
   const [coreView, setCoreView] = useState<CoreView>("menu");
   const coreRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
-const [appMode, setAppMode] = useState<"engineering" | "artistic">("engineering");
+const [appMode, setAppMode] = useState<"engineering" | "artistic">("artistic");
 const [artisticMenu, setArtisticMenu] = useState<{ x: number; y: number } | null>(null);
 const [artisticPrompt, setArtisticPrompt] = useState("");
 const [editingCardId, setEditingCardId] = useState<string | null>(null);
@@ -163,6 +163,9 @@ const [clickMenu, setClickMenu] = useState<ScreenPoint | null>(null);
 const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
 const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
 const [isDraggingCard, setIsDraggingCard] = useState(false);
+const [connectionPulseCardId, setConnectionPulseCardId] = useState<string | null>(null);
+
+
 
 async function copyRepoId() {
   try {
@@ -211,7 +214,10 @@ const [panOffset, setPanOffset] = useState<PanOffset>({
   x: 2400,
   y: 2400,
 });
-const [clickMenuSubmenu, setClickMenuSubmenu] = useState<null | "new-card">(null);
+
+const [connectingFromCardId, setConnectingFromCardId] = useState<string | null>(null);
+const [connectionPreviewPoint, setConnectionPreviewPoint] = useState<ScreenPoint | null>(null);
+const [clickMenuSubmenu, setClickMenuSubmenu] = useState<null | "new-card" | "outputs">(null);
 const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
 const [canvasPreset, setCanvasPreset] = useState<"soft" | "grid" | "obsidian">("soft");
 const [cardPreset, setCardPreset] = useState<"glass" | "solid" | "obsidian">("glass");
@@ -532,7 +538,141 @@ style={
     Artistic
   </button>
 </div>
+<button
+  onClick={async () => {
+  const runnableOutputs = artisticCards
+    .filter((card) => card.type === "output" && card.sourceCardId)
+    .map((output) => {
+      const source = artisticCards.find((c) => c.id === output.sourceCardId);
+      if (!source) return null;
+      return { output, source };
+    })
+    .filter(
+      (
+        item
+      ): item is {
+        output: ArtisticCard;
+        source: ArtisticCard;
+      } => item !== null
+    );
 
+  if (runnableOutputs.length === 0) return;
+
+  setArtisticCards((prev) =>
+    prev.map((card) =>
+      runnableOutputs.some((item) => item.output.id === card.id)
+        ? {
+            ...card,
+            body: "Generating...",
+          }
+        : card
+    )
+  );
+
+  for (const item of runnableOutputs) {
+    try {
+      const res = await fetch(`/api/repo/${repoId}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content:
+            item.output.outputKind === "text"
+              ? `[Artistic Mode]\n` +
+                `Generate a clean regular text output card response.\n` +
+                `Keep the response concise but useful.\n` +
+                `No role labels. No filler. Return only the useful result text.\n\n` +
+                item.source.body
+              : item.output.outputKind === "powerpoint"
+              ? `[Artistic Mode]\n` +
+                `Generate a PowerPoint slide concept.\n` +
+                `Return it in EXACTLY this structure:\n\n` +
+                `TITLE: ...\n` +
+                `HOOK: ...\n` +
+                `BULLETS:\n` +
+                `- ...\n` +
+                `- ...\n` +
+                `- ...\n` +
+                `VISUAL: ...\n\n` +
+                `Keep it concise, presentation-ready, and visually strong.\n` +
+                `Do not add commentary outside this format.\n\n` +
+                item.source.body
+              : `[Artistic Mode]\n\n${item.source.body}`,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Request failed (${res.status})`);
+      }
+
+      const raw = await res.text();
+      const trimmed = raw.trim();
+
+      let reply = "";
+
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        try {
+          const data = JSON.parse(trimmed);
+          reply =
+            typeof data?.assistant === "string"
+              ? data.assistant
+              : typeof data?.content === "string"
+              ? data.content
+              : typeof data?.message === "string"
+              ? data.message
+              : typeof data?.reply === "string"
+              ? data.reply
+              : typeof data?.text === "string"
+              ? data.text
+              : typeof data?.output_text === "string"
+              ? data.output_text
+              : typeof data?.raw === "string"
+              ? data.raw
+              : typeof data?.assistantText === "string"
+              ? data.assistantText
+              : trimmed;
+        } catch {
+          reply = trimmed;
+        }
+      } else {
+        reply = trimmed;
+      }
+
+      const cleaned = cleanArtisticReply(reply || "Vestaryn returned no visible reply.");
+
+      setArtisticCards((prev) =>
+        prev.map((card) =>
+          card.id === item.output.id
+            ? {
+                ...card,
+                body: cleaned,
+              }
+            : card
+        )
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to generate output.";
+
+      setArtisticCards((prev) =>
+        prev.map((card) =>
+          card.id === item.output.id
+            ? {
+                ...card,
+                body: `Generation failed.\n\n${message}`,
+              }
+            : card
+        )
+      );
+    }
+  }
+}}
+  className="ml-4 rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-white/80 hover:bg-white/[0.08]"
+>
+  ▶ Run
+</button>
   {/* Sigil + Chamber Core menu */}
   <div ref={coreRef} className="relative px-3">
     {appMode === "artistic" ? (
@@ -565,9 +705,9 @@ style={
 
   {/* 🧠 Sigil */}
   <img
-  src="/vestaryn_artistic.png"
+  src="/vestaryn_final_candidate.png"
   alt="Vestaryn"
-  className="relative z-[2] h-[180px] w-[200px] object-contain mix-blend-screen opacity-90 animate-[float_6s_ease-in-out_infinite]"
+  className="relative z-[2] h-[180px] w-[200px] object-contain mix-blend-screen opacity-90 animate-[float_6s_ease-in-out_infinite] "
   style={{
     maskImage: `
       radial-gradient(circle at center,
@@ -589,7 +729,7 @@ style={
         transparent 20%
       )
     `,
-    filter: "drop-shadow(0 0 300px rgba(96,165,250,0.35)) saturate(1.15)",
+    filter: "drop-shadow(0 0 300px rgba(96,165,250,0.35)) saturate(1.15) brightness(1.5) contrast(1)",
   }}
 />
 </div>
@@ -935,7 +1075,7 @@ style={
         {appMode === "engineering" ? (
           children
         ) : (
-          <ArtisticCanvasSurface
+         <ArtisticCanvasSurface
             viewportRef={viewportRef}
             canvasPresetUi={canvasPresetUi}
             cardPreset={cardPreset}
@@ -983,12 +1123,18 @@ style={
             artisticError={artisticError}
             setArtisticError={setArtisticError}
             sendArtisticPrompt={sendArtisticPrompt}
+            connectingFromCardId={connectingFromCardId}
+            setConnectingFromCardId={setConnectingFromCardId}
+            connectionPreviewPoint={connectionPreviewPoint}
+            setConnectionPreviewPoint={setConnectionPreviewPoint}
             panStartRef={panStartRef}
             cardDragOffsetRef={cardDragOffsetRef}
             resizeStartRef={resizeStartRef}
             hasMovedRef={hasMovedRef}
             ignoreNextCanvasClickRef={ignoreNextCanvasClickRef}
             resetArtisticPopup={resetArtisticPopup}
+            connectionPulseCardId={connectionPulseCardId}
+            setConnectionPulseCardId={setConnectionPulseCardId}
           />
         )}
       </div>

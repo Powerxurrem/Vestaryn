@@ -851,6 +851,34 @@ export function mergeRequirementsTxt(existingContent: string, nextContent: strin
   return `${merged.join("\n")}\n`;
 }
 
+
+function buildPythonArtifactOutputRules(path: string, userRequest: string) {
+  const lowerPath = String(path ?? "").toLowerCase();
+  const lowerReq = String(userRequest ?? "").toLowerCase();
+
+  const isPythonFile = lowerPath.endsWith(".py");
+  const looksLikeArtifactScript =
+    /\b(excel|xlsx|workbook|spreadsheet|openpyxl|csv|pdf|report|dashboard|output file|generate file)\b/.test(lowerReq);
+
+  if (!isPythonFile || !looksLikeArtifactScript) {
+    return "";
+  }
+
+  return `
+Python artifact output rules:
+- This Python script must support CLI output path via argparse.
+- It must accept -o and --output arguments.
+- It must save the generated file to the provided output path when one is supplied.
+- If no output path is supplied, it must use a sensible default filename.
+- Do not hardcode output to a fixed path only.
+- Use a main() entrypoint.
+- Pass the output path into the file-generation function.
+- Save using the provided output path.
+- Keep the script directly runnable with: python script.py
+- Also make it work with: python script.py -o some/path/output.xlsx
+`.trim();
+}
+
 export async function generateNewFileContent(opts: {
   openai: OpenAI;
   model: string;
@@ -859,7 +887,12 @@ export async function generateNewFileContent(opts: {
   mime: string;
   maxOutputTokens?: number;
 }) {
-  const prompt = `
+  const pythonArtifactRules = buildPythonArtifactOutputRules(
+    opts.path,
+    opts.userRequest
+  );
+
+    const prompt = `
 You are creating a NEW repository file.
 
 Return ONLY the full file contents.
@@ -870,6 +903,8 @@ Rules:
 - Do not include [Observation]/[Assessment]/[Action].
 - Do not include JSON.
 - Produce valid code/content for the target path.
+
+${pythonArtifactRules}
 
 Target file: ${opts.path}
 
@@ -1039,6 +1074,11 @@ export async function generateRewrittenFileContent(opts: {
 
   const isLayoutAlignment = isLayoutAlignmentIntent(userRequest);
 
+  const pythonArtifactRules = buildPythonArtifactOutputRules(
+    path,
+    userRequest
+  );
+
   const htmlCssCoordinationRules = isHtmlFile
     ? `
 HTML/CSS coordination rules:
@@ -1134,6 +1174,8 @@ ${cssLocalizationRules}
 ${htmlLocalizationRules}
 
 ${htmlAlignmentRules}
+
+${pythonArtifactRules}
 
 User request:
 ${userRequest}

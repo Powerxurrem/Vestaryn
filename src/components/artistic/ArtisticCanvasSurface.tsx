@@ -68,8 +68,8 @@ type ArtisticCanvasSurfaceProps = {
   setArtisticCards: Dispatch<SetStateAction<ArtisticCard[]>>;
   clickMenu: ScreenPoint | null;
   setClickMenu: Dispatch<SetStateAction<ScreenPoint | null>>;
-  clickMenuSubmenu: null | "new-card";
-  setClickMenuSubmenu: Dispatch<SetStateAction<null | "new-card">>;
+  clickMenuSubmenu: null | "new-card" | "outputs";
+  setClickMenuSubmenu: Dispatch<SetStateAction<null | "new-card" | "outputs">>;
   artisticMenu: ScreenPoint | null;
   setArtisticMenu: Dispatch<SetStateAction<ScreenPoint | null>>;
   artisticPrompt: string;
@@ -80,7 +80,13 @@ type ArtisticCanvasSurfaceProps = {
   artisticError: string | null;
   setArtisticError: Dispatch<SetStateAction<string | null>>;
   sendArtisticPrompt: () => Promise<void>;
+  connectingFromCardId: string | null;
+  setConnectingFromCardId: Dispatch<SetStateAction<string | null>>;
+  connectionPreviewPoint: ScreenPoint | null;
+  setConnectionPreviewPoint: Dispatch<SetStateAction<ScreenPoint | null>>;
   panStartRef: RefObject<{ x: number; y: number } | null>;
+  connectionPulseCardId: string | null;
+  setConnectionPulseCardId: Dispatch<SetStateAction<string | null>>;
   cardDragOffsetRef: RefObject<{ x: number; y: number }>;
   resizeStartRef: RefObject<{
     startX: number;
@@ -147,6 +153,12 @@ export default function ArtisticCanvasSurface({
   hasMovedRef,
   ignoreNextCanvasClickRef,
   resetArtisticPopup,
+  connectingFromCardId,
+  setConnectingFromCardId,
+  connectionPreviewPoint,
+  setConnectionPreviewPoint,
+  connectionPulseCardId,
+  setConnectionPulseCardId,
 }: ArtisticCanvasSurfaceProps) {
   function viewportPointToWorld(clientX: number, clientY: number) {
     const viewportPoint = viewportPointFromClient(
@@ -195,7 +207,7 @@ export default function ArtisticCanvasSurface({
       )
     );
   }
-
+  
   function commitCardTitle(cardId: string, title: string) {
     updateCard(cardId, {
       title: title.trim() || "Untitled card",
@@ -208,6 +220,70 @@ export default function ArtisticCanvasSurface({
     });
   }
 
+function runPromptCard(promptCard: ArtisticCard) {
+  const outputId = makeCardId();
+  const OUTPUT_OFFSET_X = 360;
+
+  setArtisticCards((prev) => {
+    const source = prev.find((c) => c.id === promptCard.id);
+    if (!source) return prev;
+
+    const outputCard: ArtisticCard = {
+      id: outputId,
+      type: "output",
+      outputKind: "text",
+      sourceCardId: source.id,
+      x: source.x + OUTPUT_OFFSET_X,
+      y: source.y,
+      w: 360,
+      h: 220,
+      title: "Output",
+      body: "Summary\n\nGenerating regular text output...",
+      links: [],
+    };
+
+    return [...prev, outputCard];
+  });
+}
+
+const connections = artisticCards
+  .filter((card) => card.type === "output" && card.sourceCardId)
+  .map((card) => {
+    const source = artisticCards.find((c) => c.id === card.sourceCardId);
+    if (!source) return null;
+
+    return {
+      key: `${source.id}-${card.id}`,
+      from: source,
+      to: card,
+    };
+  })
+  .filter(
+    (
+      value
+    ): value is {
+      key: string;
+      from: ArtisticCard;
+      to: ArtisticCard;
+    } => value !== null
+  );
+
+const hoveredConnectionTargetId =
+  connectingFromCardId && connectionPreviewPoint
+    ? artisticCards.find((card) => {
+        if (card.type !== "output") return false;
+
+        const cx = card.x;
+        const cy = card.y + card.h / 2;
+
+        const dx = cx - connectionPreviewPoint.x;
+        const dy = cy - connectionPreviewPoint.y;
+
+        return Math.sqrt(dx * dx + dy * dy) < 40;
+      })?.id ?? null
+    : null;
+
+
   function createMenuCard(
     worldX: number,
     worldY: number,
@@ -217,6 +293,7 @@ export default function ArtisticCanvasSurface({
       h?: number;
       title?: string;
       body?: string;
+      outputKind?: "text" | "powerpoint";
     }
   ) {
     const newCardId = makeCardId();
@@ -232,6 +309,7 @@ export default function ArtisticCanvasSurface({
         h: opts?.h ?? 160,
         title: opts?.title ?? "Untitled card",
         body: opts?.body ?? "",
+        outputKind: opts?.outputKind,
       },
     ]);
 
@@ -240,7 +318,7 @@ export default function ArtisticCanvasSurface({
     setClickMenu(null);
     setClickMenuSubmenu(null);
   }
-
+  
 function startCanvasDrag(clientX: number, clientY: number) {
   const worldPoint = viewportPointToWorld(clientX, clientY);
 
@@ -360,6 +438,10 @@ function handleCardDragMove(clientX: number, clientY: number) {
 
   function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
   const { clientX, clientY } = e;
+    if (connectingFromCardId) {
+    const worldPoint = viewportPointToWorld(clientX, clientY);
+    setConnectionPreviewPoint(worldPoint);
+  }
 
   if (dragStart) {
     const worldPoint = viewportPointToWorld(clientX, clientY);
@@ -429,6 +511,42 @@ function handleCardDragMove(clientX: number, clientY: number) {
   }
 
   function onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+    if (connectingFromCardId && connectionPreviewPoint) {
+  const SNAP_DISTANCE = 40;
+
+  const target = artisticCards.find((card) => {
+    if (card.type !== "output") return false;
+
+    const cx = card.x;
+    const cy = card.y + card.h / 2;
+
+    const dx = cx - connectionPreviewPoint.x;
+    const dy = cy - connectionPreviewPoint.y;
+
+    return Math.sqrt(dx * dx + dy * dy) < SNAP_DISTANCE;
+  });
+
+  if (target) {
+    setArtisticCards((prev) =>
+      prev.map((c) =>
+        c.id === target.id
+          ? {
+              ...c,
+              sourceCardId: connectingFromCardId,
+            }
+          : c
+      )
+    );
+
+    setConnectionPulseCardId(target.id);
+    window.setTimeout(() => {
+      setConnectionPulseCardId((prev) => (prev === target.id ? null : prev));
+    }, 220);
+  }
+
+  setConnectingFromCardId(null);
+  setConnectionPreviewPoint(null);
+}
     if (isPanning) {
       panStartRef.current = null;
       document.body.style.cursor = isPanning ? "grab" : "";
@@ -526,6 +644,8 @@ function handleCardDragMove(clientX: number, clientY: number) {
     setIsDraggingCard(false);
     setDragStart(null);
     setDragCurrent(null);
+    setConnectingFromCardId(null);
+    setConnectionPreviewPoint(null);
   }
 
   function onClick(e: ReactPointerEvent<HTMLDivElement>) {
@@ -626,6 +746,70 @@ function handleCardDragMove(clientX: number, clientY: number) {
           );
         })() : null}
 
+{connectingFromCardId && connectionPreviewPoint ? (() => {
+  const source = artisticCards.find((c) => c.id === connectingFromCardId);
+  if (!source) return null;
+
+  const x1 = source.x + source.w;
+  const y1 = source.y + source.h / 2;
+  const x2 = connectionPreviewPoint.x;
+  const y2 = connectionPreviewPoint.y;
+
+  const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
+
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 z-[925] overflow-visible"
+      width={WORLD_W}
+      height={WORLD_H}
+    >
+      <g>
+        <path
+          d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+          fill="none"
+          stroke="rgba(96,165,250,0.7)"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray="8 6"
+        />
+        <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" />
+        <circle cx={x2} cy={y2} r="5" fill="rgba(96,165,250,0.9)" />
+      </g>
+    </svg>
+  );
+})() : null}
+
+<svg
+  className="pointer-events-none absolute inset-0 z-[920] overflow-visible"
+  width={WORLD_W}
+  height={WORLD_H}
+>
+  {connections.map(({ key, from, to }) => {
+    const x1 = from.x + from.w;
+    const y1 = from.y + from.h / 2;
+    const x2 = to.x;
+    const y2 = to.y + to.h / 2;
+
+    const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
+
+    return (
+      <g key={key}>
+        <path
+          d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+          fill="none"
+          stroke="rgba(96,165,250,0.95)"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeDasharray="10 6"
+        />
+        <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" />
+        <circle cx={x2} cy={y2} r="6" fill="rgba(96,165,250,1)" />
+      </g>
+    );
+  })}
+
+</svg>
+
         {artisticCards.map((card) => {
           const cardPresetUi = getCardPresetClasses(
             cardPreset,
@@ -658,6 +842,15 @@ function handleCardDragMove(clientX: number, clientY: number) {
               commitCardBody={commitCardBody}
               cardDragOffsetRef={cardDragOffsetRef}
               resizeStartRef={resizeStartRef}
+              isConnectionPulseActive={connectionPulseCardId === card.id}
+              onStartConnection={(card) => {
+                setConnectingFromCardId(card.id);
+                setConnectionPreviewPoint({
+                  x: card.x + card.w,
+                  y: card.y + card.h / 2,
+                });
+              }}
+              isConnectionTargetHovered={hoveredConnectionTargetId === card.id}
             />
           );
         })}
@@ -675,6 +868,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
         setClickMenuSubmenu={setClickMenuSubmenu}
         viewportPointToWorld={viewportPointToWorld}
         createMenuCard={createMenuCard}
+        cardPreset={cardPreset}
       />
 
       <ArtisticSummonPopup
@@ -688,6 +882,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
         setArtisticMessages={setArtisticMessages}
         setArtisticError={setArtisticError}
         sendArtisticPrompt={sendArtisticPrompt}
+        cardPreset={cardPreset}
       />
     </div>
   );
