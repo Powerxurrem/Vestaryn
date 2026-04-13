@@ -210,6 +210,7 @@ const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 3; 
 const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
 const cardDragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+const multiDragStartPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
 const [panOffset, setPanOffset] = useState<PanOffset>({
   x: 2400,
   y: 2400,
@@ -219,6 +220,7 @@ const [connectingFromCardId, setConnectingFromCardId] = useState<string | null>(
 const [connectionPreviewPoint, setConnectionPreviewPoint] = useState<ScreenPoint | null>(null);
 const [clickMenuSubmenu, setClickMenuSubmenu] = useState<null | "new-card" | "outputs">(null);
 const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
 const [canvasPreset, setCanvasPreset] = useState<"soft" | "grid" | "obsidian">("soft");
 const [cardPreset, setCardPreset] = useState<"glass" | "solid" | "obsidian">("glass");
 const WORLD_W = 8000;
@@ -1102,6 +1104,9 @@ style={
             setResizingCardId={setResizingCardId}
             selectedCardId={selectedCardId}
             setSelectedCardId={setSelectedCardId}
+            selectedCardIds={selectedCardIds}
+            setSelectedCardIds={setSelectedCardIds}
+            multiDragStartPositionsRef={multiDragStartPositionsRef}
             editingCardId={editingCardId}
             setEditingCardId={setEditingCardId}
             focusedBodyCardId={focusedBodyCardId}

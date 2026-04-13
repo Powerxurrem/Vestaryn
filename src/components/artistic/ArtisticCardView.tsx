@@ -26,11 +26,18 @@ type ArtisticCardViewProps = {
   ) => { x: number; y: number };
   setSelectedCardId: Dispatch<SetStateAction<string | null>>;
   setDraggingCardId: Dispatch<SetStateAction<string | null>>;
+selectedCardIds: string[];
+  setSelectedCardIds: Dispatch<SetStateAction<string[]>>;
+  multiDragStartPositionsRef: RefObject<Record<string, { x: number; y: number }>>;
   setResizingCardId: Dispatch<SetStateAction<string | null>>;
   setEditingCardId: Dispatch<SetStateAction<string | null>>;
   setFocusedBodyCardId: Dispatch<SetStateAction<string | null>>;
   setArtisticCards: Dispatch<SetStateAction<ArtisticCard[]>>;
   onStartConnection: (card: ArtisticCard) => void;
+    onStartCardDrag: (
+    e: ReactPointerEvent<HTMLDivElement>,
+    card: ArtisticCard
+  ) => void;
   updateCard: (
     cardId: string,
     patch: Partial<{
@@ -67,6 +74,9 @@ export default function ArtisticCardView({
   viewportPointToWorld,
   setSelectedCardId,
   setDraggingCardId,
+  selectedCardIds,
+  setSelectedCardIds,
+  multiDragStartPositionsRef,
   setResizingCardId,
   setEditingCardId,
   setFocusedBodyCardId,
@@ -74,12 +84,13 @@ export default function ArtisticCardView({
   updateCard,
   commitCardTitle,
   commitCardBody,
+  onStartCardDrag,
   cardDragOffsetRef,
   resizeStartRef,
   onStartConnection,
   isConnectionPulseActive,
 }: ArtisticCardViewProps) {
-  function onCardPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+   function onCardPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (isPanning || isResizing) return;
 
     const target = e.target as HTMLElement;
@@ -102,8 +113,7 @@ export default function ArtisticCardView({
       };
     }
 
-    setSelectedCardId(card.id);
-    setDraggingCardId(card.id);
+        onStartCardDrag(e, card);
   }
 
   function onResizePointerDown(e: ReactPointerEvent<HTMLButtonElement>) {
@@ -182,7 +192,7 @@ export default function ArtisticCardView({
 >
   <div className="flex min-w-0 items-center gap-2">
     {card.type === "output" && card.outputKind && (
-      <span className="rounded-md border border-blue-400/20 bg-blue-500/10 px-1.5 py-0.5 tedxt-[9px] font-medium uppercase tracking-[0.18em] text-blue-200/85">
+      <span className="rounded-md border border-blue-400/20 bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-blue-200/85">
         {card.outputKind === "text" ? "TEXT" : "PPT"}
       </span>
     )}

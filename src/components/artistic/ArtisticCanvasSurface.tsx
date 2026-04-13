@@ -59,6 +59,9 @@ type ArtisticCanvasSurfaceProps = {
   setResizingCardId: Dispatch<SetStateAction<string | null>>;
   selectedCardId: string | null;
   setSelectedCardId: Dispatch<SetStateAction<string | null>>;
+  selectedCardIds: string[];
+  setSelectedCardIds: Dispatch<SetStateAction<string[]>>;
+  multiDragStartPositionsRef: RefObject<Record<string, { x: number; y: number }>>;
   editingCardId: string | null;
   setEditingCardId: Dispatch<SetStateAction<string | null>>;
   focusedBodyCardId: string | null;
@@ -126,6 +129,8 @@ export default function ArtisticCanvasSurface({
   setResizingCardId,
   selectedCardId,
   setSelectedCardId,
+  selectedCardIds,
+  setSelectedCardIds,
   editingCardId,
   setEditingCardId,
   focusedBodyCardId,
@@ -152,6 +157,7 @@ export default function ArtisticCanvasSurface({
   resizeStartRef,
   hasMovedRef,
   ignoreNextCanvasClickRef,
+  multiDragStartPositionsRef,
   resetArtisticPopup,
   connectingFromCardId,
   setConnectingFromCardId,
@@ -175,9 +181,10 @@ export default function ArtisticCanvasSurface({
     );
   }
 
-  function isCardActive(cardId: string) {
+   function isCardActive(cardId: string) {
     return (
       selectedCardId === cardId ||
+      selectedCardIds.includes(cardId) ||
       draggingCardId === cardId ||
       resizingCardId === cardId ||
       editingCardId === cardId ||
@@ -367,21 +374,100 @@ function handleResizeMove(clientX: number, clientY: number) {
   );
 }
 
+
+function startCardDrag(
+  e: ReactPointerEvent<HTMLDivElement>,
+  card: ArtisticCard
+) {
+  const isShift = e.shiftKey;
+
+  let effectiveSelectedIds: string[];
+
+  if (isShift) {
+    effectiveSelectedIds = selectedCardIds.includes(card.id)
+      ? selectedCardIds.filter((id) => id !== card.id)
+      : [...selectedCardIds, card.id];
+
+    setSelectedCardIds(effectiveSelectedIds);
+    setSelectedCardId(card.id);
+  } else {
+    effectiveSelectedIds = selectedCardIds.includes(card.id)
+      ? selectedCardIds
+      : [card.id];
+
+    setSelectedCardIds(effectiveSelectedIds);
+    setSelectedCardId(card.id);
+  }
+
+  if (!effectiveSelectedIds.includes(card.id)) {
+    effectiveSelectedIds = [card.id];
+    setSelectedCardIds([card.id]);
+    setSelectedCardId(card.id);
+  }
+
+  const worldPoint = viewportPointToWorld(e.clientX, e.clientY);
+  cardDragOffsetRef.current = {
+    x: worldPoint.x - card.x,
+    y: worldPoint.y - card.y,
+  };
+
+  const next: Record<string, { x: number; y: number }> = {};
+
+  for (const candidate of artisticCards) {
+    if (!effectiveSelectedIds.includes(candidate.id)) continue;
+    next[candidate.id] = {
+      x: candidate.x,
+      y: candidate.y,
+    };
+  }
+
+  multiDragStartPositionsRef.current = next;
+  setDraggingCardId(card.id);
+}
+
 function handleCardDragMove(clientX: number, clientY: number) {
   if (!draggingCardId) return;
 
   const worldPoint = viewportPointToWorld(clientX, clientY);
+  const nextX = worldPoint.x - cardDragOffsetRef.current.x;
+  const nextY = worldPoint.y - cardDragOffsetRef.current.y;
+
+  const selectedSet = new Set(selectedCardIds);
+
+  if (!selectedSet.has(draggingCardId) || selectedSet.size <= 1) {
+    setArtisticCards((prev) =>
+      prev.map((card) =>
+        card.id === draggingCardId
+          ? {
+              ...card,
+              x: nextX,
+              y: nextY,
+            }
+          : card
+      )
+    );
+    return;
+  }
+
+  const origin = multiDragStartPositionsRef.current[draggingCardId];
+  if (!origin) return;
+
+  const dx = nextX - origin.x;
+  const dy = nextY - origin.y;
 
   setArtisticCards((prev) =>
-    prev.map((card) =>
-      card.id === draggingCardId
-        ? {
-            ...card,
-            x: worldPoint.x - cardDragOffsetRef.current.x,
-            y: worldPoint.y - cardDragOffsetRef.current.y,
-          }
-        : card
-    )
+    prev.map((card) => {
+      if (!selectedSet.has(card.id)) return card;
+
+      const start = multiDragStartPositionsRef.current[card.id];
+      if (!start) return card;
+
+      return {
+        ...card,
+        x: start.x + dx,
+        y: start.y + dy,
+      };
+    })
   );
 }
 
@@ -833,6 +919,9 @@ function handleCardDragMove(clientX: number, clientY: number) {
               viewportPointToWorld={viewportPointToWorld}
               setSelectedCardId={setSelectedCardId}
               setDraggingCardId={setDraggingCardId}
+              selectedCardIds={selectedCardIds}
+              setSelectedCardIds={setSelectedCardIds}
+              multiDragStartPositionsRef={multiDragStartPositionsRef}
               setResizingCardId={setResizingCardId}
               setEditingCardId={setEditingCardId}
               setFocusedBodyCardId={setFocusedBodyCardId}
@@ -843,6 +932,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
               cardDragOffsetRef={cardDragOffsetRef}
               resizeStartRef={resizeStartRef}
               isConnectionPulseActive={connectionPulseCardId === card.id}
+              onStartCardDrag={startCardDrag}
               onStartConnection={(card) => {
                 setConnectingFromCardId(card.id);
                 setConnectionPreviewPoint({
