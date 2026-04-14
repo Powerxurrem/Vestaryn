@@ -157,6 +157,7 @@ export default function ArtisticSummonPopup({
             void sendArtisticPrompt();
           }
         }}
+        onWheel={(e) => e.stopPropagation()}
         placeholder="Shape the chamber..."
         className={[
           "min-h-[110px] w-full resize-none rounded-xl px-3 py-3 text-sm outline-none",

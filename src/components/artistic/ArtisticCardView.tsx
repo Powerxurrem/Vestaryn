@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { ArtisticCard, CardPresetUi } from "@/lib/artistic/types";
 
+
 type ArtisticCardViewProps = {
   card: ArtisticCard;
   isActive: boolean;
@@ -138,6 +139,31 @@ export default function ArtisticCardView({
     setResizingCardId(card.id);
   }
 
+function parseTextOutputBody(body: string) {
+  const titleMatch = body.match(/TITLE:\s*(.*)/i);
+  const bodyMatch = body.match(/BODY:\s*([\s\S]*)/i);
+
+  return {
+    title: titleMatch?.[1]?.trim() || "",
+    body: bodyMatch?.[1]?.trim() || body.trim(),
+  };
+}
+
+function parseEmailOutputBody(body: string) {
+  const subjectMatch = body.match(/SUBJECT:\s*(.*)/i);
+
+  // Everything after BODY: OR fallback to full text
+  const bodyMatch = body.match(/BODY:\s*([\s\S]*)/i);
+
+  const subject = subjectMatch?.[1]?.trim() || "";
+  const message = bodyMatch?.[1]?.trim() || body.trim();
+
+  return {
+    subject,
+    message,
+  };
+}
+
   function parsePowerPointBody(body: string) {
   const titleMatch = body.match(/TITLE:\s*(.*)/i);
   const hookMatch = body.match(/HOOK:\s*(.*)/i);
@@ -159,6 +185,39 @@ export default function ArtisticCardView({
     visual: visualMatch?.[1]?.trim() || "",
     raw: body,
   };
+}
+
+function stripPreviousPolish(raw: string) {
+  return raw
+    .replace(/^(Task\s*)+/i, "")
+    .replace(
+      /^Write a polished (short|medium|long) version of the following request:\s*/i,
+      ""
+    )
+    .replace(/Output guidance[\s\S]*/i, "")
+    .replace(/\n+\s*Make the intent clearer[\s\S]*/i, "")
+    .replace(/\n+\s*Keep it concise and direct\.?\s*$/i, "")
+    .replace(/\n+\s*Keep it balanced in detail and readability\.?\s*$/i, "")
+    .replace(/\n+\s*Make it more detailed, richer, and longer\.?\s*$/i, "")
+    .trim();
+}
+
+function polishPromptBody(
+  raw: string,
+  length: "short" | "medium" | "long"
+) {
+  const base = stripPreviousPolish(raw);
+
+  if (!base) return raw;
+
+  const lengthInstruction =
+    length === "short"
+      ? "Keep it concise and direct."
+      : length === "long"
+      ? "Make it more detailed, richer, and longer."
+      : "Keep it balanced in detail and readability.";
+
+  return `${base}\n\n${lengthInstruction}`;
 }
 
   return (
@@ -192,9 +251,17 @@ export default function ArtisticCardView({
 >
   <div className="flex min-w-0 items-center gap-2">
     {card.type === "output" && card.outputKind && (
-      <span className="rounded-md border border-blue-400/20 bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-blue-200/85">
-        {card.outputKind === "text" ? "TEXT" : "PPT"}
-      </span>
+      <div className="flex items-center gap-1.5">
+        <span className="rounded-md border border-blue-400/20 bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-blue-200/85">
+          {card.outputKind === "text" ? "TEXT" : "PPT"}
+        </span>
+
+        {card.outputRole ? (
+          <span className="rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-white/55">
+            {card.outputRole}
+          </span>
+        ) : null}
+      </div>
     )}
 
     {isEditingTitle ? (
@@ -235,7 +302,11 @@ export default function ArtisticCardView({
         }}
         className={`min-w-0 flex-1 truncate text-left text-[11px] font-medium tracking-[0.16em] cursor-text ${cardPresetUi.title}`}
       >
-        {isFrameCard ? `Frame · ${card.title}` : card.title}
+        {card.type === "bridge"
+          ? `Bridge · ${card.title}`
+          : isFrameCard
+          ? `Frame · ${card.title}`
+          : card.title}
       </button>
     )}
   </div>
@@ -256,77 +327,88 @@ export default function ArtisticCardView({
 </div>
 
       <div className="h-[calc(100%-41px)] p-3">
-  {card.type === "output" && card.outputKind === "powerpoint" ? (
-    (() => {
-      const ppt = parsePowerPointBody(card.body);
+        {card.type === "output" && card.outputKind === "text" && card.outputRole === "email" ? (
+        (() => {
+          const email = parseEmailOutputBody(card.body);
 
-      return (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          className="h-full w-full rounded-xl border border-white/10 bg-white/[0.04] p-3"
-        >
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-white/40">
-              16:9 Slide
+          return (
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              className="h-full w-full rounded-xl border border-white/10 bg-white/[0.035] p-4"
+            >
+              {/* Subject */}
+              {email.subject ? (
+                <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
+                    Subject
+                  </div>
+
+                  <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
+                    {email.subject}
+                  </div>
+
+                  {/* 👇 THIS is the new line */}
+                  <div className="mt-1 text-xs text-white/40">
+                    Draft email
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Divider */}
+              <div className="mb-3 h-px bg-white/10" />
+
+              {/* Email Body */}
+              <div
+                className="h-[calc(100%-72px)] min-h-0 overflow-auto"
+                onWheel={(e) => e.stopPropagation()}
+              >
+                <div 
+                  className={`whitespace-pre-wrap text-[14px] leading-7 ${cardPresetUi.body}`}
+                >
+                  {email.message.split("\n").map((line, i) => (
+                    <div key={i} className="mb-2">
+                      {line || <div className="h-2" />}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
-            <div className="text-[10px] uppercase tracking-[0.18em] text-white/30">
-              1920×1080 target
+          );
+        })()
+      ) : card.type === "output" && card.outputKind === "text" ? (
+  (() => {
+    const parsed = parseTextOutputBody(card.body);
+
+    return (
+      <div
+        onPointerDown={(e) => e.stopPropagation()}
+        className="h-full w-full rounded-xl border border-white/10 bg-white/[0.04] p-3"
+      >
+        {parsed.title ? (
+          <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
+              Title
+            </div>
+            <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
+              {parsed.title}
             </div>
           </div>
+        ) : null}
 
-          <div className="flex h-[calc(100%-28px)] min-h-0 flex-col">
-            <div className="mb-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
-                Title
-              </div>
-              <div className={`mt-1 text-lg font-semibold leading-snug ${cardPresetUi.body}`}>
-                {ppt.title}
-              </div>
-
-              {ppt.hook ? (
-                <div className="mt-2 text-sm leading-6 text-white/60">
-                  {ppt.hook}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="min-h-0 flex-1 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-              <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/35">
-                Slide Content
-              </div>
-
-              {ppt.bullets.length > 0 ? (
-                <ul className={`space-y-2 text-sm leading-6 ${cardPresetUi.body}`}>
-                  {ppt.bullets.map((bullet, index) => (
-                    <li key={index} className="flex gap-2">
-                      <span className="mt-[2px] text-blue-300/70">•</span>
-                      <span>{bullet}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div
-                  className={`h-[calc(100%-24px)] overflow-auto whitespace-pre-wrap text-sm leading-6 ${cardPresetUi.body}`}
-                >
-                  {ppt.raw}
-                </div>
-              )}
-
-              {ppt.visual ? (
-                <div className="mt-4 rounded-lg border border-blue-400/15 bg-blue-500/[0.04] px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-blue-200/40">
-                    Visual Direction
-                  </div>
-                  <div className="mt-1 text-sm leading-6 text-white/65">
-                    {ppt.visual}
-                  </div>
-                </div>
-              ) : null}
-            </div>
+        <div
+          className="h-[calc(100%-0px)] min-h-0 overflow-auto rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/35">
+            Content
+          </div>
+          <div className={`whitespace-pre-wrap text-sm leading-6 ${cardPresetUi.body}`}>
+            {parsed.body}
           </div>
         </div>
-      );
-    })()
+      </div>
+    );
+  })()
   ) : card.type === "output" ? (
     <div
       onPointerDown={(e) => e.stopPropagation()}
@@ -335,6 +417,7 @@ export default function ArtisticCardView({
       {card.body}
     </div>
   ) : (
+  <div className="flex h-full flex-col gap-3">
     <textarea
       spellCheck={false}
       value={card.body}
@@ -347,6 +430,7 @@ export default function ArtisticCardView({
       }}
       onChange={(e) => commitCardBody(card.id, e.target.value)}
       onPointerDown={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
       placeholder={
         isFrameCard
           ? "Frame surface..."
@@ -354,14 +438,42 @@ export default function ArtisticCardView({
           ? "Notes..."
           : "Write here..."
       }
-      className={`h-full w-full resize-none bg-transparent text-sm outline-none ${cardPresetUi.body}`}
+      className={`min-h-0 flex-1 resize-none bg-transparent text-sm outline-none ${cardPresetUi.body}`}
     />
-  )}
+
+    {card.type === "prompt" ? (
+      <div
+        onPointerDown={(e) => e.stopPropagation()}
+        className="flex items-center gap-2 rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm"
+      >
+        <div className="text-[10px] uppercase tracking-[0.18em] text-black/45">
+          Polish prompt
+        </div>
+
+        {(["short", "medium", "long"] as const).map((length) => (
+          <button
+            key={length}
+            type="button"
+            onClick={() => {
+              const nextBody = polishPromptBody(card.body, length);
+              commitCardBody(card.id, nextBody);
+              setSelectedCardId(card.id);
+              setFocusedBodyCardId(card.id);
+            }}
+            className="rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/65 transition hover:bg-white hover:text-black"
+          >
+            {length === "short" ? "Polish S" : length === "medium" ? "Polish M" : "Polish L"}
+          </button>
+        ))}
+      </div>
+    ) : null}
+  </div>
+)}
 </div>
 
 
 
-{card.type === "prompt" && (
+{(card.type === "prompt" || card.type === "bridge") && (
   <button
     type="button"
     onPointerDown={(e) => {
@@ -374,7 +486,7 @@ export default function ArtisticCardView({
   />
 )}
 
-{card.type === "output" && (
+{(card.type === "output" || card.type === "bridge") && (
   <div
     className={[
       "absolute left-[-6px] top-1/2 z-[990] h-3.5 w-3.5 -translate-y-1/2 rounded-full bg-blue-400 transition duration-150",

@@ -42,6 +42,14 @@ export async function prepareChatRuntimeOrchestration({
   tierPolicy,
   rawExecutionMode,
 }: PrepareChatRuntimeOrchestrationArgs) {
+  const isArtisticMode =
+    typeof content === "string" &&
+    content.startsWith("[Artistic Mode]");
+
+  if (isArtisticMode) {
+    console.log("[artistic_mode] forcing advisory mode, skipping repo execution");
+  }
+
   const chatCtx = await buildChatContext({
     supabase,
     repoId,
@@ -260,21 +268,22 @@ export async function prepareChatRuntimeOrchestration({
     }
   }
 
-  // 1) explicit artifact inference from the current prompt
-  if (effectiveMentionedPaths.length === 0) {
-  const inferredArtifactPath = inferArtifactPath(text);
+    // 1) explicit artifact inference from the current prompt
+    if (!isArtisticMode && effectiveMentionedPaths.length === 0) {
+      const inferredArtifactPath = inferArtifactPath(text);
 
-  if (inferredArtifactPath) {
-    console.log("[artifact_inference.force_execution]", inferredArtifactPath);
+      if (inferredArtifactPath) {
+        console.log("[artifact_inference.force_execution]", inferredArtifactPath);
 
-    effectiveMentionedPaths = [inferredArtifactPath];
+        effectiveMentionedPaths = [inferredArtifactPath];
 
-    // 👇 DO NOT set executionMode here
-    forceArtifactBootstrap = true;
-  }
-}
+        // 👇 DO NOT set executionMode here
+        forceArtifactBootstrap = true;
+      }
+    }
   // 2) recent-artifact follow-up inference
   if (
+    !isArtisticMode &&
     effectiveMentionedPaths.length === 0 &&
     isArtifactFollowupEdit(text)
   ) {
@@ -309,8 +318,19 @@ export async function prepareChatRuntimeOrchestration({
     forceSinglePageSurgicalResume = true;
   }
 
-      let executionMode =
-  forceArtifactBootstrap
+       let executionMode = isArtisticMode
+    ? {
+        ...rawExecutionMode,
+        mode: "advisory",
+        confidence: "high",
+        reasons: [
+          ...(rawExecutionMode.reasons ?? []),
+          "artistic_mode_advisory_override",
+        ],
+        mentionedPaths: [],
+        hasExplicitPaths: false,
+      }
+    : forceArtifactBootstrap
     ? {
         ...rawExecutionMode,
         mode: "bootstrap",
@@ -353,29 +373,29 @@ export async function prepareChatRuntimeOrchestration({
         mentionedPaths: effectiveMentionedPaths,
       };
 
-  // 3) advisory -> bootstrap when artifact inference produced a file path
-if (effectiveMentionedPaths.length > 0) {
-  const inferredArtifactPath = inferArtifactPath(text);
+   // 3) advisory -> bootstrap when artifact inference produced a file path
+  if (!isArtisticMode && effectiveMentionedPaths.length > 0) {
+    const inferredArtifactPath = inferArtifactPath(text);
 
-  if (inferredArtifactPath) {
-    console.log("[execution_mode.force_bootstrap_from_artifact]", {
-      path: inferredArtifactPath,
-      previousMode: rawExecutionMode.mode,
-    });
+    if (inferredArtifactPath) {
+      console.log("[execution_mode.force_bootstrap_from_artifact]", {
+        path: inferredArtifactPath,
+        previousMode: rawExecutionMode.mode,
+      });
 
-    executionMode = {
-      ...executionMode,
-      mode: "bootstrap",
-      confidence: "high",
-      reasons: [
-        ...(executionMode.reasons ?? []),
-        "artifact_inference_override_bootstrap",
-      ],
-      mentionedPaths: [inferredArtifactPath],
-      hasExplicitPaths: true,
-    };
+      executionMode = {
+        ...executionMode,
+        mode: "bootstrap",
+        confidence: "high",
+        reasons: [
+          ...(executionMode.reasons ?? []),
+          "artifact_inference_override_bootstrap",
+        ],
+        mentionedPaths: [inferredArtifactPath],
+        hasExplicitPaths: true,
+      };
+    }
   }
-}
 
   // 4) incremental/rewrite -> surgical for single-file editable artifact edits
   const shouldForceSingleFileSurgical =
@@ -387,7 +407,11 @@ if (effectiveMentionedPaths.length > 0) {
       text
     );
 
-  if (shouldForceSingleFileSurgical && executionMode.mode !== "surgical") {
+    if (
+    !isArtisticMode &&
+    shouldForceSingleFileSurgical &&
+    executionMode.mode !== "surgical"
+  ) {
     console.log("[execution_mode.force_single_file_surgical]", {
       from: executionMode.mode,
       to: "surgical",

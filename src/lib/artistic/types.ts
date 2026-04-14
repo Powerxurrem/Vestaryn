@@ -3,8 +3,16 @@ export type ArtisticCardType =
   | "notes"
   | "frame"
   | "prompt"
-  | "output";
+  | "output"
+  | "bridge";
 
+export type ArtisticOutputKind = "text" | "powerpoint";
+export type ArtisticBridgeKind = "file_context";
+export type ArtisticOutputRole =
+  | "summary"
+  | "email"
+  | "report";
+  
 export type ArtisticCard = {
   id: string;
   type: ArtisticCardType;
@@ -16,7 +24,12 @@ export type ArtisticCard = {
   body: string;
   links?: string[];
   sourceCardId?: string;
-  outputKind?: "text" | "powerpoint";
+  outputKind?: ArtisticOutputKind;
+  outputRole?: ArtisticOutputRole;
+  bridgeKind?: ArtisticBridgeKind;
+  upstreamCardId?: string;
+  contextFileName?: string;
+  contextText?: string;
 };
 
 export type ScreenPoint = {

@@ -159,6 +159,25 @@ const [artisticMessages, setArtisticMessages] = useState<
 >([]);
 const [artisticCards, setArtisticCards] = useState<ArtisticCard[]>([]);
 
+useEffect(() => {
+  try {
+    const raw = localStorage.getItem("vestaryn_artistic_canvas");
+    if (!raw) return;
+    setArtisticCards(JSON.parse(raw));
+  } catch {
+    // ignore
+  }
+}, []);
+useEffect(() => {
+  try {
+    localStorage.setItem(
+      "vestaryn_artistic_canvas",
+      JSON.stringify(artisticCards)
+    );
+  } catch (e) {
+    console.warn("Failed to persist canvas", e);
+  }
+}, [artisticCards]);
 const [clickMenu, setClickMenu] = useState<ScreenPoint | null>(null);
 const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
 const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
@@ -175,20 +194,128 @@ async function copyRepoId() {
   } catch {}
 }
 
-function cleanArtisticReply(text: string) {
-  const actionMatch = text.match(/\[Action\]\s*([\s\S]*)$/i);
-  if (actionMatch?.[1]?.trim()) {
-    return actionMatch[1].trim();
+type ArtisticOutputKind = ArtisticCard["outputKind"];
+
+type ArtisticPresentationPayload = {
+  title?: string;
+  subject?: string;
+  body: string;
+};
+
+function resolveArtisticInputChain(
+  cards: ArtisticCard[],
+  output: ArtisticCard
+): {
+  prompt: ArtisticCard | null;
+  bridge: ArtisticCard | null;
+} {
+  const direct = cards.find((c) => c.id === output.sourceCardId) ?? null;
+  if (!direct) return { prompt: null, bridge: null };
+
+  if (direct.type === "prompt") {
+    return { prompt: direct, bridge: null };
   }
 
-  const observationMatch = text.match(/\[Observation\]\s*([\s\S]*?)(?:\n\[Assessment\]|\n\[Action\]|$)/i);
-  if (observationMatch?.[1]?.trim()) {
-    return observationMatch[1].trim();
+  if (direct.type === "bridge") {
+    const prompt =
+      cards.find((c) => c.id === direct.upstreamCardId && c.type === "prompt") ??
+      null;
+
+    return { prompt, bridge: direct };
   }
 
-  return text
-    .replace(/\[(Observation|Assessment|Action)\]\s*/gi, "")
-    .trim();
+  return { prompt: null, bridge: null };
+}
+
+function buildArtisticPresentationPayload(
+  raw: string,
+  outputKind: ArtisticOutputKind,
+  outputRole?: ArtisticCard["outputRole"]
+): ArtisticPresentationPayload {
+  const source = String(raw ?? "").trim();
+
+  const obsMatch = source.match(
+    /\[Observation\]\s*([\s\S]*?)(?=\[Assessment\]|\[Action\]|$)/i
+  );
+  const assMatch = source.match(
+    /\[Assessment\]\s*([\s\S]*?)(?=\[Action\]|$)/i
+  );
+  const actMatch = source.match(/\[Action\]\s*([\s\S]*)$/i);
+
+  const observation = obsMatch?.[1]?.trim() ?? "";
+  const assessment = assMatch?.[1]?.trim() ?? "";
+  const action = actMatch?.[1]?.trim() ?? "";
+
+  const preferred = action || assessment || observation || source;
+
+  if (outputKind === "powerpoint") {
+    return {
+      body: preferred,
+    };
+  }
+
+  if (outputKind !== "text") {
+    return {
+      body: preferred,
+    };
+  }
+
+  if (outputRole === "email") {
+    const subjectMatch = preferred.match(/SUBJECT:\s*(.*)/i);
+    const bodyMatch = preferred.match(/BODY:\s*([\s\S]*)/i);
+
+    if (subjectMatch || bodyMatch) {
+      const cleanedBody = (
+        bodyMatch?.[1]?.trim() ||
+        preferred.replace(/^SUBJECT:\s*.*(?:\r?\n)+/i, "").trim()
+      );
+
+      return {
+        subject: subjectMatch?.[1]?.trim() || "",
+        body: cleanedBody,
+      };
+    }
+
+    return {
+      subject: "",
+      body: preferred.replace(/^SUBJECT:\s*.*(?:\r?\n)+/i, "").trim(),
+    };
+  }
+
+  const titleMatch = preferred.match(/TITLE:\s*(.*)/i);
+  const bodyMatch = preferred.match(/BODY:\s*([\s\S]*)/i);
+
+  if (titleMatch || bodyMatch) {
+    return {
+      title: titleMatch?.[1]?.trim() || "",
+      body: bodyMatch?.[1]?.trim() || preferred,
+    };
+  }
+
+  return {
+    title: "",
+    body: preferred,
+  };
+}
+
+function formatArtisticPayloadForCard(
+  payload: ArtisticPresentationPayload,
+  outputKind: ArtisticOutputKind,
+  outputRole?: ArtisticCard["outputRole"]
+) {
+  if (outputKind !== "text") {
+    return payload.body;
+  }
+
+  if (outputRole === "email") {
+    return payload.subject
+      ? `SUBJECT: ${payload.subject}\nBODY: ${payload.body}`
+      : payload.body;
+  }
+
+  return payload.title
+    ? `TITLE: ${payload.title}\nBODY: ${payload.body}`
+    : payload.body;
 }
 
 function resetArtisticPopup() {
@@ -216,9 +343,12 @@ const [panOffset, setPanOffset] = useState<PanOffset>({
   y: 2400,
 });
 
+const [bridgeSnapPreviewKey, setBridgeSnapPreviewKey] = useState<string | null>(null);
 const [connectingFromCardId, setConnectingFromCardId] = useState<string | null>(null);
 const [connectionPreviewPoint, setConnectionPreviewPoint] = useState<ScreenPoint | null>(null);
-const [clickMenuSubmenu, setClickMenuSubmenu] = useState<null | "new-card" | "outputs">(null);
+const [clickMenuSubmenu, setClickMenuSubmenu] = useState<
+  null | "new-card" | "outputs" | "text-output"
+>(null);
 const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
 const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
 const [canvasPreset, setCanvasPreset] = useState<"soft" | "grid" | "obsidian">("soft");
@@ -258,6 +388,8 @@ function zoomFromViewportCenter(nextZoom: number) {
   });
   setZoom(nextZoom);
 }
+
+
 
 function handleZoomOut() {
   const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
@@ -352,7 +484,9 @@ async function sendArtisticPrompt() {
       body: JSON.stringify({
         content:
           `[Artistic Mode]\n` +
-          `Creative ideation request. Favor vivid, imaginative language in the response content.\n\n` +
+          `Creative ideation request. Favor vivid, imaginative language in the response content.\n` +
+          `Inside [Action], return ONLY the final result.\n` +
+          `Do not explain the request unless necessary.\n\n` +
           prompt,
       }),
     });
@@ -398,12 +532,17 @@ async function sendArtisticPrompt() {
       reply = trimmed;
     }
 
-    const cleaned = cleanArtisticReply(reply || "Vestaryn returned no visible reply.");
+    const payload = buildArtisticPresentationPayload(
+      reply || "Vestaryn returned no visible reply.",
+      "text"
+    );
+
+    const formatted = formatArtisticPayloadForCard(payload, "text");
 
     setArtisticMessages((prev) => [
       ...prev,
       { role: "user", content: prompt },
-      { role: "assistant", content: cleaned },
+      { role: "assistant", content: formatted },
     ]);
 
     setArtisticPrompt("");
@@ -545,16 +684,17 @@ style={
   const runnableOutputs = artisticCards
     .filter((card) => card.type === "output" && card.sourceCardId)
     .map((output) => {
-      const source = artisticCards.find((c) => c.id === output.sourceCardId);
-      if (!source) return null;
-      return { output, source };
+      const { prompt, bridge } = resolveArtisticInputChain(artisticCards, output);
+      if (!prompt) return null;
+      return { output, prompt, bridge };
     })
     .filter(
       (
         item
       ): item is {
         output: ArtisticCard;
-        source: ArtisticCard;
+        prompt: ArtisticCard;
+        bridge: ArtisticCard | null;
       } => item !== null
     );
 
@@ -572,8 +712,35 @@ style={
   );
 
   for (const item of runnableOutputs) {
-    try {
+  try {
+    const role = item.output.outputRole ?? "summary";
+
+    const roleToneBlock =
+      role === "email"
+        ? `Tone: professional, persuasive, confident.\n` +
+          `Style: structured communication, clear paragraphs, strong opening and closing.\n`
+        : role === "report"
+        ? `Tone: informative and thorough.\n` +
+          `Style: structured, readable, and clear.\n`
+        : `Tone: clear and balanced.\n` +
+          `Style: concise but informative.\n`;
+
+    const roleFocusBlock =
+      role === "report"
+        ? `Expand with supporting explanations and context where useful.\n`
+        : role === "summary"
+        ? `Prioritize clarity and brevity.\n`
+        : "";
+
+    const sourceBody = item.prompt.body;
+
+    const bridgeContext =
+      item.bridge?.bridgeKind === "file_context"
+        ? `\n\nFile context instruction:\n${item.bridge.body}\n\nAttached file: ${item.bridge.contextFileName ?? "Unnamed file"}\n\nFile content:\n${item.bridge.contextText ?? ""}`
+        : "";
+
       const res = await fetch(`/api/repo/${repoId}/chat`, {
+      
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -582,14 +749,34 @@ style={
           content:
             item.output.outputKind === "text"
               ? `[Artistic Mode]\n` +
-                `Generate a clean regular text output card response.\n` +
-                `Keep the response concise but useful.\n` +
-                `No role labels. No filler. Return only the useful result text.\n\n` +
-                item.source.body
+                `Generate a clean text output card response.\n` +
+                `Keep the normal system response format if required.\n` +
+                `Output role: ${role}.\n` +
+                roleToneBlock +
+                roleFocusBlock +
+                `Inside [Action], return ONLY the final result in the required format.\n` +
+                `Do not explain the request.\n` +
+                `Do not restate what the user asked for.\n` +
+                (
+                  role === "email"
+                    ? `For email output, use exactly:\n` +
+                      `SUBJECT: ...\n` +
+                      `BODY: ...\n` +
+                      `Do not include SUBJECT inside BODY.\n`
+                    : role === "report"
+                    ? `For report output, prefer:\n` +
+                      `TITLE: ...\n` +
+                      `BODY: ...\n`
+                    : `For summary output, prefer:\n` +
+                      `TITLE: ...\n` +
+                      `BODY: ...\n`
+                ) +
+                `The [Observation] and [Assessment] sections may stay brief if required, but [Action] must contain the actual deliverable.\n\n` +
+                `${sourceBody}${bridgeContext}`
               : item.output.outputKind === "powerpoint"
               ? `[Artistic Mode]\n` +
                 `Generate a PowerPoint slide concept.\n` +
-                `Return it in EXACTLY this structure:\n\n` +
+                `Prefer this structure when possible:\n\n` +
                 `TITLE: ...\n` +
                 `HOOK: ...\n` +
                 `BULLETS:\n` +
@@ -598,9 +785,9 @@ style={
                 `- ...\n` +
                 `VISUAL: ...\n\n` +
                 `Keep it concise, presentation-ready, and visually strong.\n` +
-                `Do not add commentary outside this format.\n\n` +
-                item.source.body
-              : `[Artistic Mode]\n\n${item.source.body}`,
+                `System formatting may be applied.\n\n` +
+                `${sourceBody}${bridgeContext}`
+              : `[Artistic Mode]\n\n${`${sourceBody}${bridgeContext}`}`,
         }),
       });
 
@@ -642,14 +829,24 @@ style={
         reply = trimmed;
       }
 
-      const cleaned = cleanArtisticReply(reply || "Vestaryn returned no visible reply.");
+      const payload = buildArtisticPresentationPayload(
+        reply || "Vestaryn returned no visible reply.",
+        item.output.outputKind,
+        item.output.outputRole
+      );
+
+      const nextBody = formatArtisticPayloadForCard(
+        payload,
+        item.output.outputKind,
+        item.output.outputRole
+      );
 
       setArtisticCards((prev) =>
         prev.map((card) =>
           card.id === item.output.id
             ? {
                 ...card,
-                body: cleaned,
+                body: nextBody,
               }
             : card
         )
@@ -1140,6 +1337,8 @@ style={
             resetArtisticPopup={resetArtisticPopup}
             connectionPulseCardId={connectionPulseCardId}
             setConnectionPulseCardId={setConnectionPulseCardId}
+            bridgeSnapPreviewKey={bridgeSnapPreviewKey}
+            setBridgeSnapPreviewKey={setBridgeSnapPreviewKey}
           />
         )}
       </div>

@@ -71,8 +71,10 @@ type ArtisticCanvasSurfaceProps = {
   setArtisticCards: Dispatch<SetStateAction<ArtisticCard[]>>;
   clickMenu: ScreenPoint | null;
   setClickMenu: Dispatch<SetStateAction<ScreenPoint | null>>;
-  clickMenuSubmenu: null | "new-card" | "outputs";
-  setClickMenuSubmenu: Dispatch<SetStateAction<null | "new-card" | "outputs">>;
+  clickMenuSubmenu: null | "new-card" | "outputs" | "text-output";
+  setClickMenuSubmenu: React.Dispatch<
+    React.SetStateAction<null | "new-card" | "outputs" | "text-output">
+  >;
   artisticMenu: ScreenPoint | null;
   setArtisticMenu: Dispatch<SetStateAction<ScreenPoint | null>>;
   artisticPrompt: string;
@@ -100,6 +102,8 @@ type ArtisticCanvasSurfaceProps = {
   hasMovedRef: RefObject<boolean>;
   ignoreNextCanvasClickRef: RefObject<boolean>;
   resetArtisticPopup: () => void;
+  bridgeSnapPreviewKey: string | null;
+  setBridgeSnapPreviewKey: Dispatch<SetStateAction<string | null>>;
 };
 
 export default function ArtisticCanvasSurface({
@@ -165,6 +169,8 @@ export default function ArtisticCanvasSurface({
   setConnectionPreviewPoint,
   connectionPulseCardId,
   setConnectionPulseCardId,
+  bridgeSnapPreviewKey,
+  setBridgeSnapPreviewKey,
 }: ArtisticCanvasSurfaceProps) {
   function viewportPointToWorld(clientX: number, clientY: number) {
     const viewportPoint = viewportPointFromClient(
@@ -228,57 +234,62 @@ export default function ArtisticCanvasSurface({
   }
 
 function runPromptCard(promptCard: ArtisticCard) {
-  const outputId = makeCardId();
   const OUTPUT_OFFSET_X = 360;
+  const OUTPUT_OFFSET_Y = 240;
+
+  const roles: Array<{
+  role: "summary" | "email" | "report";
+  title: string;
+}> = [
+  { role: "summary", title: "Summary" },
+  { role: "email", title: "Email" },
+  { role: "report", title: "Report" },
+];
 
   setArtisticCards((prev) => {
     const source = prev.find((c) => c.id === promptCard.id);
     if (!source) return prev;
 
-    const outputCard: ArtisticCard = {
-      id: outputId,
+    const outputCards: ArtisticCard[] = roles.map((entry, index) => ({
+      id: makeCardId(),
       type: "output",
       outputKind: "text",
+      outputRole: entry.role,
       sourceCardId: source.id,
       x: source.x + OUTPUT_OFFSET_X,
-      y: source.y,
+      y: source.y + index * OUTPUT_OFFSET_Y,
       w: 360,
       h: 220,
-      title: "Output",
-      body: "Summary\n\nGenerating regular text output...",
+      title: entry.title,
+      body: `${entry.title}\n\nGenerating ${entry.role} output...`,
       links: [],
-    };
+    }));
 
-    return [...prev, outputCard];
+    return [...prev, ...outputCards];
   });
 }
 
 const connections = artisticCards
-  .filter((card) => card.type === "output" && card.sourceCardId)
-  .map((card) => {
-    const source = artisticCards.find((c) => c.id === card.sourceCardId);
-    if (!source) return null;
+  .flatMap((card) => {
+    if (card.type === "output" && card.sourceCardId) {
+      const source = artisticCards.find((c) => c.id === card.sourceCardId);
+      if (!source) return [];
+      return [{ key: `${source.id}-${card.id}`, from: source, to: card }];
+    }
 
-    return {
-      key: `${source.id}-${card.id}`,
-      from: source,
-      to: card,
-    };
-  })
-  .filter(
-    (
-      value
-    ): value is {
-      key: string;
-      from: ArtisticCard;
-      to: ArtisticCard;
-    } => value !== null
-  );
+    if (card.type === "bridge" && card.upstreamCardId) {
+      const source = artisticCards.find((c) => c.id === card.upstreamCardId);
+      if (!source) return [];
+      return [{ key: `${source.id}-${card.id}`, from: source, to: card }];
+    }
+
+    return [];
+  });
 
 const hoveredConnectionTargetId =
   connectingFromCardId && connectionPreviewPoint
     ? artisticCards.find((card) => {
-        if (card.type !== "output") return false;
+        if (card.type !== "output" && card.type !== "bridge") return false;
 
         const cx = card.x;
         const cy = card.y + card.h / 2;
@@ -301,6 +312,7 @@ const hoveredConnectionTargetId =
       title?: string;
       body?: string;
       outputKind?: "text" | "powerpoint";
+      outputRole?: "summary" | "email" | "report";
     }
   ) {
     const newCardId = makeCardId();
@@ -317,6 +329,7 @@ const hoveredConnectionTargetId =
         title: opts?.title ?? "Untitled card",
         body: opts?.body ?? "",
         outputKind: opts?.outputKind,
+        outputRole: opts?.outputRole,
       },
     ]);
 
@@ -446,6 +459,15 @@ function handleCardDragMove(clientX: number, clientY: number) {
           : card
       )
     );
+
+  const draggedCard = artisticCards.find((c) => c.id === draggingCardId);
+  if (draggedCard?.type === "bridge") {
+    const snap = findBridgeSnapConnection(draggingCardId);
+    setBridgeSnapPreviewKey(snap?.key ?? null);
+  } else {
+    setBridgeSnapPreviewKey(null);
+  }
+
     return;
   }
 
@@ -596,12 +618,76 @@ function handleCardDragMove(clientX: number, clientY: number) {
     setZoom(nextZoom);
   }
 
+function distancePointToSegment(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number
+) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  if (dx === 0 && dy === 0) {
+    const ddx = px - x1;
+    const ddy = py - y1;
+    return Math.sqrt(ddx * ddx + ddy * ddy);
+  }
+
+  const t = Math.max(
+    0,
+    Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy))
+  );
+
+  const cx = x1 + t * dx;
+  const cy = y1 + t * dy;
+
+  const ddx = px - cx;
+  const ddy = py - cy;
+
+  return Math.sqrt(ddx * ddx + ddy * ddy);
+}
+
+function findBridgeSnapConnection(bridgeCardId: string) {
+  const bridge = artisticCards.find((c) => c.id === bridgeCardId);
+  if (!bridge || bridge.type !== "bridge") return null;
+
+  const centerX = bridge.x + bridge.w / 2;
+  const centerY = bridge.y + bridge.h / 2;
+  const SNAP_DISTANCE = 36;
+
+  for (const card of artisticCards) {
+    if (card.type !== "output" || !card.sourceCardId) continue;
+
+    const source = artisticCards.find((c) => c.id === card.sourceCardId);
+    if (!source || source.type !== "prompt") continue;
+
+    const x1 = source.x + source.w;
+    const y1 = source.y + source.h / 2;
+    const x2 = card.x;
+    const y2 = card.y + card.h / 2;
+
+    const dist = distancePointToSegment(centerX, centerY, x1, y1, x2, y2);
+
+    if (dist <= SNAP_DISTANCE) {
+      return {
+        key: `${source.id}-${card.id}`,
+        sourcePromptId: source.id,
+        outputId: card.id,
+      };
+    }
+  }
+
+  return null;
+}
+
   function onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
     if (connectingFromCardId && connectionPreviewPoint) {
   const SNAP_DISTANCE = 40;
 
   const target = artisticCards.find((card) => {
-    if (card.type !== "output") return false;
+    if (card.type !== "output" && card.type !== "bridge") return false;
 
     const cx = card.x;
     const cy = card.y + card.h / 2;
@@ -614,14 +700,25 @@ function handleCardDragMove(clientX: number, clientY: number) {
 
   if (target) {
     setArtisticCards((prev) =>
-      prev.map((c) =>
-        c.id === target.id
-          ? {
-              ...c,
-              sourceCardId: connectingFromCardId,
-            }
-          : c
-      )
+      prev.map((c) => {
+        if (c.id !== target.id) return c;
+
+        if (c.type === "output") {
+          return {
+            ...c,
+            sourceCardId: connectingFromCardId,
+          };
+        }
+
+        if (c.type === "bridge") {
+          return {
+            ...c,
+            upstreamCardId: connectingFromCardId,
+          };
+        }
+
+        return c;
+      })
     );
 
     setConnectionPulseCardId(target.id);
@@ -651,11 +748,40 @@ function handleCardDragMove(clientX: number, clientY: number) {
     }
 
     if (draggingCardId) {
-      setDraggingCardId(null);
-      document.body.style.userSelect = "";
-      document.body.style.webkitUserSelect = "";
-      return;
+  const draggedCard = artisticCards.find((c) => c.id === draggingCardId);
+
+  if (draggedCard?.type === "bridge") {
+    const snap = findBridgeSnapConnection(draggingCardId);
+
+    if (snap) {
+      setArtisticCards((prev) =>
+        prev.map((card) => {
+          if (card.id === draggingCardId && card.type === "bridge") {
+            return {
+              ...card,
+              upstreamCardId: snap.sourcePromptId,
+            };
+          }
+
+          if (card.id === snap.outputId && card.type === "output") {
+            return {
+              ...card,
+              sourceCardId: draggingCardId,
+            };
+          }
+
+          return card;
+        })
+      );
     }
+  }
+
+  setBridgeSnapPreviewKey(null);
+  setDraggingCardId(null);
+  document.body.style.userSelect = "";
+  document.body.style.webkitUserSelect = "";
+  return;
+}
 
     if (!isDraggingCard || !dragStart || !dragCurrent) {
       setIsDraggingCard(false);
@@ -732,6 +858,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
     setDragCurrent(null);
     setConnectingFromCardId(null);
     setConnectionPreviewPoint(null);
+    setBridgeSnapPreviewKey(null);
   }
 
   function onClick(e: ReactPointerEvent<HTMLDivElement>) {
@@ -761,6 +888,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
       }
       setFocusedBodyCardId(null);
       setSelectedCardId(null);
+      setBridgeSnapPreviewKey(null);
     }
   }
 
@@ -853,11 +981,10 @@ function handleCardDragMove(clientX: number, clientY: number) {
         <path
           d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
           fill="none"
-          stroke="rgba(96,165,250,0.7)"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeDasharray="8 6"
-        />
+            stroke="rgba(96,165,250,0.95)"
+            strokeWidth={4}
+            style={undefined}
+          />
         <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" />
         <circle cx={x2} cy={y2} r="5" fill="rgba(96,165,250,0.9)" />
       </g>
@@ -883,10 +1010,20 @@ function handleCardDragMove(clientX: number, clientY: number) {
         <path
           d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
           fill="none"
-          stroke="rgba(96,165,250,0.95)"
-          strokeWidth="4"
+          stroke={
+            bridgeSnapPreviewKey === key
+              ? "rgba(59,130,246,1)"
+              : "rgba(96,165,250,0.95)"
+          }
+          strokeWidth={bridgeSnapPreviewKey === key ? 6 : 4}
           strokeLinecap="round"
           strokeDasharray="10 6"
+          style={{
+            filter:
+              bridgeSnapPreviewKey === key
+                ? "drop-shadow(0 0 14px rgba(59,130,246,0.9))"
+                : undefined,
+          }}
         />
         <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" />
         <circle cx={x2} cy={y2} r="6" fill="rgba(96,165,250,1)" />

@@ -6,9 +6,9 @@ export const USER_PROFILE_PATH = "memory/user-profile.md";
 export const USER_PROFILE_NAME = "user-profile.md";
 export const USER_PROFILE_MIME = "text/markdown";
 
-export const SUMMARY_TRIGGER_MSGS = 160;
+export const SUMMARY_TRIGGER_MSGS = 1600;
 export const SUMMARY_KEEP_LAST = 40;
-export const SUMMARY_TARGET_MSGS = 200;
+export const SUMMARY_TARGET_MSGS = 1200;
 
 export const SACRED_TEMPLATE = `# Chamber State (Sacred)
 

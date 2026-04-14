@@ -176,10 +176,6 @@ function resolveSurgicalPaths(content: string): {
   };
 }
 
-function stripPathInsertCommandPrefix(input: string): string {
-  return String(input ?? "").replace(/^\/path\s+/i, "").trim();
-}
-
 function dirnameOf(path: string) {
   const s = String(path ?? "").trim();
   const idx = s.lastIndexOf("/");
@@ -738,6 +734,9 @@ const { content } = await req.json();
 if (!content?.trim()) return new Response("Missing content", { status: 400 });
 
 const text = normText(content);
+const isArtisticMode =
+  typeof content === "string" &&
+  content.startsWith("[Artistic Mode]");
 
 let fallbackReason: FallbackReason = "none";
 let failureSurface: FailureSurface = "none";
@@ -2222,9 +2221,11 @@ await persistAssistantTurnOrchestration({
     supabase,
     repoId,
     userId: user.id,
-    forceMaintenance,
-    totalMsgCount,
-    maintenanceTriggerMsgs: MAINTENANCE_TRIGGER_MSGS,
+    forceMaintenance: isArtisticMode ? false : forceMaintenance,
+    totalMsgCount: isArtisticMode ? 0 : totalMsgCount,
+    maintenanceTriggerMsgs: isArtisticMode
+      ? Number.MAX_SAFE_INTEGER
+      : MAINTENANCE_TRIGGER_MSGS,
   },
   state: {
     rawAssistantText,

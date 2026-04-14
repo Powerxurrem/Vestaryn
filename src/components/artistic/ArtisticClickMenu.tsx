@@ -7,9 +7,9 @@ type ArtisticClickMenuProps = {
   clickMenu: ScreenPoint | null;
   viewportRef: RefObject<HTMLDivElement | null>;
   setClickMenu: React.Dispatch<React.SetStateAction<ScreenPoint | null>>;
-  clickMenuSubmenu: null | "new-card" | "outputs";
+  clickMenuSubmenu: null | "new-card" | "outputs" | "text-output";
   setClickMenuSubmenu: React.Dispatch<
-    React.SetStateAction<null | "new-card" | "outputs">
+    React.SetStateAction<null | "new-card" | "outputs" | "text-output">
   >;
   cardPreset: "glass" | "solid" | "obsidian";
   viewportPointToWorld: (
@@ -26,6 +26,7 @@ type ArtisticClickMenuProps = {
       title?: string;
       body?: string;
       outputKind?: "text" | "powerpoint";
+      outputRole?: "summary" | "email" | "report";
     }
   ) => void;
 };
@@ -85,6 +86,20 @@ export default function ArtisticClickMenu({
     });
   }
 
+function createFileContextCard() {
+  if (!clickMenu) return;
+
+  const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+
+  createMenuCard(world.x, world.y, {
+    type: "bridge",
+    w: 340,
+    h: 220,
+    title: "File Context",
+    body: "Describe what to use from the file...",
+  });
+}
+
   function createFrameCard() {
     if (!clickMenu) return;
 
@@ -106,27 +121,60 @@ export default function ArtisticClickMenu({
 
     createMenuCard(world.x, world.y, {
       type: "prompt",
-      w: 300,
-      h: 180,
+      w: 320,
+      h: 220,
       title: "Prompt",
       body: "Describe what you want...",
     });
   }
 
-  function createTextOutputCard() {
-    if (!clickMenu) return;
+  function createSummaryOutputCard() {
+  if (!clickMenu) return;
 
-    const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+  const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
 
-    createMenuCard(world.x, world.y, {
-      type: "output",
-      w: 360,
-      h: 220,
-      title: "Output",
-      body: "Summary\n\nAwaiting connected prompt...\n\nRun the chamber to generate a regular text result.",
-      outputKind: "text",
-    });
-  }
+  createMenuCard(world.x, world.y, {
+    type: "output",
+    w: 360,
+    h: 220,
+    title: "Summary",
+    body: "Awaiting connected prompt...\n\nRun the chamber to generate a concise summary.",
+    outputKind: "text",
+    outputRole: "summary",
+  });
+}
+
+function createEmailOutputCard() {
+  if (!clickMenu) return;
+
+  const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+
+  createMenuCard(world.x, world.y, {
+    type: "output",
+    w: 420,
+    h: 260,
+    title: "Email",
+    body: "Awaiting connected prompt...\n\nRun the chamber to generate an email-ready draft.",
+    outputKind: "text",
+    outputRole: "email",
+  });
+}
+
+function createReportOutputCard() {
+  if (!clickMenu) return;
+
+  const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+
+  createMenuCard(world.x, world.y, {
+    type: "output",
+    w: 420,
+    h: 280,
+    title: "Report",
+    body: "Awaiting connected prompt...\n\nRun the chamber to generate a report-style output.",
+    outputKind: "text",
+    outputRole: "report",
+  });
+}
 
   function createPowerPointOutputCard() {
     if (!clickMenu) return;
@@ -208,6 +256,16 @@ export default function ArtisticClickMenu({
               Notes
             </button>
 
+<button
+  className={[
+    "w-full rounded-md px-3 py-2 text-left text-sm",
+    menuPresetUi.item,
+  ].join(" ")}
+  onClick={createFileContextCard}
+>
+  File Context
+</button>
+
             <button
               className={[
                 "w-full rounded-md px-3 py-2 text-left text-sm",
@@ -220,18 +278,54 @@ export default function ArtisticClickMenu({
           </div>
         ) : null}
 
-        {clickMenuSubmenu === "outputs" ? (
+        {clickMenuSubmenu === "outputs" || clickMenuSubmenu === "text-output" ? (
           <div
             className={[
               "absolute left-full top-[44px] ml-2 w-[220px] rounded-xl p-2",
               menuPresetUi.shell,
             ].join(" ")}
-            onMouseLeave={() => setClickMenuSubmenu(null)}
+          >
+        <div
+          className={`px-3 py-1 text-[10px] font-medium uppercase tracking-[0.18em] ${menuPresetUi.subtle}`}
+        >
+          Outputs
+        </div>
+
+    <button
+      className={[
+        "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm",
+        menuPresetUi.item,
+      ].join(" ")}
+      onMouseEnter={() => setClickMenuSubmenu("text-output")}
+    >
+      <span>Text Output</span>
+      <span className={menuPresetUi.subtle}>›</span>
+    </button>
+
+    <button
+      className={[
+        "w-full rounded-md px-3 py-2 text-left text-sm",
+        menuPresetUi.item,
+      ].join(" ")}
+      onClick={createPowerPointOutputCard}
+    >
+      PowerPoint Output
+    </button>
+  </div>
+) : null}
+
+        {clickMenuSubmenu === "text-output" ? (
+          <div
+            className={[
+              "absolute left-[calc(100%+232px)] top-[44px] ml-2 w-[220px] rounded-xl p-2",
+              menuPresetUi.shell,
+            ].join(" ")}
+            onMouseLeave={() => setClickMenuSubmenu("outputs")}
           >
             <div
               className={`px-3 py-1 text-[10px] font-medium uppercase tracking-[0.18em] ${menuPresetUi.subtle}`}
             >
-              Outputs
+              Text Output
             </div>
 
             <button
@@ -239,9 +333,9 @@ export default function ArtisticClickMenu({
                 "w-full rounded-md px-3 py-2 text-left text-sm",
                 menuPresetUi.item,
               ].join(" ")}
-              onClick={createTextOutputCard}
+              onClick={createSummaryOutputCard}
             >
-              Text Output
+              Summary
             </button>
 
             <button
@@ -249,9 +343,19 @@ export default function ArtisticClickMenu({
                 "w-full rounded-md px-3 py-2 text-left text-sm",
                 menuPresetUi.item,
               ].join(" ")}
-              onClick={createPowerPointOutputCard}
+              onClick={createEmailOutputCard}
             >
-              PowerPoint Output
+              Email
+            </button>
+
+            <button
+              className={[
+                "w-full rounded-md px-3 py-2 text-left text-sm",
+                menuPresetUi.item,
+              ].join(" ")}
+              onClick={createReportOutputCard}
+            >
+              Report
             </button>
           </div>
         ) : null}
