@@ -117,6 +117,15 @@ export default function ArtisticCardView({
         onStartCardDrag(e, card);
   }
 
+function readFileAsText(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("Failed to read file."));
+    reader.readAsText(file);
+  });
+}
+
   function onResizePointerDown(e: ReactPointerEvent<HTMLButtonElement>) {
     if (isPanning) return;
 
@@ -418,6 +427,66 @@ function polishPromptBody(
     </div>
   ) : (
   <div className="flex h-full flex-col gap-3">
+    {card.type === "bridge" && card.bridgeKind === "file_context" ? (
+  <div
+    onPointerDown={(e) => e.stopPropagation()}
+    className="rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm"
+  >
+    <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-black/45">
+      Source file
+    </div>
+
+    <label className="inline-flex cursor-pointer items-center rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[11px] text-black/70 hover:bg-white hover:text-black">
+      Upload file
+      <input
+        type="file"
+        className="hidden"
+        accept=".txt,.md,.csv,.json,.html"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+
+          try {
+            const text = await readFileAsText(file);
+
+            setArtisticCards((prev) =>
+              prev.map((c) =>
+                c.id === card.id
+                  ? {
+                      ...c,
+                      contextFileName: file.name,
+                      contextText: text,
+                    }
+                  : c
+              )
+            );
+          } catch (err) {
+            console.error(err);
+          } finally {
+            e.currentTarget.value = "";
+          }
+        }}
+      />
+    </label>
+
+    {card.contextFileName ? (
+      <div className="mt-2 text-[11px] text-black/55">
+        Loaded: {card.contextFileName}
+      </div>
+    ) : (
+      <div className="mt-2 text-[11px] text-black/35">
+        No file loaded yet
+      </div>
+    )}
+
+    {card.contextText ? (
+      <div className="mt-1 text-[10px] text-black/35">
+        {card.contextText.length.toLocaleString()} characters available
+      </div>
+    ) : null}
+  </div>
+) : null}
+    
     <textarea
       spellCheck={false}
       value={card.body}

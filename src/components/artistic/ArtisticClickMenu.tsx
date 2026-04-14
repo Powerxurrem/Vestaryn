@@ -27,6 +27,9 @@ type ArtisticClickMenuProps = {
       body?: string;
       outputKind?: "text" | "powerpoint";
       outputRole?: "summary" | "email" | "report";
+      bridgeKind?: "file_context";
+      contextFileName?: string;
+      contextText?: string;
     }
   ) => void;
 };
@@ -97,6 +100,9 @@ function createFileContextCard() {
     h: 220,
     title: "File Context",
     body: "Describe what to use from the file...",
+    bridgeKind: "file_context",
+    contextFileName: "",
+    contextText: "",
   });
 }
 

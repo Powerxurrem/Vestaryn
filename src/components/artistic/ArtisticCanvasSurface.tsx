@@ -311,6 +311,9 @@ const hoveredConnectionTargetId =
       h?: number;
       title?: string;
       body?: string;
+      bridgeKind?: "file_context";
+      contextFileName?: string;
+      contextText?: string;
       outputKind?: "text" | "powerpoint";
       outputRole?: "summary" | "email" | "report";
     }
@@ -330,6 +333,9 @@ const hoveredConnectionTargetId =
         body: opts?.body ?? "",
         outputKind: opts?.outputKind,
         outputRole: opts?.outputRole,
+        bridgeKind: opts?.bridgeKind,
+        contextFileName: opts?.contextFileName,
+        contextText: opts?.contextText,
       },
     ]);
 
