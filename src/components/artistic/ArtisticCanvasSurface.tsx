@@ -1,11 +1,13 @@
 "use client";
 
-import type {
-  Dispatch,
-  PointerEvent as ReactPointerEvent,
-  RefObject,
-  SetStateAction,
-  WheelEvent as ReactWheelEvent,
+import {
+  useEffect,
+  useState,
+  type Dispatch,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+  type SetStateAction,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import ArtisticCardView from "@/components/artistic/ArtisticCardView";
 import ArtisticClickMenu from "@/components/artistic/ArtisticClickMenu";
@@ -198,6 +200,12 @@ export default function ArtisticCanvasSurface({
     );
   }
 
+  const [isCutMode, setIsCutMode] = useState(false);
+  const [hoveredConnectionKey, setHoveredConnectionKey] = useState<string | null>(null);
+  const [pointerWorldPoint, setPointerWorldPoint] = useState<ScreenPoint | null>(null);
+
+  
+
   function updateCard(
     cardId: string,
     patch: Partial<{
@@ -286,6 +294,39 @@ const connections = artisticCards
     return [];
   });
 
+useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isTypingTarget =
+        tag === "input" ||
+        tag === "textarea" ||
+        target?.isContentEditable;
+
+      if (isTypingTarget) return;
+
+      if (e.key.toLowerCase() === "x") {
+        setIsCutMode(true);
+        setHoveredConnectionKey(findConnectionAtPoint(pointerWorldPoint));
+      }
+    }
+
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.key.toLowerCase() === "x") {
+        setIsCutMode(false);
+        setHoveredConnectionKey(null);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, [pointerWorldPoint, connections]);
+
 const hoveredConnectionTargetId =
   connectingFromCardId && connectionPreviewPoint
     ? artisticCards.find((card) => {
@@ -347,6 +388,9 @@ const hoveredConnectionTargetId =
   
 function startCanvasDrag(clientX: number, clientY: number) {
   const worldPoint = viewportPointToWorld(clientX, clientY);
+
+  document.body.style.userSelect = "none";
+  document.body.style.webkitUserSelect = "none";
 
   setDragStart(worldPoint);
   setDragCurrent(worldPoint);
@@ -529,7 +573,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
     setClickMenuSubmenu(null);
   }
 
-  function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
     hasMovedRef.current = false;
 
     if (isPanning) {
@@ -547,15 +591,31 @@ function handleCardDragMove(clientX: number, clientY: number) {
     if (target.closest("[data-artistic-popup]")) return;
     if (target.closest("[data-click-menu]")) return;
 
+    if (!e.shiftKey) {
+      setSelectedCardId(null);
+      setSelectedCardIds([]);
+      setFocusedBodyCardId(null);
+      setEditingCardId(null);
+    }
+
     startCanvasDrag(e.clientX, e.clientY);
   }
 
   function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
-  const { clientX, clientY } = e;
-    if (connectingFromCardId) {
+    const { clientX, clientY } = e;
     const worldPoint = viewportPointToWorld(clientX, clientY);
-    setConnectionPreviewPoint(worldPoint);
-  }
+
+    setPointerWorldPoint(worldPoint);
+
+    if (isCutMode) {
+      setHoveredConnectionKey(findConnectionAtPoint(worldPoint));
+    } else if (hoveredConnectionKey !== null) {
+      setHoveredConnectionKey(null);
+    }
+
+    if (connectingFromCardId) {
+      setConnectionPreviewPoint(worldPoint);
+    }
 
   if (dragStart) {
     const worldPoint = viewportPointToWorld(clientX, clientY);
@@ -588,7 +648,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
 
   if (!isDraggingCard || !dragStart) return;
 
-  const worldPoint = viewportPointToWorld(clientX, clientY);
+  
   setDragCurrent(worldPoint);
 }
 
@@ -624,35 +684,85 @@ function handleCardDragMove(clientX: number, clientY: number) {
     setZoom(nextZoom);
   }
 
-function distancePointToSegment(
+function cubicBezierPoint(
+  t: number,
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number }
+) {
+  const mt = 1 - t;
+  const mt2 = mt * mt;
+  const mt3 = mt2 * mt;
+  const t2 = t * t;
+  const t3 = t2 * t;
+
+  return {
+    x:
+      mt3 * p0.x +
+      3 * mt2 * t * p1.x +
+      3 * mt * t2 * p2.x +
+      t3 * p3.x,
+    y:
+      mt3 * p0.y +
+      3 * mt2 * t * p1.y +
+      3 * mt * t2 * p2.y +
+      t3 * p3.y,
+  };
+}
+
+function distancePointToBezier(
   px: number,
   py: number,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number }
 ) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
+  let minDist = Infinity;
+  const STEPS = 32;
 
-  if (dx === 0 && dy === 0) {
-    const ddx = px - x1;
-    const ddy = py - y1;
-    return Math.sqrt(ddx * ddx + ddy * ddy);
+  for (let i = 0; i <= STEPS; i++) {
+    const t = i / STEPS;
+    const pt = cubicBezierPoint(t, p0, p1, p2, p3);
+    const dx = px - pt.x;
+    const dy = py - pt.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < minDist) {
+      minDist = dist;
+    }
   }
 
-  const t = Math.max(
-    0,
-    Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy))
-  );
+  return minDist;
+}
 
-  const cx = x1 + t * dx;
-  const cy = y1 + t * dy;
+function findConnectionAtPoint(point: ScreenPoint | null) {
+  if (!point) return null;
 
-  const ddx = px - cx;
-  const ddy = py - cy;
+  const HIT_DISTANCE = isCutMode ? 22 : 12;
 
-  return Math.sqrt(ddx * ddx + ddy * ddy);
+  for (const { key, from, to } of connections) {
+    const x1 = from.x + from.w;
+    const y1 = from.y + from.h / 2;
+    const x2 = to.x;
+    const y2 = to.y + to.h / 2;
+
+    const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
+
+    const p0 = { x: x1, y: y1 };
+    const p1 = { x: x1 + dx, y: y1 };
+    const p2 = { x: x2 - dx, y: y2 };
+    const p3 = { x: x2, y: y2 };
+
+    const dist = distancePointToBezier(point.x, point.y, p0, p1, p2, p3);
+
+    if (dist <= HIT_DISTANCE) {
+      return key;
+    }
+  }
+
+  return null;
 }
 
 function findBridgeSnapConnection(bridgeCardId: string) {
@@ -674,7 +784,14 @@ function findBridgeSnapConnection(bridgeCardId: string) {
     const x2 = card.x;
     const y2 = card.y + card.h / 2;
 
-    const dist = distancePointToSegment(centerX, centerY, x1, y1, x2, y2);
+    const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
+
+    const p0 = { x: x1, y: y1 };
+    const p1 = { x: x1 + dx, y: y1 };
+    const p2 = { x: x2 - dx, y: y2 };
+    const p3 = { x: x2, y: y2 };
+
+    const dist = distancePointToBezier(centerX, centerY, p0, p1, p2, p3);
 
     if (dist <= SNAP_DISTANCE) {
       return {
@@ -686,6 +803,35 @@ function findBridgeSnapConnection(bridgeCardId: string) {
   }
 
   return null;
+}
+
+function cutConnection(targetKey: string) {
+  const match = connections.find((c) => c.key === targetKey);
+  if (!match) return;
+
+  setArtisticCards((prev) =>
+    prev.map((card) => {
+      if (card.id !== match.to.id) return card;
+
+      if (card.type === "output") {
+        return {
+          ...card,
+          sourceCardId: undefined,
+        };
+      }
+
+      if (card.type === "bridge") {
+        return {
+          ...card,
+          upstreamCardId: undefined,
+        };
+      }
+
+      return card;
+    })
+  );
+
+  setHoveredConnectionKey(null);
 }
 
   function onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
@@ -796,7 +942,7 @@ function findBridgeSnapConnection(bridgeCardId: string) {
       return;
     }
 
-    const worldRect = clampRect(dragStart, dragCurrent);
+        const worldRect = clampRect(dragStart, dragCurrent);
     const threshold = 8 / zoom;
 
     if (worldRect.w < threshold && worldRect.h < threshold) {
@@ -823,25 +969,38 @@ function findBridgeSnapConnection(bridgeCardId: string) {
       return;
     }
 
-    if (worldRect.w >= 80 && worldRect.h >= 60) {
-      const newCardId = makeCardId();
+    const intersects = (card: ArtisticCard) => {
+      const cardLeft = card.x;
+      const cardTop = card.y;
+      const cardRight = card.x + card.w;
+      const cardBottom = card.y + card.h;
 
-      setArtisticCards((prev) => [
-        ...prev,
-        {
-          id: newCardId,
-          type: "default",
-          x: worldRect.x,
-          y: worldRect.y,
-          w: worldRect.w,
-          h: worldRect.h,
-          title: "Untitled card",
-          body: "Floating canvas card",
-        },
-      ]);
+      const rectLeft = worldRect.x;
+      const rectTop = worldRect.y;
+      const rectRight = worldRect.x + worldRect.w;
+      const rectBottom = worldRect.y + worldRect.h;
 
-      setPendingNewCardId(newCardId);
+      return !(
+        cardRight < rectLeft ||
+        cardLeft > rectRight ||
+        cardBottom < rectTop ||
+        cardTop > rectBottom
+      );
+    };
+
+    const hitIds = artisticCards
+      .filter(intersects)
+      .map((card) => card.id);
+
+       if (e.shiftKey) {
+      setSelectedCardIds((prev) => Array.from(new Set([...prev, ...hitIds])));
+      setSelectedCardId(hitIds[hitIds.length - 1] ?? selectedCardId);
+    } else {
+      setSelectedCardIds(hitIds);
+      setSelectedCardId(hitIds[hitIds.length - 1] ?? null);
     }
+
+    ignoreNextCanvasClickRef.current = true;
 
     setIsDraggingCard(false);
     setDragStart(null);
@@ -888,12 +1047,13 @@ function findBridgeSnapConnection(bridgeCardId: string) {
       resetArtisticPopup();
     }
 
-    if (!clickedCard && !clickedPopup && !clickedClickMenu) {
+       if (!clickedCard && !clickedPopup && !clickedClickMenu) {
       if (editingCardId) {
         setEditingCardId(null);
       }
       setFocusedBodyCardId(null);
       setSelectedCardId(null);
+      setSelectedCardIds([]);
       setBridgeSnapPreviewKey(null);
     }
   }
@@ -910,6 +1070,8 @@ function findBridgeSnapConnection(bridgeCardId: string) {
     });
   }
 
+const selectionCount = selectedCardIds.length || (selectedCardId ? 1 : 0);
+
   return (
     <div
       ref={viewportRef}
@@ -919,11 +1081,11 @@ function findBridgeSnapConnection(bridgeCardId: string) {
       ].join(" ")}
       style={{
         userSelect:
-          isPanning || !!draggingCardId || !!resizingCardId
+          isPanning || isDraggingCard || !!draggingCardId || !!resizingCardId
             ? "none"
             : undefined,
         WebkitUserSelect:
-          isPanning || !!draggingCardId || !!resizingCardId
+          isPanning || isDraggingCard || !!draggingCardId || !!resizingCardId
             ? "none"
             : undefined,
       }}
@@ -999,7 +1161,10 @@ function findBridgeSnapConnection(bridgeCardId: string) {
 })() : null}
 
 <svg
-  className="pointer-events-none absolute inset-0 z-[920] overflow-visible"
+  className={[
+    "absolute inset-0 z-[920] overflow-visible",
+    isCutMode ? "cursor-crosshair" : "",
+  ].join(" ")}
   width={WORLD_W}
   height={WORLD_H}
 >
@@ -1010,33 +1175,58 @@ function findBridgeSnapConnection(bridgeCardId: string) {
     const y2 = to.y + to.h / 2;
 
     const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
+    const isHovered = hoveredConnectionKey === key;
+    const isCutHovered = isCutMode && isHovered;
 
     return (
       <g key={key}>
+                <path
+          d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+          fill="none"
+          stroke="transparent"
+          strokeWidth={isCutMode ? 32 : 20}
+          pointerEvents="stroke"
+          onPointerDown={(e) => {
+            if (!isCutMode) return;
+            e.stopPropagation();
+            e.preventDefault();
+          }}
+          onClick={(e) => {
+            if (!isCutMode) return;
+            e.stopPropagation();
+            e.preventDefault();
+            cutConnection(key);
+          }}
+        />
+
         <path
           d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
           fill="none"
+          pointerEvents="none"
           stroke={
-            bridgeSnapPreviewKey === key
+            isCutHovered
+              ? "rgba(239,68,68,1)"
+              : bridgeSnapPreviewKey === key
               ? "rgba(59,130,246,1)"
               : "rgba(96,165,250,0.95)"
           }
-          strokeWidth={bridgeSnapPreviewKey === key ? 6 : 4}
+          strokeWidth={isCutHovered ? 6 : bridgeSnapPreviewKey === key ? 6 : 4}
           strokeLinecap="round"
-          strokeDasharray="10 6"
+          strokeDasharray={isCutHovered ? undefined : "10 6"}
           style={{
-            filter:
-              bridgeSnapPreviewKey === key
-                ? "drop-shadow(0 0 14px rgba(59,130,246,0.9))"
-                : undefined,
+            filter: isCutHovered
+              ? "drop-shadow(0 0 14px rgba(239,68,68,0.85))"
+              : bridgeSnapPreviewKey === key
+              ? "drop-shadow(0 0 14px rgba(59,130,246,0.9))"
+              : undefined,
           }}
         />
-        <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" />
-        <circle cx={x2} cy={y2} r="6" fill="rgba(96,165,250,1)" />
+
+        <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" pointerEvents="none" />
+        <circle cx={x2} cy={y2} r="6" fill="rgba(96,165,250,1)" pointerEvents="none" />
       </g>
     );
   })}
-
 </svg>
 
         {artisticCards.map((card) => {
@@ -1089,8 +1279,18 @@ function findBridgeSnapConnection(bridgeCardId: string) {
         })}
       </div>
 
-      <div className="pointer-events-none absolute bottom-12 left-1/2 select-none -translate-x-1/2 rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
-        Right-click anywhere on the canvas to summon Vestaryn
+      <div className="pointer-events-none absolute bottom-12 left-1/2 flex -translate-x-1/2 items-center gap-2 select-none">
+        {selectionCount > 0 ? (
+          <div className="rounded-2xl border border-blue-400/20 bg-blue-500/10 px-3 py-2 text-xs font-medium text-blue-700 backdrop-blur-xl">
+            {selectionCount} {selectionCount === 1 ? "card" : "cards"} selected
+          </div>
+        ) : null}
+
+        <div className="rounded-2xl border border-black/10 bg-white/35 px-4 py-2 text-xs text-black/55 backdrop-blur-xl">
+          {isCutMode
+            ? "Cut mode active · click a connection to disconnect"
+            : "Right-click anywhere on the canvas to summon Vestaryn"}
+        </div>
       </div>
 
       <ArtisticClickMenu

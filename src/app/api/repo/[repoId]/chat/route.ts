@@ -1019,7 +1019,9 @@ if (isMultiFileCreateRequest) {
   });
 }
 
-const createMissingTarget = resolveCreateMissingTargetPath(content);
+const createMissingTarget = isArtisticMode
+  ? null
+  : resolveCreateMissingTargetPath(content);
 
 const createMissingTargetPaths = Array.isArray(createMissingTarget)
   ? createMissingTarget
@@ -1032,6 +1034,7 @@ const hasExistingExplicitPaths =
   effectiveMentionedPaths.some((p) => availableFiles.includes(p));
 
 if (
+  !isArtisticMode &&
   executionModeResolved.mode !== "bootstrap" &&
   createMissingTargetPaths.length > 0 &&
   !hasExistingExplicitPaths
@@ -1308,6 +1311,7 @@ const shouldForceFollowupCreationPromotion =
   );
 
 const shouldRunCreateMissingMode =
+  !isArtisticMode &&
   !shouldRunExistingMultiPageLinking &&
   executionModeResolved.mode !== "bootstrap" &&
   (
@@ -2196,6 +2200,7 @@ const finalizeResult = await finalizeAssistantTurnOrchestration({
     resolvedInstructions,
     runtimePolicy,
     t0,
+    isArtisticMode,
   },
   state: {
     lastResponseId,

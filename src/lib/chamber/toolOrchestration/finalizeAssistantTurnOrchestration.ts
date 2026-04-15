@@ -14,6 +14,7 @@ type FinalizeAssistantTurnOrchestrationArgs = {
     resolvedInstructions: string;
     runtimePolicy: any;
     t0: number;
+    isArtisticMode?: boolean;
   };
   state: {
     lastResponseId: string | null;
@@ -46,6 +47,7 @@ export async function finalizeAssistantTurnOrchestration({
     resolvedInstructions,
     runtimePolicy,
     t0,
+    isArtisticMode = false,
   } = ctx;
 
   let {
@@ -89,6 +91,9 @@ export async function finalizeAssistantTurnOrchestration({
     controller.enqueue(encoder.encode(fullText));
   } else if (deterministicToolHandled) {
     console.log("[pass2] skipped due to deterministic tool handling");
+  } else if (isArtisticMode && toolOutputs.length === 0) {
+    console.log("[pass2] skipped for artistic mode with no tool outputs");
+    fullText = (rawAssistantText || fullText || "").trim();
   } else {
     console.log("[pass2] starting", {
       previous_response_id: lastResponseId,
@@ -166,7 +171,7 @@ export async function finalizeAssistantTurnOrchestration({
 
   fullText = fullText.trim();
 
-  if (!hasValidAssistantContract(fullText)) {
+  if (!isArtisticMode && !hasValidAssistantContract(fullText)) {
     console.log("[contract] violation: assistant output missing valid contract markers");
     fullText =
       "[Observation]\nContract violation detected.\n\n" +
@@ -175,7 +180,10 @@ export async function finalizeAssistantTurnOrchestration({
   }
 
   fullText = scrubVisibleToolPayload(fullText);
-  fullText = ensureTriplet(stripDuplicateTriplet(fullText));
+
+  if (!isArtisticMode) {
+    fullText = ensureTriplet(stripDuplicateTriplet(fullText));
+  }
 
   const claimsStagedChange = fullText.includes(
     "A staged change is ready. Confirm to apply."

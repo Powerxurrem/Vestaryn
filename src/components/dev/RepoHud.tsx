@@ -227,12 +227,20 @@ function resolveArtisticInputChain(
   return { prompt: null, bridge: null };
 }
 
+function stripSystemArtifacts(input: string) {
+  return input
+    .replace(/__PROPOSAL__[\s\S]*/gi, "")
+    .replace(/__VERIFY__[\s\S]*/gi, "")
+    .replace(/__APPLY__[\s\S]*/gi, "")
+    .trim();
+}
+
 function buildArtisticPresentationPayload(
   raw: string,
   outputKind: ArtisticOutputKind,
   outputRole?: ArtisticCard["outputRole"]
 ): ArtisticPresentationPayload {
-  const source = String(raw ?? "").trim();
+  const source = stripSystemArtifacts(String(raw ?? "").trim());
 
   const obsMatch = source.match(
     /\[Observation\]\s*([\s\S]*?)(?=\[Assessment\]|\[Action\]|$)/i
@@ -240,7 +248,9 @@ function buildArtisticPresentationPayload(
   const assMatch = source.match(
     /\[Assessment\]\s*([\s\S]*?)(?=\[Action\]|$)/i
   );
-  const actMatch = source.match(/\[Action\]\s*([\s\S]*)$/i);
+  const actMatch = source.match(
+    /\[Action\]\s*([\s\S]*?)(?=\n\[|$)/i
+  );
 
   const observation = obsMatch?.[1]?.trim() ?? "";
   const assessment = assMatch?.[1]?.trim() ?? "";
@@ -410,15 +420,167 @@ function handleResetView() {
 
 useEffect(() => {
   function onKeyDown(e: KeyboardEvent) {
-    if (e.code === "Space") {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase();
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    const isTypingTarget =
+      tag === "input" ||
+      tag === "textarea" ||
+      target?.isContentEditable;
 
-      if (
-        tag === "input" ||
-        tag === "textarea" ||
-        target?.isContentEditable
-      ) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+      if (isTypingTarget) return;
+
+      e.preventDefault();
+
+      const selectedSet = new Set(
+        selectedCardIds.length > 0
+          ? selectedCardIds
+          : selectedCardId
+            ? [selectedCardId]
+            : []
+      );
+
+      if (selectedSet.size === 0) return;
+
+      const DUPLICATE_OFFSET_X = 36;
+      const DUPLICATE_OFFSET_Y = 36;
+
+      const duplicatedIds: string[] = [];
+
+      setArtisticCards((prev) => {
+        const cardsToDuplicate = prev.filter((card) => selectedSet.has(card.id));
+        if (cardsToDuplicate.length === 0) return prev;
+
+        const idMap = new Map<string, string>();
+
+        for (const card of cardsToDuplicate) {
+          idMap.set(card.id, makeCardId());
+        }
+
+        const duplicatedCards = cardsToDuplicate.map((card) => {
+          const nextId = idMap.get(card.id)!;
+          duplicatedIds.push(nextId);
+
+          const duplicatedCard: ArtisticCard = {
+            ...card,
+            id: nextId,
+            x: card.x + DUPLICATE_OFFSET_X,
+            y: card.y + DUPLICATE_OFFSET_Y,
+          };
+
+          if (card.links?.length) {
+            duplicatedCard.links = card.links
+              .filter((linkedId) => idMap.has(linkedId))
+              .map((linkedId) => idMap.get(linkedId)!);
+          }
+
+          if (card.sourceCardId && idMap.has(card.sourceCardId)) {
+            duplicatedCard.sourceCardId = idMap.get(card.sourceCardId)!;
+          } else if (card.sourceCardId) {
+            duplicatedCard.sourceCardId = undefined;
+          }
+
+          if (card.upstreamCardId && idMap.has(card.upstreamCardId)) {
+            duplicatedCard.upstreamCardId = idMap.get(card.upstreamCardId)!;
+          } else if (card.upstreamCardId) {
+            duplicatedCard.upstreamCardId = undefined;
+          }
+
+          return duplicatedCard;
+        });
+
+        return [...prev, ...duplicatedCards];
+      });
+
+      if (duplicatedIds.length > 0) {
+        setSelectedCardId(duplicatedIds[duplicatedIds.length - 1] ?? null);
+        setSelectedCardIds(duplicatedIds);
+        setEditingCardId(null);
+        setFocusedBodyCardId(null);
+        setDraggingCardId(null);
+        setResizingCardId(null);
+        setConnectingFromCardId(null);
+        setConnectionPreviewPoint(null);
+        setConnectionPulseCardId(null);
+        setBridgeSnapPreviewKey(null);
+        setClickMenu(null);
+        setClickMenuSubmenu(null);
+        setArtisticMenu(null);
+      }
+
+      return;
+    }
+
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (isTypingTarget) return;
+
+      const idsToDelete =
+        selectedCardIds.length > 0
+          ? selectedCardIds
+          : selectedCardId
+            ? [selectedCardId]
+            : [];
+
+      if (idsToDelete.length === 0) return;
+
+      e.preventDefault();
+
+      const deleteSet = new Set(idsToDelete);
+
+      setArtisticCards((prev) =>
+        prev
+          .filter((card) => !deleteSet.has(card.id))
+          .map((card) => ({
+            ...card,
+            links: card.links?.filter((id) => !deleteSet.has(id)),
+            sourceCardId:
+              card.sourceCardId && deleteSet.has(card.sourceCardId)
+                ? undefined
+                : card.sourceCardId,
+            upstreamCardId:
+              card.upstreamCardId && deleteSet.has(card.upstreamCardId)
+                ? undefined
+                : card.upstreamCardId,
+          }))
+      );
+
+      setSelectedCardId(null);
+      setSelectedCardIds([]);
+      setEditingCardId(null);
+      setFocusedBodyCardId(null);
+      setDraggingCardId(null);
+      setResizingCardId(null);
+      setConnectingFromCardId(null);
+      setConnectionPreviewPoint(null);
+      setConnectionPulseCardId(null);
+      setBridgeSnapPreviewKey(null);
+      setClickMenu(null);
+      setClickMenuSubmenu(null);
+      setArtisticMenu(null);
+      return;
+    }
+
+    if (e.key === "Escape") {
+      if (isTypingTarget) return;
+
+      setSelectedCardId(null);
+      setSelectedCardIds([]);
+      setEditingCardId(null);
+      setFocusedBodyCardId(null);
+      setDraggingCardId(null);
+      setResizingCardId(null);
+      setConnectingFromCardId(null);
+      setConnectionPreviewPoint(null);
+      setConnectionPulseCardId(null);
+      setBridgeSnapPreviewKey(null);
+      setClickMenu(null);
+      setClickMenuSubmenu(null);
+      setArtisticMenu(null);
+      return;
+    }
+
+    if (e.code === "Space") {
+      if (isTypingTarget) {
         return;
       }
 
@@ -459,7 +621,27 @@ useEffect(() => {
     document.body.style.userSelect = "";
     document.body.style.webkitUserSelect = "";
   };
-}, []);
+}, [
+  selectedCardId,
+  selectedCardIds,
+  setArtisticCards,
+  setSelectedCardId,
+  setSelectedCardIds,
+  setEditingCardId,
+  setFocusedBodyCardId,
+  setDraggingCardId,
+  setResizingCardId,
+  setConnectingFromCardId,
+  setConnectionPreviewPoint,
+  setConnectionPulseCardId,
+  setBridgeSnapPreviewKey,
+  setClickMenu,
+  setClickMenuSubmenu,
+  setArtisticMenu,
+  setArtisticPrompt,
+  setArtisticMessages,
+  setArtisticError,
+]);
 
 async function onLogout() {
   setCoreOpen(false);
@@ -736,7 +918,7 @@ style={
 
     const bridgeContext =
       item.bridge?.bridgeKind === "file_context"
-        ? `\n\nFile context instruction:\n${item.bridge.body}\n\nAttached file: ${item.bridge.contextFileName ?? "Unnamed file"}\n\nFile content:\n${item.bridge.contextText ?? ""}`
+        ? `\n\nFile context instruction:\n${item.bridge.body}\n\nContext source: ${item.bridge.contextFileName ?? "Unnamed file"}\n\nContext content:\n${item.bridge.contextText ?? ""}`
         : "";
 
       const res = await fetch(`/api/repo/${repoId}/chat`, {
@@ -754,7 +936,10 @@ style={
                 `Output role: ${role}.\n` +
                 roleToneBlock +
                 roleFocusBlock +
-                `Inside [Action], return ONLY the final result in the required format.\n` +
+                `Inside [Action], return ONLY the final result.
+                  Do NOT include any markers, labels, or system-style sections.
+                  Do NOT include __PROPOSAL__, __VERIFY__, or any internal steps.
+                  Return clean output only.\n` +
                 `Do not explain the request.\n` +
                 `Do not restate what the user asked for.\n` +
                 (

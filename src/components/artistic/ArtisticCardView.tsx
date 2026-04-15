@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  useMemo,
+  useState,
   type Dispatch,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
@@ -93,7 +95,7 @@ export default function ArtisticCardView({
 }: ArtisticCardViewProps) {
    function onCardPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (isPanning || isResizing) return;
-
+  
     const target = e.target as HTMLElement;
     if (target.closest("[data-card-resize-handle]")) return;
     if (target.closest("input")) return;
@@ -124,6 +126,28 @@ function readFileAsText(file: File) {
     reader.onerror = () => reject(new Error("Failed to read file."));
     reader.readAsText(file);
   });
+}
+
+async function loadContextFile(file: File) {
+  try {
+    const text = await readFileAsText(file);
+
+    setArtisticCards((prev) =>
+      prev.map((c) =>
+        c.id === card.id
+          ? {
+              ...c,
+              contextFileName: file.name,
+              contextText: text,
+            }
+          : c
+      )
+    );
+
+    setShowFilePreview(true);
+  } catch (err) {
+    console.error(err);
+  }
 }
 
   function onResizePointerDown(e: ReactPointerEvent<HTMLButtonElement>) {
@@ -229,10 +253,20 @@ function polishPromptBody(
   return `${base}\n\n${lengthInstruction}`;
 }
 
+const [isFileDragOver, setIsFileDragOver] = useState(false);
+const [showFilePreview, setShowFilePreview] = useState(false);
+
+const filePreviewText = useMemo(() => {
+  if (!card.contextText) return "";
+  return card.contextText.split(/\r?\n/).slice(0, 10).join("\n");
+}, [card.contextText]);
+
   return (
     <div
       data-artistic-card
       onPointerDown={onCardPointerDown}
+      onDragLeave={() => setIsFileDragOver(false)}
+      onDrop={() => setIsFileDragOver(false)}
       className={[
         "absolute overflow-hidden backdrop-blur-xl transition-[box-shadow,border-color,background-color] duration-150",
         isFrameCard ? "rounded-[28px]" : "rounded-2xl",
@@ -436,8 +470,46 @@ function polishPromptBody(
       Source file
     </div>
 
-    <label className="inline-flex cursor-pointer items-center rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[11px] text-black/70 hover:bg-white hover:text-black">
-      Upload file
+    <label
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsFileDragOver(true);
+      }}
+      onDragEnter={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsFileDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsFileDragOver(false);
+      }}
+      onDrop={async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsFileDragOver(false);
+
+        const file = e.dataTransfer.files?.[0];
+        if (!file) return;
+
+        await loadContextFile(file);
+      }}
+      className={[
+        "flex min-h-[78px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-3 py-3 text-center transition",
+        isFileDragOver
+          ? "border-blue-400/50 bg-blue-500/10 text-blue-700"
+          : "border-black/15 bg-white/75 text-black/60 hover:bg-white hover:text-black",
+      ].join(" ")}
+    >
+      <div className="text-[11px] font-medium">
+        {isFileDragOver ? "Drop file to load context" : "Drag & drop file here"}
+      </div>
+      <div className="mt-1 text-[10px] opacity-70">
+        or click to browse
+      </div>
+
       <input
         type="file"
         className="hidden"
@@ -446,44 +518,54 @@ function polishPromptBody(
           const file = e.target.files?.[0];
           if (!file) return;
 
-          try {
-            const text = await readFileAsText(file);
-
-            setArtisticCards((prev) =>
-              prev.map((c) =>
-                c.id === card.id
-                  ? {
-                      ...c,
-                      contextFileName: file.name,
-                      contextText: text,
-                    }
-                  : c
-              )
-            );
-          } catch (err) {
-            console.error(err);
-          } finally {
-            e.currentTarget.value = "";
-          }
+          await loadContextFile(file);
+          e.currentTarget.value = "";
         }}
       />
     </label>
 
-    {card.contextFileName ? (
-      <div className="mt-2 text-[11px] text-black/55">
-        Loaded: {card.contextFileName}
+    {card.contextText ? (
+      <div className="mt-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 py-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[11px] font-medium text-emerald-700">
+              {card.contextFileName ?? "Unnamed file"}
+            </div>
+            <div className="mt-1 text-[10px] text-emerald-700/75">
+              {card.contextText.length.toLocaleString()} characters · Context loaded
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowFilePreview((v) => !v);
+            }}
+            className="shrink-0 rounded-md border border-emerald-600/20 bg-white/60 px-2 py-1 text-[10px] font-medium text-emerald-700 transition hover:bg-white/90"
+          >
+            {showFilePreview ? "Hide" : "Preview"}
+          </button>
+        </div>
+
+        {showFilePreview ? (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+            className="mt-2 max-h-[140px] overflow-auto rounded-md border border-emerald-600/15 bg-white/55 px-2 py-2"
+          >
+            <pre className="whitespace-pre-wrap break-words text-[10px] leading-5 text-black/65">
+              {filePreviewText}
+              {card.contextText.split(/\r?\n/).length > 10 ? "\n..." : ""}
+            </pre>
+          </div>
+        ) : null}
       </div>
     ) : (
       <div className="mt-2 text-[11px] text-black/35">
         No file loaded yet
       </div>
     )}
-
-    {card.contextText ? (
-      <div className="mt-1 text-[10px] text-black/35">
-        {card.contextText.length.toLocaleString()} characters available
-      </div>
-    ) : null}
   </div>
 ) : null}
     
