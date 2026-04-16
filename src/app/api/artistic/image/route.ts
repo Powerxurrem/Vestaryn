@@ -22,9 +22,9 @@ export async function POST(req: Request) {
     }
 
        const result = await openai.images.generate({
-      model: "gpt-image-1",
+      model: "gpt-image-1-mini",
       prompt: prompt.trim(),
-      size: "1536x1024",
+      size: "1024x1024",
     });
 
     const imageBase64 = result.data?.[0]?.b64_json;
@@ -42,7 +42,7 @@ export async function POST(req: Request) {
         ? `data:image/png;base64,${imageBase64}`
         : imageUrl,
     });
-    
+
   } catch (err: any) {
     console.error("[artistic/image] generation failed", {
       message: err?.message,
