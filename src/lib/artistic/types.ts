@@ -6,7 +6,7 @@ export type ArtisticCardType =
   | "output"
   | "bridge";
 
-export type ArtisticOutputKind = "text" | "powerpoint";
+export type ArtisticOutputKind = "text" | "powerpoint" | "image";
 export type ArtisticBridgeKind = "file_context";
 export type ArtisticOutputRole =
   | "summary"
@@ -30,6 +30,9 @@ export type ArtisticCard = {
   upstreamCardId?: string;
   contextFileName?: string;
   contextText?: string;
+  groupId?: string;
+  imageStatus?: "idle" | "generating" | "done" | "error";
+  imageUrl?: string;
 };
 
 export type ScreenPoint = {

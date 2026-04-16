@@ -2,6 +2,8 @@
 
 import {
   useEffect,
+  useRef,
+  useMemo,
   useState,
   type Dispatch,
   type PointerEvent as ReactPointerEvent,
@@ -200,11 +202,120 @@ export default function ArtisticCanvasSurface({
     );
   }
 
+  const onboardedSoftGroupKeysRef = useRef<Set<string>>(new Set());
+  const loadedSoftGroupKeyRef = useRef<string | null>(null);
+  const loadedPersistentGroupIdRef = useRef<string | null>(null);
   const [isCutMode, setIsCutMode] = useState(false);
   const [hoveredConnectionKey, setHoveredConnectionKey] = useState<string | null>(null);
+  const [recentlyCutConnectionGhost, setRecentlyCutConnectionGhost] = useState<{
+  key: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  dx: number;
+} | null>(null);
   const [pointerWorldPoint, setPointerWorldPoint] = useState<ScreenPoint | null>(null);
+  const pointerWorldPointRef = useRef<ScreenPoint | null>(null);
+  const [groupSurfaceTitle, setGroupSurfaceTitle] = useState("Untitled group");
+  const [groupSurfaceNote, setGroupSurfaceNote] = useState("");
+  const [isEditingGroupSurface, setIsEditingGroupSurface] = useState(false);
+  const [draggingPersistentGroupId, setDraggingPersistentGroupId] = useState<string | null>(null);
+  const persistentGroupDragStartRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    cardPositions: Record<string, { x: number; y: number }>;
+  } | null>(null);
+  const [persistentGroups, setPersistentGroups] = useState<
+  Array<{
+    id: string;
+    cardIds: string[];
+    title: string;
+    note: string;
+  }>
+>(() => {
+  if (typeof window === "undefined") return [];
 
-  
+  try {
+    const raw = localStorage.getItem("vestaryn_artistic_persistent_groups");
+    if (!raw) return [];
+
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+});
+
+function makePersistentGroupId() {
+  return `group_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+  const [softGroupSurfaces, setSoftGroupSurfaces] = useState<
+  Array<{
+    id: string;
+    cardIds: string[];
+    title: string;
+    note: string;
+  }>
+>([]);
+
+function normalizeGroupCardIds(cardIds: string[]) {
+  return Array.from(new Set(cardIds)).sort();
+}
+
+function makeSoftGroupKey(cardIds: string[]) {
+  return normalizeGroupCardIds(cardIds).join("::");
+}
+
+function commitPersistentGroupTitle(groupId: string, title: string) {
+  const nextTitle = title.trim() || "Untitled group";
+
+  setPersistentGroups((prev) => {
+    const next = prev.map((group) =>
+      group.id === groupId
+        ? {
+            ...group,
+            title: nextTitle,
+          }
+        : group
+    );
+
+    try {
+      localStorage.setItem(
+        "vestaryn_artistic_persistent_groups",
+        JSON.stringify(next)
+      );
+    } catch {
+      // ignore
+    }
+
+    return next;
+  });
+}
+
+function commitPersistentGroupNote(groupId: string, note: string) {
+  setPersistentGroups((prev) => {
+    const next = prev.map((group) =>
+      group.id === groupId
+        ? {
+            ...group,
+            note,
+          }
+        : group
+    );
+
+    try {
+      localStorage.setItem(
+        "vestaryn_artistic_persistent_groups",
+        JSON.stringify(next)
+      );
+    } catch {
+      // ignore
+    }
+
+    return next;
+  });
+}
 
   function updateCard(
     cardId: string,
@@ -294,39 +405,537 @@ const connections = artisticCards
     return [];
   });
 
-useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase();
-      const isTypingTarget =
-        tag === "input" ||
-        tag === "textarea" ||
-        target?.isContentEditable;
+const activePersistentGroup = useMemo(() => {
+  if (selectedCardIds.length < 2) return null;
 
+  const selectedCards = artisticCards.filter((card) =>
+    selectedCardIds.includes(card.id)
+  );
+
+  if (selectedCards.length < 2) return null;
+
+  const firstGroupId = selectedCards[0]?.groupId;
+  if (!firstGroupId) return null;
+
+  const allSameGroup = selectedCards.every(
+    (card) => card.groupId === firstGroupId
+  );
+
+  if (!allSameGroup) return null;
+
+  return (
+    persistentGroups.find((group) => group.id === firstGroupId) ?? null
+  );
+}, [artisticCards, selectedCardIds, persistentGroups]);
+
+const persistentGroupBounds = useMemo(() => {
+  if (!activePersistentGroup) return null;
+
+  const groupedCards = artisticCards.filter((card) =>
+    activePersistentGroup.cardIds.includes(card.id)
+  );
+
+  if (groupedCards.length < 2) return null;
+
+  const minX = Math.min(...groupedCards.map((card) => card.x));
+  const minY = Math.min(...groupedCards.map((card) => card.y));
+  const maxX = Math.max(...groupedCards.map((card) => card.x + card.w));
+  const maxY = Math.max(...groupedCards.map((card) => card.y + card.h));
+
+  const PAD_X = 28;
+  const PAD_Y = 32;
+  const HEADER_H = 132;
+
+  return {
+    x: minX - PAD_X,
+    y: minY - PAD_Y - HEADER_H,
+    w: maxX - minX + PAD_X * 2,
+    h: maxY - minY + PAD_Y * 2 + HEADER_H,
+    count: groupedCards.length,
+  };
+}, [artisticCards, activePersistentGroup]);
+
+const selectedGroupBounds = useMemo(() => {
+  if (persistentGroupBounds) {
+    return persistentGroupBounds;
+  }
+
+  if (selectedCardIds.length < 2) return null;
+
+  const selectedCards = artisticCards.filter((card) =>
+    selectedCardIds.includes(card.id)
+  );
+
+  if (selectedCards.length < 2) return null;
+
+  const minX = Math.min(...selectedCards.map((card) => card.x));
+  const minY = Math.min(...selectedCards.map((card) => card.y));
+  const maxX = Math.max(...selectedCards.map((card) => card.x + card.w));
+  const maxY = Math.max(...selectedCards.map((card) => card.y + card.h));
+
+  const PAD_X = 28;
+  const PAD_Y = 32;
+  const HEADER_H = 132;
+
+  return {
+    x: minX - PAD_X,
+    y: minY - PAD_Y - HEADER_H,
+    w: maxX - minX + PAD_X * 2,
+    h: maxY - minY + PAD_Y * 2 + HEADER_H,
+    count: selectedCards.length,
+  };
+}, [artisticCards, selectedCardIds, persistentGroupBounds]);
+
+const persistentGroupRenderItems = useMemo(() => {
+  const PAD_X = 28;
+  const PAD_Y = 32;
+  const HEADER_H = 132;
+
+  return persistentGroups
+    .map((group) => {
+      const groupedCards = artisticCards.filter((card) =>
+        group.cardIds.includes(card.id)
+      );
+
+      if (groupedCards.length < 2) return null;
+
+      const minX = Math.min(...groupedCards.map((card) => card.x));
+      const minY = Math.min(...groupedCards.map((card) => card.y));
+      const maxX = Math.max(...groupedCards.map((card) => card.x + card.w));
+      const maxY = Math.max(...groupedCards.map((card) => card.y + card.h));
+
+      return {
+        id: group.id,
+        cardIds: group.cardIds,
+        title: group.title,
+        note: group.note,
+        count: groupedCards.length,
+        isActive: activePersistentGroup?.id === group.id,
+        x: minX - PAD_X,
+        y: minY - PAD_Y - HEADER_H,
+        w: maxX - minX + PAD_X * 2,
+        h: maxY - minY + PAD_Y * 2 + HEADER_H,
+      };
+    })
+    .filter(Boolean) as Array<{
+      id: string;
+      cardIds: string[];
+      title: string;
+      note: string;
+      count: number;
+      isActive: boolean;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }>;
+}, [persistentGroups, artisticCards, activePersistentGroup?.id]);
+
+const selectedGroupCardIds = useMemo(() => {
+  if (selectedCardIds.length < 2) return [];
+  return normalizeGroupCardIds(selectedCardIds);
+}, [selectedCardIds]);
+
+const selectedSoftGroupKey = useMemo(() => {
+  if (selectedGroupCardIds.length < 2) return null;
+  return makeSoftGroupKey(selectedGroupCardIds);
+}, [selectedGroupCardIds]);
+
+
+
+useEffect(() => {
+  try {
+    localStorage.setItem(
+      "vestaryn_artistic_persistent_groups",
+      JSON.stringify(persistentGroups)
+    );
+  } catch {
+    // ignore
+  }
+}, [persistentGroups]);
+
+useEffect(() => {
+  if (!activePersistentGroup) {
+    loadedPersistentGroupIdRef.current = null;
+    return;
+  }
+
+  if (loadedPersistentGroupIdRef.current === activePersistentGroup.id) {
+    return;
+  }
+
+  loadedPersistentGroupIdRef.current = activePersistentGroup.id;
+  loadedSoftGroupKeyRef.current = null;
+
+  setGroupSurfaceTitle(activePersistentGroup.title);
+  setGroupSurfaceNote(activePersistentGroup.note);
+}, [activePersistentGroup?.id]);
+
+useEffect(() => {
+  if (selectedCardIds.length < 2) {
+    setIsEditingGroupSurface(false);
+    loadedSoftGroupKeyRef.current = null;
+    loadedPersistentGroupIdRef.current = null;
+  }
+}, [selectedCardIds]);
+
+useEffect(() => {
+  if (!selectedSoftGroupKey || selectedGroupCardIds.length < 2) {
+    loadedSoftGroupKeyRef.current = null;
+    return;
+  }
+
+  if (activePersistentGroup) {
+    return;
+  }
+
+  const existing = softGroupSurfaces.find(
+    (group) => group.id === selectedSoftGroupKey
+  );
+
+  if (!existing) {
+    const nextGroup = {
+      id: selectedSoftGroupKey,
+      cardIds: selectedGroupCardIds,
+      title: "Untitled group",
+      note: "",
+    };
+
+    let didCreate = false;
+
+    setSoftGroupSurfaces((prev) => {
+      if (prev.some((group) => group.id === selectedSoftGroupKey)) {
+        return prev;
+      }
+      didCreate = true;
+      return [...prev, nextGroup];
+    });
+
+    if (loadedSoftGroupKeyRef.current !== selectedSoftGroupKey) {
+      setGroupSurfaceTitle("Untitled group");
+      setGroupSurfaceNote("");
+      loadedSoftGroupKeyRef.current = selectedSoftGroupKey;
+    }
+
+    if (
+      didCreate &&
+      !onboardedSoftGroupKeysRef.current.has(selectedSoftGroupKey)
+    ) {
+      onboardedSoftGroupKeysRef.current.add(selectedSoftGroupKey);
+
+      setTimeout(() => {
+        setIsEditingGroupSurface(true);
+      }, 0);
+    }
+
+    return;
+  }
+
+  if (loadedSoftGroupKeyRef.current !== selectedSoftGroupKey) {
+    setGroupSurfaceTitle(existing.title);
+    setGroupSurfaceNote(existing.note);
+    loadedSoftGroupKeyRef.current = selectedSoftGroupKey;
+  }
+}, [
+  selectedSoftGroupKey,
+  selectedGroupCardIds,
+  softGroupSurfaces,
+  activePersistentGroup?.id,
+]);
+
+
+useEffect(() => {
+  if (selectedGroupCardIds.length < 2) return;
+
+  if (activePersistentGroup) {
+    const nextTitle = groupSurfaceTitle.trim() || "Untitled group";
+    if (nextTitle === activePersistentGroup.title) return;
+
+    commitPersistentGroupTitle(activePersistentGroup.id, groupSurfaceTitle);
+    return;
+  }
+
+  if (!selectedSoftGroupKey) return;
+
+  setSoftGroupSurfaces((prev) => {
+    let changed = false;
+
+    const next = prev.map((group) => {
+      if (group.id !== selectedSoftGroupKey) return group;
+
+      const nextTitle = groupSurfaceTitle.trim() || "Untitled group";
+      if (group.title === nextTitle) return group;
+
+      changed = true;
+      return {
+        ...group,
+        title: nextTitle,
+      };
+    });
+
+    return changed ? next : prev;
+  });
+}, [
+  groupSurfaceTitle,
+  activePersistentGroup?.id,
+  activePersistentGroup?.title,
+  selectedSoftGroupKey,
+  selectedGroupCardIds,
+]);
+
+useEffect(() => {
+  if (selectedGroupCardIds.length < 2) return;
+
+  if (activePersistentGroup) {
+    if (groupSurfaceNote === activePersistentGroup.note) return;
+
+    commitPersistentGroupNote(activePersistentGroup.id, groupSurfaceNote);
+    return;
+  }
+
+  if (!selectedSoftGroupKey) return;
+
+  setSoftGroupSurfaces((prev) => {
+    let changed = false;
+
+    const next = prev.map((group) => {
+      if (group.id !== selectedSoftGroupKey) return group;
+      if (group.note === groupSurfaceNote) return group;
+
+      changed = true;
+      return {
+        ...group,
+        note: groupSurfaceNote,
+      };
+    });
+
+    return changed ? next : prev;
+  });
+}, [
+  groupSurfaceNote,
+  activePersistentGroup?.id,
+  activePersistentGroup?.note,
+  selectedSoftGroupKey,
+  selectedGroupCardIds,
+]);
+
+useEffect(() => {
+  const liveCardIds = new Set(artisticCards.map((card) => card.id));
+
+  setSoftGroupSurfaces((prev) => {
+    const filtered = prev.filter(
+      (group) =>
+        group.cardIds.length >= 2 &&
+        group.cardIds.every((id) => liveCardIds.has(id))
+    );
+
+    return filtered.length === prev.length ? prev : filtered;
+  });
+}, [artisticCards]);
+
+useEffect(() => {
+  function onKeyDown(e: KeyboardEvent) {
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    const isTypingTarget =
+      tag === "input" ||
+      tag === "textarea" ||
+      target?.isContentEditable;
+
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "g") {
       if (isTypingTarget) return;
 
-      if (e.key.toLowerCase() === "x") {
-        setIsCutMode(true);
-        setHoveredConnectionKey(findConnectionAtPoint(pointerWorldPoint));
-      }
+      e.preventDefault();
+
+const idsToGroup =
+  selectedCardIds.length > 0
+    ? selectedCardIds
+    : selectedCardId
+    ? [selectedCardId]
+    : [];
+
+if (idsToGroup.length < 2) {
+  
+  return;
+}
+
+const groupedCardIds = normalizeGroupCardIds(idsToGroup);
+
+const existingGroup = persistentGroups.find((group) => {
+  const existingIds = normalizeGroupCardIds(group.cardIds);
+  return (
+    existingIds.length === groupedCardIds.length &&
+    existingIds.every((id, index) => id === groupedCardIds[index])
+  );
+});
+
+const nextGroupId = existingGroup?.id ?? makePersistentGroupId();
+
+      const nextTitle = groupSurfaceTitle.trim() || "Untitled group";
+      const nextSoftGroupKey = makeSoftGroupKey(groupedCardIds);
+
+      setPersistentGroups((prev) => {
+        const next = existingGroup
+          ? prev.map((group) =>
+              group.id === existingGroup.id
+                ? {
+                    ...group,
+                    cardIds: groupedCardIds,
+                    title: nextTitle,
+                    note: groupSurfaceNote,
+                  }
+                : group
+            )
+          : [
+              ...prev,
+              {
+                id: nextGroupId,
+                cardIds: groupedCardIds,
+                title: nextTitle,
+                note: groupSurfaceNote,
+              },
+            ];
+
+        try {
+          localStorage.setItem(
+            "vestaryn_artistic_persistent_groups",
+            JSON.stringify(next)
+          );
+        } catch {
+          // ignore
+        }
+
+        return next;
+      });
+
+      setSoftGroupSurfaces((prev) => {
+        const existingSoft = prev.find((group) => group.id === nextSoftGroupKey);
+
+        if (existingSoft) {
+          return prev.map((group) =>
+            group.id === nextSoftGroupKey
+              ? {
+                  ...group,
+                  cardIds: groupedCardIds,
+                  title: nextTitle,
+                  note: groupSurfaceNote,
+                }
+              : group
+          );
+        }
+
+        return [
+          ...prev,
+          {
+            id: nextSoftGroupKey,
+            cardIds: groupedCardIds,
+            title: nextTitle,
+            note: groupSurfaceNote,
+          },
+        ];
+      });
+
+setArtisticCards((prev) => {
+  const next = prev.map((card) =>
+    groupedCardIds.includes(card.id)
+      ? {
+          ...card,
+          groupId: nextGroupId,
+        }
+      : card
+  );
+
+  return next;
+});
+
+      return;
     }
 
-    function onKeyUp(e: KeyboardEvent) {
-      if (e.key.toLowerCase() === "x") {
-        setIsCutMode(false);
-        setHoveredConnectionKey(null);
-      }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "g") {
+      if (isTypingTarget) return;
+
+      e.preventDefault();
+
+      const idsToUngroup =
+        selectedCardIds.length > 0
+          ? selectedCardIds
+          : selectedCardId
+          ? [selectedCardId]
+          : [];
+
+      if (idsToUngroup.length === 0) return;
+
+      const selectedSet = new Set(idsToUngroup);
+
+      const groupIdsToRemove = new Set(
+        artisticCards
+          .filter((card) => selectedSet.has(card.id) && card.groupId)
+          .map((card) => card.groupId!)
+      );
+
+      if (groupIdsToRemove.size === 0) return;
+
+      setPersistentGroups((prev) =>
+        prev.filter((group) => !groupIdsToRemove.has(group.id))
+      );
+
+      setArtisticCards((prev) =>
+        prev.map((card) =>
+          selectedSet.has(card.id)
+            ? {
+                ...card,
+                groupId: undefined,
+              }
+            : card
+        )
+      );
+
+      return;
     }
 
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
+    if (isTypingTarget) return;
 
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-    };
-  }, [pointerWorldPoint, connections]);
+    if (e.key.toLowerCase() === "x") {
+      setIsCutMode(true);
+      setHoveredConnectionKey(
+        findConnectionAtPoint(pointerWorldPointRef.current)
+      );
+    }
+  }
 
+  function onKeyUp(e: KeyboardEvent) {
+    if (e.key.toLowerCase() === "x") {
+      setIsCutMode(false);
+      setHoveredConnectionKey(null);
+    }
+  }
+
+  window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
+
+  return () => {
+    window.removeEventListener("keydown", onKeyDown);
+    window.removeEventListener("keyup", onKeyUp);
+  };
+}, [
+  connections,
+  selectedCardId,
+  selectedCardIds,
+  persistentGroups,
+  artisticCards,
+  groupSurfaceTitle,
+  groupSurfaceNote,
+]);
+
+useEffect(() => {
+  if (!isCutMode) return;
+
+  setHoveredConnectionKey(
+    findConnectionAtPoint(pointerWorldPointRef.current)
+  );
+}, [isCutMode, connections]);
+const isObsidianGroupUi = cardPreset === "obsidian";
+const isPersistentGroupUi = Boolean(activePersistentGroup);
 const hoveredConnectionTargetId =
   connectingFromCardId && connectionPreviewPoint
     ? artisticCards.find((card) => {
@@ -344,21 +953,21 @@ const hoveredConnectionTargetId =
 
 
   function createMenuCard(
-    worldX: number,
-    worldY: number,
-    opts?: {
-      type?: ArtisticCardType;
-      w?: number;
-      h?: number;
-      title?: string;
-      body?: string;
-      bridgeKind?: "file_context";
-      contextFileName?: string;
-      contextText?: string;
-      outputKind?: "text" | "powerpoint";
-      outputRole?: "summary" | "email" | "report";
-    }
-  ) {
+  worldX: number,
+  worldY: number,
+  opts?: {
+    type?: ArtisticCardType;
+    w?: number;
+    h?: number;
+    title?: string;
+    body?: string;
+    bridgeKind?: "file_context";
+    contextFileName?: string;
+    contextText?: string;
+    outputKind?: "text" | "powerpoint" | "image";
+    outputRole?: "summary" | "email" | "report";
+  }
+) {
     const newCardId = makeCardId();
 
     setArtisticCards((prev) => [
@@ -385,6 +994,37 @@ const hoveredConnectionTargetId =
     setClickMenu(null);
     setClickMenuSubmenu(null);
   }
+
+function startPersistentGroupDrag(
+  e: ReactPointerEvent<HTMLDivElement>,
+  groupId: string
+) {
+  const group = persistentGroups.find((item) => item.id === groupId);
+  if (!group) return;
+
+  e.stopPropagation();
+  e.preventDefault();
+
+  const cardPositions: Record<string, { x: number; y: number }> = {};
+
+  for (const card of artisticCards) {
+    if (!group.cardIds.includes(card.id)) continue;
+    cardPositions[card.id] = { x: card.x, y: card.y };
+  }
+
+  persistentGroupDragStartRef.current = {
+    pointerX: e.clientX,
+    pointerY: e.clientY,
+    cardPositions,
+  };
+
+  setDraggingPersistentGroupId(groupId);
+  setSelectedCardIds(group.cardIds);
+  setSelectedCardId(group.cardIds[group.cardIds.length - 1] ?? null);
+
+  document.body.style.userSelect = "none";
+  document.body.style.webkitUserSelect = "none";
+}  
   
 function startCanvasDrag(clientX: number, clientY: number) {
   const worldPoint = viewportPointToWorld(clientX, clientY);
@@ -605,6 +1245,7 @@ function handleCardDragMove(clientX: number, clientY: number) {
     const { clientX, clientY } = e;
     const worldPoint = viewportPointToWorld(clientX, clientY);
 
+    pointerWorldPointRef.current = worldPoint;
     setPointerWorldPoint(worldPoint);
 
     if (isCutMode) {
@@ -637,6 +1278,29 @@ function handleCardDragMove(clientX: number, clientY: number) {
     e.preventDefault();
     document.body.style.cursor = "se-resize";
     handleResizeMove(clientX, clientY);
+    return;
+  }
+
+  if (draggingPersistentGroupId && persistentGroupDragStartRef.current) {
+    e.preventDefault();
+
+    const start = persistentGroupDragStartRef.current;
+    const dx = (clientX - start.pointerX) / zoom;
+    const dy = (clientY - start.pointerY) / zoom;
+
+    setArtisticCards((prev) =>
+      prev.map((card) => {
+        const origin = start.cardPositions[card.id];
+        if (!origin) return card;
+
+        return {
+          ...card,
+          x: origin.x + dx,
+          y: origin.y + dy,
+        };
+      })
+    );
+
     return;
   }
 
@@ -711,6 +1375,22 @@ function cubicBezierPoint(
   };
 }
 
+function estimateBezierComplexity(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number }
+) {
+  const chord = Math.hypot(p3.x - p0.x, p3.y - p0.y);
+  const controlNet =
+    Math.hypot(p1.x - p0.x, p1.y - p0.y) +
+    Math.hypot(p2.x - p1.x, p2.y - p1.y) +
+    Math.hypot(p3.x - p2.x, p3.y - p2.y);
+
+  const bendExtra = Math.max(0, controlNet - chord);
+  return { chord, controlNet, bendExtra };
+}
+
 function distancePointToBezier(
   px: number,
   py: number,
@@ -719,8 +1399,27 @@ function distancePointToBezier(
   p2: { x: number; y: number },
   p3: { x: number; y: number }
 ) {
+  const { chord, controlNet, bendExtra } = estimateBezierComplexity(
+    p0,
+    p1,
+    p2,
+    p3
+  );
+
+  const approxCurveLength = Math.max(chord, (chord + controlNet) * 0.5);
+
+  const STEPS = Math.max(
+    28,
+    Math.min(
+      120,
+      Math.ceil(
+        approxCurveLength / 24 +
+          bendExtra / 18
+      )
+    )
+  );
+
   let minDist = Infinity;
-  const STEPS = 32;
 
   for (let i = 0; i <= STEPS; i++) {
     const t = i / STEPS;
@@ -740,7 +1439,7 @@ function distancePointToBezier(
 function findConnectionAtPoint(point: ScreenPoint | null) {
   if (!point) return null;
 
-  const HIT_DISTANCE = isCutMode ? 22 : 12;
+  const BASE_HIT_DISTANCE = isCutMode ? 24 : 12;
 
   for (const { key, from, to } of connections) {
     const x1 = from.x + from.w;
@@ -754,6 +1453,12 @@ function findConnectionAtPoint(point: ScreenPoint | null) {
     const p1 = { x: x1 + dx, y: y1 };
     const p2 = { x: x2 - dx, y: y2 };
     const p3 = { x: x2, y: y2 };
+
+    const { bendExtra, chord } = estimateBezierComplexity(p0, p1, p2, p3);
+
+    const HIT_DISTANCE = isCutMode
+      ? Math.min(32, BASE_HIT_DISTANCE + bendExtra / 120 + chord / 900)
+      : BASE_HIT_DISTANCE;
 
     const dist = distancePointToBezier(point.x, point.y, p0, p1, p2, p3);
 
@@ -771,7 +1476,7 @@ function findBridgeSnapConnection(bridgeCardId: string) {
 
   const centerX = bridge.x + bridge.w / 2;
   const centerY = bridge.y + bridge.h / 2;
-  const SNAP_DISTANCE = 36;
+  const BASE_SNAP_DISTANCE = 36;
 
   for (const card of artisticCards) {
     if (card.type !== "output" || !card.sourceCardId) continue;
@@ -791,6 +1496,13 @@ function findBridgeSnapConnection(bridgeCardId: string) {
     const p2 = { x: x2 - dx, y: y2 };
     const p3 = { x: x2, y: y2 };
 
+    const { bendExtra, chord } = estimateBezierComplexity(p0, p1, p2, p3);
+
+    const SNAP_DISTANCE = Math.min(
+      48,
+      BASE_SNAP_DISTANCE + bendExtra / 140 + chord / 1100
+    );
+
     const dist = distancePointToBezier(centerX, centerY, p0, p1, p2, p3);
 
     if (dist <= SNAP_DISTANCE) {
@@ -808,6 +1520,21 @@ function findBridgeSnapConnection(bridgeCardId: string) {
 function cutConnection(targetKey: string) {
   const match = connections.find((c) => c.key === targetKey);
   if (!match) return;
+
+  const x1 = match.from.x + match.from.w;
+  const y1 = match.from.y + match.from.h / 2;
+  const x2 = match.to.x;
+  const y2 = match.to.y + match.to.h / 2;
+  const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
+
+  setRecentlyCutConnectionGhost({
+    key: targetKey,
+    x1,
+    y1,
+    x2,
+    y2,
+    dx,
+  });
 
   setArtisticCards((prev) =>
     prev.map((card) => {
@@ -832,6 +1559,12 @@ function cutConnection(targetKey: string) {
   );
 
   setHoveredConnectionKey(null);
+
+  window.setTimeout(() => {
+    setRecentlyCutConnectionGhost((prev) =>
+      prev?.key === targetKey ? null : prev
+    );
+  }, 160);
 }
 
   function onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
@@ -893,6 +1626,28 @@ function cutConnection(targetKey: string) {
     if (resizingCardId) {
       setResizingCardId(null);
       resizeStartRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.body.style.webkitUserSelect = "";
+      return;
+    }
+
+    if (draggingPersistentGroupId) {
+      const draggedGroup = persistentGroups.find(
+        (group) => group.id === draggingPersistentGroupId
+      );
+
+      if (draggedGroup) {
+        setSelectedCardIds(draggedGroup.cardIds);
+        setSelectedCardId(
+          draggedGroup.cardIds[draggedGroup.cardIds.length - 1] ?? null
+        );
+      }
+
+      ignoreNextCanvasClickRef.current = true;
+
+      setDraggingPersistentGroupId(null);
+      persistentGroupDragStartRef.current = null;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       document.body.style.webkitUserSelect = "";
@@ -1016,7 +1771,28 @@ function cutConnection(targetKey: string) {
 
     panStartRef.current = null;
     resizeStartRef.current = null;
+    pointerWorldPointRef.current = null;
+    setPointerWorldPoint(null);
+    setHoveredConnectionKey(null);
     setResizingCardId(null);
+
+    if (draggingPersistentGroupId) {
+      const draggedGroup = persistentGroups.find(
+        (group) => group.id === draggingPersistentGroupId
+      );
+
+      if (draggedGroup) {
+        setSelectedCardIds(draggedGroup.cardIds);
+        setSelectedCardId(
+          draggedGroup.cardIds[draggedGroup.cardIds.length - 1] ?? null
+        );
+      }
+
+      ignoreNextCanvasClickRef.current = true;
+    }
+
+    setDraggingPersistentGroupId(null);
+    persistentGroupDragStartRef.current = null;
     setDraggingCardId(null);
     setIsDraggingCard(false);
     setDragStart(null);
@@ -1141,7 +1917,7 @@ const selectionCount = selectedCardIds.length || (selectedCardId ? 1 : 0);
 
   return (
     <svg
-      className="pointer-events-none absolute inset-0 z-[925] overflow-visible"
+      className="pointer-events-none absolute inset-0 z-[926] overflow-visible"
       width={WORLD_W}
       height={WORLD_H}
     >
@@ -1162,72 +1938,463 @@ const selectionCount = selectedCardIds.length || (selectedCardId ? 1 : 0);
 
 <svg
   className={[
-    "absolute inset-0 z-[920] overflow-visible",
+    "absolute inset-0 z-[924] overflow-visible",
     isCutMode ? "cursor-crosshair" : "",
   ].join(" ")}
   width={WORLD_W}
   height={WORLD_H}
 >
-  {connections.map(({ key, from, to }) => {
-    const x1 = from.x + from.w;
-    const y1 = from.y + from.h / 2;
-    const x2 = to.x;
-    const y2 = to.y + to.h / 2;
+    {connections.map(({ key, from, to }) => {
+  const x1 = from.x + from.w;
+  const y1 = from.y + from.h / 2;
+  const x2 = to.x;
+  const y2 = to.y + to.h / 2;
+const isObsidianGroupUi = cardPreset === "obsidian";
+  const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
+  const isHovered = hoveredConnectionKey === key;
+  const isCutHovered = isCutMode && isHovered;
+  const isBridgeSnapPreview = bridgeSnapPreviewKey === key;
 
-    const dx = Math.max(140, Math.abs(x2 - x1) * 0.45);
-    const isHovered = hoveredConnectionKey === key;
-    const isCutHovered = isCutMode && isHovered;
+  return (
+    <g key={key}>
+      <path
+        d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={isCutMode ? 32 : 20}
+        pointerEvents="stroke"
+        onPointerDown={(e) => {
+          if (!isCutMode) return;
+          e.stopPropagation();
+          e.preventDefault();
+        }}
+        onClick={(e) => {
+          if (!isCutMode) return;
+          e.stopPropagation();
+          e.preventDefault();
+          cutConnection(key);
+        }}
+      />
 
-    return (
-      <g key={key}>
-                <path
-          d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
-          fill="none"
-          stroke="transparent"
-          strokeWidth={isCutMode ? 32 : 20}
-          pointerEvents="stroke"
-          onPointerDown={(e) => {
-            if (!isCutMode) return;
-            e.stopPropagation();
-            e.preventDefault();
-          }}
-          onClick={(e) => {
-            if (!isCutMode) return;
-            e.stopPropagation();
-            e.preventDefault();
-            cutConnection(key);
-          }}
-        />
+      <path
+        d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+        fill="none"
+        pointerEvents="none"
+        stroke={
+          isCutHovered
+            ? "rgba(239,68,68,1)"
+            : isBridgeSnapPreview
+            ? "rgba(59,130,246,1)"
+            : "rgba(96,165,250,0.95)"
+        }
+        strokeWidth={isCutHovered ? 6 : isBridgeSnapPreview ? 6 : 4}
+        strokeLinecap="round"
+        strokeDasharray={isCutHovered ? undefined : "10 6"}
+        style={{
+          filter: isCutHovered
+            ? "drop-shadow(0 0 14px rgba(239,68,68,0.85))"
+            : isBridgeSnapPreview
+            ? "drop-shadow(0 0 14px rgba(59,130,246,0.9))"
+            : undefined,
+          transition: "stroke 120ms ease, stroke-width 120ms ease, filter 120ms ease",
+        }}
+      />
 
-        <path
-          d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
-          fill="none"
-          pointerEvents="none"
-          stroke={
-            isCutHovered
-              ? "rgba(239,68,68,1)"
-              : bridgeSnapPreviewKey === key
-              ? "rgba(59,130,246,1)"
-              : "rgba(96,165,250,0.95)"
-          }
-          strokeWidth={isCutHovered ? 6 : bridgeSnapPreviewKey === key ? 6 : 4}
-          strokeLinecap="round"
-          strokeDasharray={isCutHovered ? undefined : "10 6"}
-          style={{
-            filter: isCutHovered
-              ? "drop-shadow(0 0 14px rgba(239,68,68,0.85))"
-              : bridgeSnapPreviewKey === key
-              ? "drop-shadow(0 0 14px rgba(59,130,246,0.9))"
-              : undefined,
-          }}
-        />
-
-        <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" pointerEvents="none" />
-        <circle cx={x2} cy={y2} r="6" fill="rgba(96,165,250,1)" pointerEvents="none" />
-      </g>
-    );
-  })}
+      <circle cx={x1} cy={y1} r="6" fill="rgba(96,165,250,1)" pointerEvents="none" />
+      <circle cx={x2} cy={y2} r="6" fill="rgba(96,165,250,1)" pointerEvents="none" />
+    </g>
+  );
+})}
 </svg>
+{recentlyCutConnectionGhost ? (
+  <svg
+    className="pointer-events-none absolute inset-0 z-[925] overflow-visible"
+    width={WORLD_W}
+    height={WORLD_H}
+  >
+    <g>
+      <path
+        d={`M ${recentlyCutConnectionGhost.x1} ${recentlyCutConnectionGhost.y1} C ${recentlyCutConnectionGhost.x1 + recentlyCutConnectionGhost.dx} ${recentlyCutConnectionGhost.y1}, ${recentlyCutConnectionGhost.x2 - recentlyCutConnectionGhost.dx} ${recentlyCutConnectionGhost.y2}, ${recentlyCutConnectionGhost.x2} ${recentlyCutConnectionGhost.y2}`}
+        fill="none"
+        stroke="rgba(248,113,113,0.98)"
+        strokeWidth={8}
+        strokeLinecap="round"
+        style={{
+          filter: "drop-shadow(0 0 20px rgba(248,113,113,0.95))",
+          opacity: 0.95,
+          transition: "opacity 160ms ease, stroke-width 160ms ease, filter 160ms ease",
+        }}
+      />
+
+      <circle
+        cx={recentlyCutConnectionGhost.x1}
+        cy={recentlyCutConnectionGhost.y1}
+        r="7"
+        fill="rgba(248,113,113,0.98)"
+      />
+      <circle
+        cx={recentlyCutConnectionGhost.x2}
+        cy={recentlyCutConnectionGhost.y2}
+        r="7"
+        fill="rgba(248,113,113,0.98)"
+      />
+    </g>
+  </svg>
+) : null}
+
+{persistentGroupRenderItems.map((group) => (
+  <div
+    key={group.id}
+    className={[
+      "absolute z-[919]",
+      draggingPersistentGroupId === group.id
+        ? "cursor-grabbing"
+        : "cursor-grab",
+    ].join(" ")}
+    style={{
+      left: group.x,
+      top: group.y,
+      width: group.w,
+      height: group.h,
+    }}
+    onPointerDown={(e) => {
+      const persistentGroup = persistentGroups.find((item) => item.id === group.id);
+      if (persistentGroup) {
+        setSelectedCardIds(persistentGroup.cardIds);
+        setSelectedCardId(
+          persistentGroup.cardIds[persistentGroup.cardIds.length - 1] ?? null
+        );
+      }
+
+      startPersistentGroupDrag(e, group.id);
+    }}
+  >
+    <div
+      className={
+        isObsidianGroupUi
+          ? group.isActive
+            ? "absolute inset-0 rounded-[28px] border border-blue-300/45 bg-blue-500/[0.05]"
+            : "absolute inset-0 rounded-[28px] border border-blue-400/20 bg-blue-500/[0.025]"
+          : group.isActive
+            ? "absolute inset-0 rounded-[28px] border border-sky-400 bg-sky-100/80"
+            : "absolute inset-0 rounded-[28px] border border-sky-300/80 bg-sky-50/55"
+      }
+      style={{
+        boxShadow: isObsidianGroupUi
+          ? group.isActive
+            ? "0 0 0 1px rgba(147,197,253,0.18), 0 0 40px rgba(96,165,250,0.16), inset 0 0 36px rgba(96,165,250,0.06)"
+            : "0 0 0 1px rgba(96,165,250,0.08), 0 0 20px rgba(96,165,250,0.06), inset 0 0 24px rgba(96,165,250,0.025)"
+          : group.isActive
+            ? "0 0 0 1px rgba(56,189,248,0.18), 0 0 24px rgba(56,189,248,0.10), inset 0 0 0 1px rgba(255,255,255,0.52)"
+            : "0 0 0 1px rgba(56,189,248,0.10), inset 0 0 0 1px rgba(255,255,255,0.36)",
+      }}
+    />
+
+    <div
+  className="absolute left-5 top-4 right-5 pointer-events-auto"
+  onPointerDown={(e) => e.stopPropagation()}
+  onClick={(e) => e.stopPropagation()}
+>
+  <div className="flex items-start justify-between gap-3">
+    <div className="min-w-0 flex-1">
+      <div
+        className={
+          isObsidianGroupUi
+            ? "block max-w-full truncate text-left text-[16px] font-semibold tracking-[0.08em] text-blue-100/80"
+            : "block max-w-full truncate text-left text-[16px] font-semibold tracking-[0.08em] text-sky-900/90"
+        }
+      >
+        {group.title.trim() || "Untitled group"}
+      </div>
+
+      <div
+        className={
+          isObsidianGroupUi
+            ? "mt-1 text-[10px] uppercase tracking-[0.18em] text-white/32"
+            : "mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-500"
+        }
+      >
+        Persistent group
+      </div>
+    </div>
+
+    <div className="flex items-center gap-2 shrink-0">
+      <div
+        className={
+          isObsidianGroupUi
+            ? "rounded-full border border-blue-300/20 bg-blue-400/[0.08] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-blue-100/75"
+            : "rounded-full border border-sky-300 bg-sky-50/90 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-sky-700 shadow-[0_1px_4px_rgba(0,0,0,0.06)]"
+        }
+      >
+        {group.count} cards
+      </div>
+
+      <button
+        type="button"
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+        }}
+        onPointerUp={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+
+          const selectedSet = new Set(group.cardIds);
+
+          setPersistentGroups((prev) =>
+            prev.filter((g) => g.id !== group.id)
+          );
+
+          setArtisticCards((prev) =>
+            prev.map((card) =>
+              selectedSet.has(card.id)
+                ? { ...card, groupId: undefined }
+                : card
+            )
+          );
+
+          setSelectedCardIds([]);
+          setSelectedCardId(null);
+          ignoreNextCanvasClickRef.current = true;
+        }}
+        className={
+          isObsidianGroupUi
+            ? "rounded-full border border-red-400/30 bg-red-500/[0.08] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-red-300/90 hover:bg-red-500/[0.16]"
+            : "rounded-full border border-red-300 bg-red-50/90 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-red-600 hover:bg-red-100"
+        }
+      >
+        Ungroup
+      </button>
+    </div>
+  </div>
+
+  <div
+    className={
+      isObsidianGroupUi
+        ? "mt-6 w-[320px] rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2"
+        : "mt-6 w-[320px] rounded-xl border border-slate-300/70 bg-white/80 px-3 py-2 shadow-[0_4px_12px_rgba(0,0,0,0.08)]"
+    }
+  >
+    <div
+      className={
+        isObsidianGroupUi
+          ? "mb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/35"
+          : "mb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500"
+      }
+    >
+      Group note
+    </div>
+
+    <div
+      className={
+        isObsidianGroupUi
+          ? "min-h-[72px] whitespace-pre-wrap text-[11px] leading-5 text-white/60"
+          : "min-h-[72px] whitespace-pre-wrap text-[11px] leading-5 text-slate-700"
+      }
+    >
+      {group.note?.trim() || "No note yet"}
+    </div>
+  </div>
+</div>
+  </div>
+))}
+
+    {selectedGroupBounds && !isPersistentGroupUi ? (
+      <div
+        className={[
+          "absolute z-[923]",
+          draggingPersistentGroupId
+            ? "cursor-grabbing"
+            : isPersistentGroupUi
+              ? "cursor-grab"
+              : "",
+        ].join(" ")}
+        style={{
+          left: selectedGroupBounds.x,
+          top: selectedGroupBounds.y,
+          width: selectedGroupBounds.w,
+          height: selectedGroupBounds.h,
+          pointerEvents: isPersistentGroupUi ? "auto" : "none",
+        }}
+        onPointerDown={
+          isPersistentGroupUi && activePersistentGroup
+            ? (e) => startPersistentGroupDrag(e, activePersistentGroup.id)
+            : undefined
+        }
+      >
+    <div
+      className={
+        isObsidianGroupUi
+          ? isPersistentGroupUi
+            ? "absolute inset-0 rounded-[28px] border border-blue-300/45 bg-blue-500/[0.05]"
+            : "absolute inset-0 rounded-[28px] border border-blue-400/25 bg-blue-500/[0.035]"
+          : isPersistentGroupUi
+            ? "absolute inset-0 rounded-[28px] border border-sky-400 bg-sky-100/80"
+            : "absolute inset-0 rounded-[28px] border border-sky-300 bg-sky-100/70"
+      }
+      style={{
+        boxShadow: isObsidianGroupUi
+          ? isPersistentGroupUi
+            ? "0 0 0 1px rgba(147,197,253,0.18), 0 0 40px rgba(96,165,250,0.16), inset 0 0 36px rgba(96,165,250,0.06)"
+            : "0 0 0 1px rgba(96,165,250,0.08), 0 0 32px rgba(96,165,250,0.08), inset 0 0 32px rgba(96,165,250,0.035)"
+          : isPersistentGroupUi
+            ? "0 0 0 1px rgba(56,189,248,0.18), 0 0 24px rgba(56,189,248,0.10), inset 0 0 0 1px rgba(255,255,255,0.52)"
+            : "0 0 0 1px rgba(56,189,248,0.10), inset 0 0 0 1px rgba(255,255,255,0.45)",
+      }}
+    />
+
+    <div
+  className="absolute left-5 top-4 right-5 pointer-events-auto"
+  onPointerDown={(e) => e.stopPropagation()}
+>
+  <div className="flex items-start justify-between gap-3">
+    <div className="min-w-0 flex-1">
+      {isEditingGroupSurface ? (
+        <input
+          value={groupSurfaceTitle}
+          onChange={(e) => {
+            const nextValue = e.target.value;
+            setGroupSurfaceTitle(nextValue);
+
+            if (activePersistentGroup) {
+              commitPersistentGroupTitle(activePersistentGroup.id, nextValue);
+            }
+          }}
+          onBlur={() => {
+            if (activePersistentGroup) {
+              commitPersistentGroupTitle(activePersistentGroup.id, groupSurfaceTitle);
+            }
+            setIsEditingGroupSurface(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              setIsEditingGroupSurface(false);
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setIsEditingGroupSurface(false);
+            }
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onFocus={(e) => {
+            e.currentTarget.select();
+          }}
+          autoFocus
+          className={
+            isObsidianGroupUi
+              ? "pointer-events-auto w-full bg-transparent text-[16px] font-semibold tracking-[0.08em] text-blue-100/90 outline-none placeholder:text-white/30"
+              : "pointer-events-auto w-full bg-transparent text-[16px] font-semibold tracking-[0.08em] text-sky-900 outline-none placeholder:text-slate-400"
+          }
+          placeholder="Untitled group"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsEditingGroupSurface(true);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className={
+            isObsidianGroupUi
+              ? "pointer-events-auto block max-w-full truncate text-left text-[16px] font-semibold tracking-[0.08em] text-blue-100/88"
+              : "pointer-events-auto block max-w-full truncate text-left text-[16px] font-semibold tracking-[0.08em] text-sky-900"
+          }
+        >
+          {groupSurfaceTitle.trim() || "Untitled group"}
+        </button>
+      )}
+
+      <div
+        className={
+          isObsidianGroupUi
+            ? "mt-1 text-[10px] uppercase tracking-[0.18em] text-white/32"
+            : "mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-500"
+        }
+      >
+        Selected surface
+      </div>
+
+      {isPersistentGroupUi ? (
+        <div
+          className={
+            isObsidianGroupUi
+              ? "mt-1 text-[10px] uppercase tracking-[0.18em] text-blue-200/72"
+              : "mt-1 text-[10px] uppercase tracking-[0.18em] text-sky-700"
+          }
+        >
+          Persistent group
+        </div>
+      ) : null}
+    </div>
+
+    <div
+      className={
+        isObsidianGroupUi
+          ? isPersistentGroupUi
+            ? "shrink-0 rounded-full border border-blue-300/30 bg-blue-400/[0.10] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-blue-100/85"
+            : "shrink-0 rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/65"
+          : isPersistentGroupUi
+            ? "shrink-0 rounded-full border border-sky-300 bg-sky-50/95 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-sky-700 shadow-[0_1px_4px_rgba(0,0,0,0.06)]"
+            : "shrink-0 rounded-full border border-slate-300/70 bg-white/75 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-700 shadow-[0_1px_4px_rgba(0,0,0,0.06)]"
+      }
+    >
+      {selectedGroupBounds.count} cards
+    </div>
+  </div>
+</div>
+
+<div
+  className={
+    isObsidianGroupUi
+      ? "absolute left-5 top-[5.2rem] w-[320px] rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2"
+      : "absolute left-5 top-[5.2rem] w-[320px] rounded-xl border border-slate-300/70 bg-white/80 px-3 py-2 shadow-[0_4px_12px_rgba(0,0,0,0.08)]"
+  }
+  onPointerDown={(e) => e.stopPropagation()}
+  onClick={(e) => e.stopPropagation()}
+>
+  <div
+    className={
+      isObsidianGroupUi
+        ? "mb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/35"
+        : "mb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500"
+    }
+  >
+    Group note
+  </div>
+
+  <textarea
+    value={groupSurfaceNote}
+    onChange={(e) => {
+      const nextValue = e.target.value;
+      setGroupSurfaceNote(nextValue);
+
+      if (activePersistentGroup) {
+        commitPersistentGroupNote(activePersistentGroup.id, nextValue);
+      }
+    }}
+    placeholder="Describe what this grouped surface is for..."
+    onPointerDown={(e) => e.stopPropagation()}
+    onClick={(e) => e.stopPropagation()}
+    onWheel={(e) => e.stopPropagation()}
+    onBlur={() => {
+      if (activePersistentGroup) {
+        commitPersistentGroupNote(activePersistentGroup.id, groupSurfaceNote);
+      }
+    }}
+    className={
+      isObsidianGroupUi
+        ? "pointer-events-auto min-h-[72px] w-full resize-none bg-transparent text-[11px] leading-5 text-white/60 outline-none placeholder:text-white/28"
+        : "pointer-events-auto min-h-[72px] w-full resize-none bg-transparent text-[11px] leading-5 text-slate-700 outline-none placeholder:text-slate-400"
+    }
+  />
+</div>
+  </div>
+) : null}
+
+
 
         {artisticCards.map((card) => {
           const cardPresetUi = getCardPresetClasses(

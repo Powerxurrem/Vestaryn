@@ -734,6 +734,55 @@ async function sendArtisticPrompt() {
     setArtisticSending(false);
   }
 }
+
+function mapToVisualConcept(raw: string) {
+  const text = raw.toLowerCase();
+
+  if (text.includes("growth") || text.includes("sales")) {
+    return "rising bars and upward arrow";
+  }
+
+  if (text.includes("decline") || text.includes("drop")) {
+    return "descending bars or downward curve";
+  }
+
+  if (text.includes("performance")) {
+    return "dashboard-style abstract panels";
+  }
+
+  return raw;
+}
+
+function buildVisualPrompt(raw: string) {
+  const cleaned = String(raw ?? "").replace(/\s+/g, " ").trim();
+
+  return `
+A modern, minimal, professional presentation-style illustration.
+
+Style:
+- clean corporate design
+- soft gradients
+- blue and teal color palette
+- subtle depth and shadows
+- high quality, minimal composition
+
+Rules:
+- no text
+- no letters or numbers
+- no logos
+- no people
+- no faces
+- no realistic scenes
+- no brands
+
+Visual metaphor:
+${cleaned}
+
+Output:
+abstract, symbolic, presentation-ready visual
+`.trim();
+}
+
 function isCardActive(cardId: string) {
   return (
     selectedCardId === cardId ||
@@ -888,6 +937,9 @@ style={
         ? {
             ...card,
             body: "Generating...",
+            imageStatus:
+              card.outputKind === "image" ? "generating" : card.imageStatus,
+            imageUrl: card.outputKind === "image" ? undefined : card.imageUrl,
           }
         : card
     )
@@ -921,8 +973,47 @@ style={
         ? `\n\nFile context instruction:\n${item.bridge.body}\n\nContext source: ${item.bridge.contextFileName ?? "Unnamed file"}\n\nContext content:\n${item.bridge.contextText ?? ""}`
         : "";
 
+      if (item.output.outputKind === "image") {
+        const concept = mapToVisualConcept(sourceBody);
+        const imagePrompt = buildVisualPrompt(concept);
+
+        const imageRes = await fetch(`/api/artistic/image`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            prompt: imagePrompt,
+          }),
+        });
+
+        if (!imageRes.ok) {
+          const text = await imageRes.text().catch(() => "");
+          throw new Error(text || `Image request failed (${imageRes.status})`);
+        }
+
+        const imageData = await imageRes.json();
+
+        setArtisticCards((prev) =>
+          prev.map((card) =>
+            card.id === item.output.id
+              ? {
+                  ...card,
+                  body: imagePrompt,
+                  imageStatus: "done",
+                  imageUrl:
+                    typeof imageData?.imageUrl === "string"
+                      ? imageData.imageUrl
+                      : undefined,
+                }
+              : card
+          )
+        );
+
+        continue;
+      }
+
       const res = await fetch(`/api/repo/${repoId}/chat`, {
-      
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1046,6 +1137,8 @@ style={
             ? {
                 ...card,
                 body: `Generation failed.\n\n${message}`,
+                imageStatus:
+                  item.output.outputKind === "image" ? "error" : card.imageStatus,
               }
             : card
         )

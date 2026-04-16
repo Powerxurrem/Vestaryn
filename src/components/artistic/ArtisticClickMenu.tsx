@@ -25,7 +25,7 @@ type ArtisticClickMenuProps = {
       h?: number;
       title?: string;
       body?: string;
-      outputKind?: "text" | "powerpoint";
+      outputKind?: "text" | "powerpoint" | "image";
       outputRole?: "summary" | "email" | "report";
       bridgeKind?: "file_context";
       contextFileName?: string;
@@ -197,6 +197,21 @@ function createReportOutputCard() {
     });
   }
 
+function createImageOutputCard() {
+  if (!clickMenu) return;
+
+  const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+
+  createMenuCard(world.x, world.y, {
+    type: "output",
+    w: 420,
+    h: 320,
+    title: "Image",
+    body: "Awaiting connected prompt...\n\nRun the chamber to generate an image.",
+    outputKind: "image",
+  });
+}
+
   return (
     <div
       data-click-menu
@@ -317,6 +332,15 @@ function createReportOutputCard() {
     >
       PowerPoint Output
     </button>
+    <button
+  className={[
+    "w-full rounded-md px-3 py-2 text-left text-sm",
+    menuPresetUi.item,
+  ].join(" ")}
+  onClick={createImageOutputCard}
+>
+  Image
+</button>
   </div>
 ) : null}
 

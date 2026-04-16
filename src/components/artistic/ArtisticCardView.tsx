@@ -296,7 +296,11 @@ const filePreviewText = useMemo(() => {
     {card.type === "output" && card.outputKind && (
       <div className="flex items-center gap-1.5">
         <span className="rounded-md border border-blue-400/20 bg-blue-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.18em] text-blue-200/85">
-          {card.outputKind === "text" ? "TEXT" : "PPT"}
+          {card.outputKind === "text"
+            ? "TEXT"
+            : card.outputKind === "powerpoint"
+            ? "PPT"
+            : "IMAGE"}
         </span>
 
         {card.outputRole ? (
@@ -369,258 +373,350 @@ const filePreviewText = useMemo(() => {
   </button>
 </div>
 
-      <div className="h-[calc(100%-41px)] p-3">
+            <div className="h-[calc(100%-41px)] p-3">
         {card.type === "output" && card.outputKind === "text" && card.outputRole === "email" ? (
-        (() => {
-          const email = parseEmailOutputBody(card.body);
+          (() => {
+            const email = parseEmailOutputBody(card.body);
 
-          return (
-            <div
-              onPointerDown={(e) => e.stopPropagation()}
-              className="h-full w-full rounded-xl border border-white/10 bg-white/[0.035] p-4"
-            >
-              {/* Subject */}
-              {email.subject ? (
-                <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
-                    Subject
-                  </div>
-
-                  <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
-                    {email.subject}
-                  </div>
-
-                  {/* 👇 THIS is the new line */}
-                  <div className="mt-1 text-xs text-white/40">
-                    Draft email
-                  </div>
-                </div>
-              ) : null}
-
-              {/* Divider */}
-              <div className="mb-3 h-px bg-white/10" />
-
-              {/* Email Body */}
+            return (
               <div
-                className="h-[calc(100%-72px)] min-h-0 overflow-auto"
-                onWheel={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                className="h-full w-full rounded-xl border border-white/10 bg-white/[0.035] p-4"
               >
-                <div 
-                  className={`whitespace-pre-wrap text-[14px] leading-7 ${cardPresetUi.body}`}
-                >
-                  {email.message.split("\n").map((line, i) => (
-                    <div key={i} className="mb-2">
-                      {line || <div className="h-2" />}
+                {email.subject ? (
+                  <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
+                      Subject
                     </div>
-                  ))}
+
+                    <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
+                      {email.subject}
+                    </div>
+
+                    <div className="mt-1 text-xs text-white/40">
+                      Draft email
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mb-3 h-px bg-white/10" />
+
+                <div
+                  className="h-[calc(100%-72px)] min-h-0 overflow-auto"
+                  onWheel={(e) => e.stopPropagation()}
+                >
+                  <div className={`whitespace-pre-wrap text-[14px] leading-7 ${cardPresetUi.body}`}>
+                    {email.message.split("\n").map((line, i) => (
+                      <div key={i} className="mb-2">
+                        {line || <div className="h-2" />}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })()
-      ) : card.type === "output" && card.outputKind === "text" ? (
-  (() => {
-    const parsed = parseTextOutputBody(card.body);
+            );
+          })()
+        ) : card.type === "output" && card.outputKind === "text" ? (
+          (() => {
+            const parsed = parseTextOutputBody(card.body);
 
-    return (
-      <div
-        onPointerDown={(e) => e.stopPropagation()}
-        className="h-full w-full rounded-xl border border-white/10 bg-white/[0.04] p-3"
-      >
-        {parsed.title ? (
-          <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
-              Title
-            </div>
-            <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
-              {parsed.title}
-            </div>
-          </div>
-        ) : null}
+            return (
+              <div
+                onPointerDown={(e) => e.stopPropagation()}
+                className="h-full w-full rounded-xl border border-white/10 bg-white/[0.04] p-3"
+              >
+                {parsed.title ? (
+                  <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
+                      Title
+                    </div>
+                    <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
+                      {parsed.title}
+                    </div>
+                  </div>
+                ) : null}
 
-        <div
-          className="h-[calc(100%-0px)] min-h-0 overflow-auto rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
-          onWheel={(e) => e.stopPropagation()}
-        >
-          <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/35">
-            Content
-          </div>
-          <div className={`whitespace-pre-wrap text-sm leading-6 ${cardPresetUi.body}`}>
-            {parsed.body}
-          </div>
-        </div>
-      </div>
-    );
-  })()
-  ) : card.type === "output" ? (
-    <div
-      onPointerDown={(e) => e.stopPropagation()}
-      className={`h-full w-full overflow-auto whitespace-pre-wrap text-sm leading-7 ${cardPresetUi.body}`}
-    >
-      {card.body}
-    </div>
-  ) : (
-  <div className="flex h-full flex-col gap-3">
-    {card.type === "bridge" && card.bridgeKind === "file_context" ? (
-  <div
-    onPointerDown={(e) => e.stopPropagation()}
-    className="rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm"
-  >
-    <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-black/45">
-      Source file
-    </div>
-
-    <label
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsFileDragOver(true);
-      }}
-      onDragEnter={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsFileDragOver(true);
-      }}
-      onDragLeave={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsFileDragOver(false);
-      }}
-      onDrop={async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsFileDragOver(false);
-
-        const file = e.dataTransfer.files?.[0];
-        if (!file) return;
-
-        await loadContextFile(file);
-      }}
-      className={[
-        "flex min-h-[78px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-3 py-3 text-center transition",
-        isFileDragOver
-          ? "border-blue-400/50 bg-blue-500/10 text-blue-700"
-          : "border-black/15 bg-white/75 text-black/60 hover:bg-white hover:text-black",
-      ].join(" ")}
-    >
-      <div className="text-[11px] font-medium">
-        {isFileDragOver ? "Drop file to load context" : "Drag & drop file here"}
-      </div>
-      <div className="mt-1 text-[10px] opacity-70">
-        or click to browse
-      </div>
-
-      <input
-        type="file"
-        className="hidden"
-        accept=".txt,.md,.csv,.json,.html"
-        onChange={async (e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-
-          await loadContextFile(file);
-          e.currentTarget.value = "";
-        }}
-      />
-    </label>
-
-    {card.contextText ? (
-      <div className="mt-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 py-2">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[11px] font-medium text-emerald-700">
-              {card.contextFileName ?? "Unnamed file"}
-            </div>
-            <div className="mt-1 text-[10px] text-emerald-700/75">
-              {card.contextText.length.toLocaleString()} characters · Context loaded
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowFilePreview((v) => !v);
-            }}
-            className="shrink-0 rounded-md border border-emerald-600/20 bg-white/60 px-2 py-1 text-[10px] font-medium text-emerald-700 transition hover:bg-white/90"
-          >
-            {showFilePreview ? "Hide" : "Preview"}
-          </button>
-        </div>
-
-        {showFilePreview ? (
+                <div
+                  className="h-[calc(100%-0px)] min-h-0 overflow-auto rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+                  onWheel={(e) => e.stopPropagation()}
+                >
+                  <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/35">
+                    Content
+                  </div>
+                  <div className={`whitespace-pre-wrap text-sm leading-6 ${cardPresetUi.body}`}>
+                    {parsed.body}
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        ) : card.type === "output" && card.outputKind === "image" ? (
           <div
             onPointerDown={(e) => e.stopPropagation()}
-            onWheel={(e) => e.stopPropagation()}
-            className="mt-2 max-h-[140px] overflow-auto rounded-md border border-emerald-600/15 bg-white/55 px-2 py-2"
+            className="flex h-full flex-col rounded-xl border border-black/10 bg-white p-3"
           >
-            <pre className="whitespace-pre-wrap break-words text-[10px] leading-5 text-black/65">
-              {filePreviewText}
-              {card.contextText.split(/\r?\n/).length > 10 ? "\n..." : ""}
-            </pre>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-black/45">
+                Image
+              </div>
+
+              <div className="text-[11px] text-black/40">
+                {card.imageStatus === "generating"
+                  ? "Generating..."
+                  : card.imageStatus === "error"
+                  ? "Error"
+                  : card.imageStatus === "done"
+                  ? "Ready"
+                  : "Idle"}
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-black/10 bg-white">
+              {card.imageUrl ? (
+                <img
+                  src={card.imageUrl}
+                  alt={card.title || "Generated image"}
+                  className="h-full w-full object-cover"
+                  draggable={false}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-black/45">
+                  {card.imageStatus === "generating"
+                    ? "Generating image preview..."
+                    : card.imageStatus === "error"
+                    ? "Image generation failed."
+                    : "Awaiting connected prompt..."}
+                </div>
+              )}
+            </div>
           </div>
-        ) : null}
-      </div>
-    ) : (
-      <div className="mt-2 text-[11px] text-black/35">
-        No file loaded yet
-      </div>
-    )}
-  </div>
-) : null}
-    
-    <textarea
-      spellCheck={false}
-      value={card.body}
-      onFocus={() => {
-        setSelectedCardId(card.id);
-        setFocusedBodyCardId(card.id);
-      }}
-      onBlur={() => {
-        setFocusedBodyCardId((prev) => (prev === card.id ? null : prev));
-      }}
-      onChange={(e) => commitCardBody(card.id, e.target.value)}
-      onPointerDown={(e) => e.stopPropagation()}
-      onWheel={(e) => e.stopPropagation()}
-      placeholder={
-        isFrameCard
-          ? "Frame surface..."
-          : isNotesCard
-          ? "Notes..."
-          : "Write here..."
-      }
-      className={`min-h-0 flex-1 resize-none bg-transparent text-sm outline-none ${cardPresetUi.body}`}
-    />
+        ) : card.type === "output" && card.outputKind === "powerpoint" ? (
+          (() => {
+            const ppt = parsePowerPointBody(card.body);
 
-    {card.type === "prompt" ? (
-      <div
-        onPointerDown={(e) => e.stopPropagation()}
-        className="flex items-center gap-2 rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm"
-      >
-        <div className="text-[10px] uppercase tracking-[0.18em] text-black/45">
-          Polish prompt
-        </div>
+            return (
+              <div
+                onPointerDown={(e) => e.stopPropagation()}
+                className="h-full w-full overflow-auto rounded-xl border border-white/10 bg-white/[0.04] p-3"
+                onWheel={(e) => e.stopPropagation()}
+              >
+                <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
+                    Title
+                  </div>
+                  <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
+                    {ppt.title}
+                  </div>
+                </div>
 
-        {(["short", "medium", "long"] as const).map((length) => (
-          <button
-            key={length}
-            type="button"
-            onClick={() => {
-              const nextBody = polishPromptBody(card.body, length);
-              commitCardBody(card.id, nextBody);
-              setSelectedCardId(card.id);
-              setFocusedBodyCardId(card.id);
-            }}
-            className="rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/65 transition hover:bg-white hover:text-black"
+                {ppt.hook ? (
+                  <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
+                      Hook
+                    </div>
+                    <div className={`mt-1 text-sm leading-6 ${cardPresetUi.body}`}>
+                      {ppt.hook}
+                    </div>
+                  </div>
+                ) : null}
+
+                {ppt.bullets.length > 0 ? (
+                  <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/35">
+                      Bullets
+                    </div>
+                    <div className="space-y-2">
+                      {ppt.bullets.map((bullet, i) => (
+                        <div key={i} className={`text-sm leading-6 ${cardPresetUi.body}`}>
+                          - {bullet}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {ppt.visual ? (
+                  <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
+                      Visual
+                    </div>
+                    <div className={`mt-1 text-sm leading-6 ${cardPresetUi.body}`}>
+                      {ppt.visual}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()
+        ) : card.type === "output" ? (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            className={`h-full w-full overflow-auto whitespace-pre-wrap text-sm leading-7 ${cardPresetUi.body}`}
           >
-            {length === "short" ? "Polish S" : length === "medium" ? "Polish M" : "Polish L"}
-          </button>
-        ))}
+            {card.body}
+          </div>
+        ) : (
+          <div className="flex h-full flex-col gap-3">
+            {card.type === "bridge" && card.bridgeKind === "file_context" ? (
+              <div
+                onPointerDown={(e) => e.stopPropagation()}
+                className="rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm"
+              >
+                <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-black/45">
+                  Source file
+                </div>
+
+                <label
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsFileDragOver(true);
+                  }}
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsFileDragOver(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsFileDragOver(false);
+                  }}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsFileDragOver(false);
+
+                    const file = e.dataTransfer.files?.[0];
+                    if (!file) return;
+
+                    await loadContextFile(file);
+                  }}
+                  className={[
+                    "flex min-h-[78px] cursor-pointer flex-col items-center justify-center rounded-md border border-dashed px-3 py-3 text-center transition",
+                    isFileDragOver
+                      ? "border-blue-400/50 bg-blue-500/10 text-blue-700"
+                      : "border-black/15 bg-white/75 text-black/60 hover:bg-white hover:text-black",
+                  ].join(" ")}
+                >
+                  <div className="text-[11px] font-medium">
+                    {isFileDragOver ? "Drop file to load context" : "Drag & drop file here"}
+                  </div>
+                  <div className="mt-1 text-[10px] opacity-70">
+                    or click to browse
+                  </div>
+
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".txt,.md,.csv,.json,.html"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+
+                      await loadContextFile(file);
+                      e.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+
+                {card.contextText ? (
+                  <div className="mt-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 py-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[11px] font-medium text-emerald-700">
+                          {card.contextFileName ?? "Unnamed file"}
+                        </div>
+                        <div className="mt-1 text-[10px] text-emerald-700/75">
+                          {card.contextText.length.toLocaleString()} characters · Context loaded
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowFilePreview((v) => !v);
+                        }}
+                        className="shrink-0 rounded-md border border-emerald-600/20 bg-white/60 px-2 py-1 text-[10px] font-medium text-emerald-700 transition hover:bg-white/90"
+                      >
+                        {showFilePreview ? "Hide" : "Preview"}
+                      </button>
+                    </div>
+
+                    {showFilePreview ? (
+                      <div
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onWheel={(e) => e.stopPropagation()}
+                        className="mt-2 max-h-[140px] overflow-auto rounded-md border border-emerald-600/15 bg-white/55 px-2 py-2"
+                      >
+                        <pre className="whitespace-pre-wrap break-words text-[10px] leading-5 text-black/65">
+                          {filePreviewText}
+                          {card.contextText.split(/\r?\n/).length > 10 ? "\n..." : ""}
+                        </pre>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="mt-2 text-[11px] text-black/35">
+                    No file loaded yet
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            <textarea
+              spellCheck={false}
+              value={card.body}
+              onFocus={() => {
+                setSelectedCardId(card.id);
+                setFocusedBodyCardId(card.id);
+              }}
+              onBlur={() => {
+                setFocusedBodyCardId((prev) => (prev === card.id ? null : prev));
+              }}
+              onChange={(e) => commitCardBody(card.id, e.target.value)}
+              onPointerDown={(e) => e.stopPropagation()}
+              onWheel={(e) => e.stopPropagation()}
+              placeholder={
+                isFrameCard
+                  ? "Frame surface..."
+                  : isNotesCard
+                  ? "Notes..."
+                  : "Write here..."
+              }
+              className={`min-h-0 flex-1 resize-none bg-transparent text-sm outline-none ${cardPresetUi.body}`}
+            />
+
+            {card.type === "prompt" ? (
+              <div
+                onPointerDown={(e) => e.stopPropagation()}
+                className="flex items-center gap-2 rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm"
+              >
+                <div className="text-[10px] uppercase tracking-[0.18em] text-black/45">
+                  Polish prompt
+                </div>
+
+                {(["short", "medium", "long"] as const).map((length) => (
+                  <button
+                    key={length}
+                    type="button"
+                    onClick={() => {
+                      const nextBody = polishPromptBody(card.body, length);
+                      commitCardBody(card.id, nextBody);
+                      setSelectedCardId(card.id);
+                      setFocusedBodyCardId(card.id);
+                    }}
+                    className="rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/65 transition hover:bg-white hover:text-black"
+                  >
+                    {length === "short" ? "Polish S" : length === "medium" ? "Polish M" : "Polish L"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
-    ) : null}
-  </div>
-)}
-</div>
 
 
 
