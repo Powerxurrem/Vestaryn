@@ -7,26 +7,42 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+
+
 export async function POST(req: Request) {
   try {
     const { prompt } = await req.json();
 
-    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
-      return new Response("Missing prompt", { status: 400 });
+    if (!prompt?.trim()) {
+      return Response.json({ error: "Missing prompt" }, { status: 400 });
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      return new Response("OPENAI_API_KEY is missing on the server.", {
-        status: 500,
-      });
-    }
+    const safePrompt = `
+    professional presentation illustration,
+    clean composition,
+    high quality,
+    modern visual style,
+
+    Rules:
+    - no people
+    - no faces
+    - no text
+    - no letters
+    - no logos
+    - no watermarks
+
+    User request:
+    ${prompt.trim()}
+    `.trim();
 
        const result = await openai.images.generate({
       model: "gpt-image-1-mini",
-      prompt: prompt.trim(),
+      prompt: safePrompt,
       size: "1024x1024",
     });
 
+
+    
     const imageBase64 = result.data?.[0]?.b64_json;
     const imageUrl = result.data?.[0]?.url;
 
@@ -43,6 +59,8 @@ export async function POST(req: Request) {
         : imageUrl,
     });
 
+
+    
   } catch (err: any) {
     console.error("[artistic/image] generation failed", {
       message: err?.message,

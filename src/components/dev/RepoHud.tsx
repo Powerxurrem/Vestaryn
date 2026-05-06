@@ -150,59 +150,84 @@ export function VestarynFrame({
   const [coreView, setCoreView] = useState<CoreView>("menu");
   const coreRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
-const [appMode, setAppMode] = useState<"engineering" | "artistic">("artistic");
-const [artisticMenu, setArtisticMenu] = useState<{ x: number; y: number } | null>(null);
-const [artisticPrompt, setArtisticPrompt] = useState("");
-const [editingCardId, setEditingCardId] = useState<string | null>(null);
-const [artisticMessages, setArtisticMessages] = useState<
-  { role: "user" | "assistant"; content: string }[]
->([]);
-const [artisticCards, setArtisticCards] = useState<ArtisticCard[]>([]);
+  const [appMode, setAppMode] = useState<"engineering" | "artistic">("artistic");
+  const [artisticMenu, setArtisticMenu] = useState<{ x: number; y: number } | null>(null);
+  const [artisticPrompt, setArtisticPrompt] = useState("");
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const [artisticMessages, setArtisticMessages] = useState<
+    { role: "user" | "assistant"; content: string }[]
+  >([]);
+  const [artisticCards, setArtisticCards] = useState<ArtisticCard[]>([]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("vestaryn_artistic_canvas");
+      if (!raw) return;
+      setArtisticCards(JSON.parse(raw));
+    } catch {
+      // ignore
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "vestaryn_artistic_canvas",
+        JSON.stringify(artisticCards)
+      );
+    } catch (e) {
+      console.warn("Failed to persist canvas", e);
+    }
+  }, [artisticCards]);
+  const [clickMenu, setClickMenu] = useState<ScreenPoint | null>(null);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [isDraggingCard, setIsDraggingCard] = useState(false);
+  const [connectionPulseCardId, setConnectionPulseCardId] = useState<string | null>(null);
+  const [updatingCardIds, setUpdatingCardIds] = useState<string[]>([]);
 
 useEffect(() => {
-  try {
-    const raw = localStorage.getItem("vestaryn_artistic_canvas");
-    if (!raw) return;
-    setArtisticCards(JSON.parse(raw));
-  } catch {
-    // ignore
-  }
-}, []);
-useEffect(() => {
-  try {
-    localStorage.setItem(
-      "vestaryn_artistic_canvas",
-      JSON.stringify(artisticCards)
-    );
-  } catch (e) {
-    console.warn("Failed to persist canvas", e);
-  }
+  setArtisticCards((prev) => {
+    let changed = false;
+
+    const next = prev.map((card) => {
+      if (card.type !== "output" || card.outputKind !== "powerpoint") {
+        return card;
+      }
+
+      if (card.w === PPT_CARD_W && card.h === PPT_CARD_H) {
+        return card;
+      }
+
+      changed = true;
+
+      return {
+        ...card,
+        w: PPT_CARD_W,
+        h: PPT_CARD_H,
+      };
+    });
+
+    return changed ? next : prev;
+  });
 }, [artisticCards]);
-const [clickMenu, setClickMenu] = useState<ScreenPoint | null>(null);
-const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
-const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
-const [isDraggingCard, setIsDraggingCard] = useState(false);
-const [connectionPulseCardId, setConnectionPulseCardId] = useState<string | null>(null);
 
+  async function copyRepoId() {
+    try {
+      await navigator.clipboard.writeText(repoId);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {}
+  }
 
+  type ArtisticOutputKind = ArtisticCard["outputKind"];
 
-async function copyRepoId() {
-  try {
-    await navigator.clipboard.writeText(repoId);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
-  } catch {}
-}
+  type ArtisticPresentationPayload = {
+    title?: string;
+    subject?: string;
+    body: string;
+  };
 
-type ArtisticOutputKind = ArtisticCard["outputKind"];
-
-type ArtisticPresentationPayload = {
-  title?: string;
-  subject?: string;
-  body: string;
-};
-
-function resolveArtisticInputChain(
+  function resolveArtisticInputChain(
   cards: ArtisticCard[],
   output: ArtisticCard
 ): {
@@ -216,81 +241,90 @@ function resolveArtisticInputChain(
     return { prompt: direct, bridge: null };
   }
 
-  if (direct.type === "bridge") {
-    const prompt =
-      cards.find((c) => c.id === direct.upstreamCardId && c.type === "prompt") ??
-      null;
+  if (direct.type === "output") {
+    return { prompt: direct, bridge: null };
+  }
 
-    return { prompt, bridge: direct };
+  if (direct.type === "bridge") {
+    const upstream =
+      cards.find((c) => c.id === direct.upstreamCardId) ?? null;
+
+    if (!upstream) return { prompt: null, bridge: direct };
+
+    if (upstream.type === "prompt" || upstream.type === "output") {
+      return { prompt: upstream, bridge: direct };
+    }
+
+    return { prompt: null, bridge: direct };
   }
 
   return { prompt: null, bridge: null };
 }
 
-function stripSystemArtifacts(input: string) {
-  return input
-    .replace(/__PROPOSAL__[\s\S]*/gi, "")
-    .replace(/__VERIFY__[\s\S]*/gi, "")
-    .replace(/__APPLY__[\s\S]*/gi, "")
-    .trim();
-}
-
-function buildArtisticPresentationPayload(
-  raw: string,
-  outputKind: ArtisticOutputKind,
-  outputRole?: ArtisticCard["outputRole"]
-): ArtisticPresentationPayload {
-  const source = stripSystemArtifacts(String(raw ?? "").trim());
-
-  const obsMatch = source.match(
-    /\[Observation\]\s*([\s\S]*?)(?=\[Assessment\]|\[Action\]|$)/i
-  );
-  const assMatch = source.match(
-    /\[Assessment\]\s*([\s\S]*?)(?=\[Action\]|$)/i
-  );
-  const actMatch = source.match(
-    /\[Action\]\s*([\s\S]*?)(?=\n\[|$)/i
-  );
-
-  const observation = obsMatch?.[1]?.trim() ?? "";
-  const assessment = assMatch?.[1]?.trim() ?? "";
-  const action = actMatch?.[1]?.trim() ?? "";
-
-  const preferred = action || assessment || observation || source;
-
-  if (outputKind === "powerpoint") {
-    return {
-      body: preferred,
-    };
+  function stripSystemArtifacts(input: string) {
+    return input
+      .replace(/__PROPOSAL__[\s\S]*/gi, "")
+      .replace(/__VERIFY__[\s\S]*/gi, "")
+      .replace(/__APPLY__[\s\S]*/gi, "")
+      .trim();
   }
 
-  if (outputKind !== "text") {
-    return {
-      body: preferred,
-    };
-  }
+  function buildArtisticPresentationPayload(
+    raw: string,
+    outputKind: ArtisticOutputKind,
+    outputRole?: ArtisticCard["outputRole"]
+  ): ArtisticPresentationPayload {
+    const source = stripSystemArtifacts(String(raw ?? "").trim());
 
-  if (outputRole === "email") {
-    const subjectMatch = preferred.match(/SUBJECT:\s*(.*)/i);
-    const bodyMatch = preferred.match(/BODY:\s*([\s\S]*)/i);
+    const obsMatch = source.match(
+      /\[Observation\]\s*([\s\S]*?)(?=\[Assessment\]|\[Action\]|$)/i
+    );
+    const assMatch = source.match(
+      /\[Assessment\]\s*([\s\S]*?)(?=\[Action\]|$)/i
+    );
+    const actMatch = source.match(
+      /\[Action\]\s*([\s\S]*?)(?=\n\[|$)/i
+    );
 
-    if (subjectMatch || bodyMatch) {
-      const cleanedBody = (
-        bodyMatch?.[1]?.trim() ||
-        preferred.replace(/^SUBJECT:\s*.*(?:\r?\n)+/i, "").trim()
-      );
+    const observation = obsMatch?.[1]?.trim() ?? "";
+    const assessment = assMatch?.[1]?.trim() ?? "";
+    const action = actMatch?.[1]?.trim() ?? "";
 
+    const preferred = action || assessment || observation || source;
+
+    if (outputKind === "powerpoint") {
       return {
-        subject: subjectMatch?.[1]?.trim() || "",
-        body: cleanedBody,
+        body: preferred,
       };
     }
 
-    return {
-      subject: "",
-      body: preferred.replace(/^SUBJECT:\s*.*(?:\r?\n)+/i, "").trim(),
-    };
-  }
+    if (outputKind !== "text") {
+      return {
+        body: preferred,
+      };
+    }
+
+    if (outputRole === "email") {
+      const subjectMatch = preferred.match(/SUBJECT:\s*(.*)/i);
+      const bodyMatch = preferred.match(/BODY:\s*([\s\S]*)/i);
+
+      if (subjectMatch || bodyMatch) {
+        const cleanedBody = (
+          bodyMatch?.[1]?.trim() ||
+          preferred.replace(/^SUBJECT:\s*.*(?:\r?\n)+/i, "").trim()
+        );
+
+        return {
+          subject: subjectMatch?.[1]?.trim() || "",
+          body: cleanedBody,
+        };
+      }
+
+      return {
+        subject: "",
+        body: preferred.replace(/^SUBJECT:\s*.*(?:\r?\n)+/i, "").trim(),
+      };
+    }
 
   const titleMatch = preferred.match(/TITLE:\s*(.*)/i);
   const bodyMatch = preferred.match(/BODY:\s*([\s\S]*)/i);
@@ -308,115 +342,119 @@ function buildArtisticPresentationPayload(
   };
 }
 
-function formatArtisticPayloadForCard(
-  payload: ArtisticPresentationPayload,
-  outputKind: ArtisticOutputKind,
-  outputRole?: ArtisticCard["outputRole"]
-) {
-  if (outputKind !== "text") {
-    return payload.body;
-  }
+  function formatArtisticPayloadForCard(
+    payload: ArtisticPresentationPayload,
+    outputKind: ArtisticOutputKind,
+    outputRole?: ArtisticCard["outputRole"]
+  ) {
+    if (outputKind !== "text") {
+      return payload.body;
+    }
 
-  if (outputRole === "email") {
-    return payload.subject
-      ? `SUBJECT: ${payload.subject}\nBODY: ${payload.body}`
+    if (outputRole === "email") {
+      return payload.subject
+        ? `SUBJECT: ${payload.subject}\nBODY: ${payload.body}`
+        : payload.body;
+    }
+
+    return payload.title
+      ? `TITLE: ${payload.title}\nBODY: ${payload.body}`
       : payload.body;
   }
 
-  return payload.title
-    ? `TITLE: ${payload.title}\nBODY: ${payload.body}`
-    : payload.body;
-}
+  function resetArtisticPopup() {
+    setArtisticMenu(null);
+    setArtisticPrompt("");
+    setArtisticMessages([]);
+    setArtisticError(null);
+  }
 
-function resetArtisticPopup() {
-  setArtisticMenu(null);
-  setArtisticPrompt("");
-  setArtisticMessages([]);
-  setArtisticError(null);
-}
-
-const [focusedBodyCardId, setFocusedBodyCardId] = useState<string | null>(null);
-const [artisticSending, setArtisticSending] = useState(false);
-const [artisticError, setArtisticError] = useState<string | null>(null);
-const [isPanning, setIsPanning] = useState(false);
-const [pendingNewCardId, setPendingNewCardId] = useState<string | null>(null);
-const viewportRef = useRef<HTMLDivElement | null>(null);
-const panStartRef = useRef<{ x: number; y: number } | null>(null);
-const [zoom, setZoom] = useState(1);
-const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 3; 
-const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
-const cardDragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-const multiDragStartPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
-const [panOffset, setPanOffset] = useState<PanOffset>({
-  x: 2400,
-  y: 2400,
-});
-
-const [bridgeSnapPreviewKey, setBridgeSnapPreviewKey] = useState<string | null>(null);
-const [connectingFromCardId, setConnectingFromCardId] = useState<string | null>(null);
-const [connectionPreviewPoint, setConnectionPreviewPoint] = useState<ScreenPoint | null>(null);
-const [clickMenuSubmenu, setClickMenuSubmenu] = useState<
-  null | "new-card" | "outputs" | "text-output"
->(null);
-const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
-const [canvasPreset, setCanvasPreset] = useState<"soft" | "grid" | "obsidian">("soft");
-const [cardPreset, setCardPreset] = useState<"glass" | "solid" | "obsidian">("glass");
-const WORLD_W = 8000;
-const WORLD_H = 8000;
-const hasMovedRef = useRef(false);
-const ignoreNextCanvasClickRef = useRef(false);
-const [resizingCardId, setResizingCardId] = useState<string | null>(null);
-const resizeStartRef = useRef<{
-  startX: number;
-  startY: number;
-  startW: number;
-  startH: number;
-} | null>(null);
-
-const MIN_CARD_W = 140;
-const MIN_CARD_H = 90;
-
-function zoomFromViewportCenter(nextZoom: number) {
-  const rect = viewportRef.current?.getBoundingClientRect();
-  if (!rect) return;
-
-  const viewportX = rect.width / 2;
-  const viewportY = rect.height / 2;
-
-  const anchorWorld = viewportPointToWorldAtZoom(
-    viewportX,
-    viewportY,
-    panOffset,
-    zoom
-  );
-
-  setPanOffset({
-    x: viewportX - anchorWorld.x * nextZoom,
-    y: viewportY - anchorWorld.y * nextZoom,
+  const [focusedBodyCardId, setFocusedBodyCardId] = useState<string | null>(null);
+  const [artisticSending, setArtisticSending] = useState(false);
+  const [artisticError, setArtisticError] = useState<string | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [pendingNewCardId, setPendingNewCardId] = useState<string | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const panStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const MIN_ZOOM = 0.35;
+  const MAX_ZOOM = 3; 
+  const [draggingCardId, setDraggingCardId] = useState<string |   null>(null);
+  const cardDragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const multiDragStartPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const [panOffset, setPanOffset] = useState<PanOffset>({
+    x: 2400,
+    y: 2400,
   });
-  setZoom(nextZoom);
-}
+  const [isRunningArtisticOutputs, setIsRunningArtisticOutputs] =
+    useState(false);
+  const [bridgeSnapPreviewKey, setBridgeSnapPreviewKey] =   useState<string | null>(null);
+  const [connectingFromCardId, setConnectingFromCardId] =   useState<string | null>(null);
+  const [connectionPreviewPoint, setConnectionPreviewPoint] =   useState<ScreenPoint | null>(null);
+  const [clickMenuSubmenu, setClickMenuSubmenu] = useState<
+    null | "new-card" | "outputs" | "text-output"
+  >(null);
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
+  const [canvasPreset, setCanvasPreset] = useState<"soft" | "grid" | "obsidian">("soft");
+  const [cardPreset, setCardPreset] = useState<"glass" | "solid" | "obsidian">("glass");
+  const WORLD_W = 8000;
+  const WORLD_H = 8000;
+  const hasMovedRef = useRef(false);
+  const ignoreNextCanvasClickRef = useRef(false);
+  const [resizingCardId, setResizingCardId] = useState<string | null>(null);
+  const resizeStartRef = useRef<{
+    startX: number;
+    startY: number;
+    startW: number;
+    startH: number;
+  } | null>(null);
+
+  const MIN_CARD_W = 140;
+  const MIN_CARD_H = 90;
+
+  const PPT_CARD_W = 960;
+  const PPT_CARD_H = 540;
+
+  function zoomFromViewportCenter(nextZoom: number) {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const viewportX = rect.width / 2;
+    const viewportY = rect.height / 2;
+
+    const anchorWorld = viewportPointToWorldAtZoom(
+      viewportX,
+      viewportY,
+      panOffset,
+      zoom
+    );
+
+    setPanOffset({
+      x: viewportX - anchorWorld.x * nextZoom,
+      y: viewportY - anchorWorld.y * nextZoom,
+    });
+    setZoom(nextZoom);
+  }
 
 
 
-function handleZoomOut() {
-  const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
-  if (nextZoom === zoom) return;
-  zoomFromViewportCenter(nextZoom);
-}
+  function handleZoomOut() {
+    const nextZoom = Math.max(MIN_ZOOM, zoom / 1.08);
+    if (nextZoom === zoom) return;
+    zoomFromViewportCenter(nextZoom);
+  }
 
-function handleZoomIn() {
-  const nextZoom = Math.min(MAX_ZOOM, zoom * 1.08);
-  if (nextZoom === zoom) return;
-  zoomFromViewportCenter(nextZoom);
-}
+  function handleZoomIn() {
+    const nextZoom = Math.min(MAX_ZOOM, zoom * 1.08);
+    if (nextZoom === zoom) return;
+    zoomFromViewportCenter(nextZoom);
+  }
 
-function handleResetView() {
-  setZoom(1);
-  setPanOffset({ x: 2400, y: 2400 });
-}
+  function handleResetView() {
+    setZoom(1);
+    setPanOffset({ x: 2400, y: 2400 });
+  }
 
 useEffect(() => {
   function onKeyDown(e: KeyboardEvent) {
@@ -829,6 +867,400 @@ useEffect(() => {
   };
 }, [coreOpen]);
 
+function isUnfilledSummaryBridge(card: ArtisticCard | null) {
+  if (!card) return false;
+
+  return (
+    card.type === "bridge" &&
+    card.bridgeKind === "summary_bridge" &&
+    (
+      !card.body.trim() ||
+      card.body.includes("Approved summary gate.")
+    )
+  );
+}
+
+function isSummaryBridge(card: ArtisticCard | null) {
+  return card?.type === "bridge" && card.bridgeKind === "summary_bridge";
+}
+
+function markArtisticCardUpdating(cardId: string) {
+  setUpdatingCardIds((prev) =>
+    prev.includes(cardId) ? prev : [...prev, cardId]
+  );
+}
+
+function clearArtisticCardUpdating(cardId: string) {
+  setUpdatingCardIds((prev) => prev.filter((id) => id !== cardId));
+}
+
+async function runArtisticOutputs(targetOutputIds?: string[]) {
+
+if (isRunningArtisticOutputs) return;
+
+setIsRunningArtisticOutputs(true);
+
+
+ try {
+  const targetSet = targetOutputIds?.length
+    ? new Set(targetOutputIds)
+    : null;
+
+  const runnableOutputs = artisticCards
+    .filter((card) => {
+      if (card.type !== "output" || !card.sourceCardId) return false;
+      if (targetSet && !targetSet.has(card.id)) return false;
+      return true;
+    })
+    .map((output) => {
+      const { prompt, bridge } = resolveArtisticInputChain(artisticCards, output);
+      if (!prompt) return null;
+      return { output, prompt, bridge };
+    })
+    .filter(
+      (
+        item
+      ): item is {
+        output: ArtisticCard;
+        prompt: ArtisticCard;
+        bridge: ArtisticCard | null;
+      } => item !== null
+    );
+
+  if (runnableOutputs.length === 0) return;
+
+  setArtisticCards((prev) =>
+    prev.map((card) =>
+      runnableOutputs.some((item) => item.output.id === card.id)
+        ? {
+            ...card,
+            body: "Generating...",
+            imageStatus:
+              card.outputKind === "image" ? "generating" : card.imageStatus,
+            imageUrl: card.outputKind === "image" ? undefined : card.imageUrl,
+          }
+        : card
+    )
+  );
+
+  for (const item of runnableOutputs) {
+    markArtisticCardUpdating(item.output.id);
+
+    if (item.bridge?.id) {
+      markArtisticCardUpdating(item.bridge.id);
+    }
+
+    try {
+      const role = item.output.outputRole ?? "summary";
+
+      const roleToneBlock =
+        role === "email"
+          ? `Tone: professional, persuasive, confident.\n` +
+            `Style: structured communication, clear paragraphs, strong opening and closing.\n`
+          : role === "report"
+          ? `Tone: informative and thorough.\n` +
+            `Style: structured, readable, and clear.\n`
+          : `Tone: clear and balanced.\n` +
+            `Style: concise but informative.\n`;
+
+      const roleFocusBlock =
+        role === "report"
+          ? `Expand with supporting explanations and context where useful.\n`
+          : role === "summary"
+          ? `Prioritize clarity and brevity.\n`
+          : "";
+
+      let sourceBody = item.prompt.body;
+
+const isSummaryGate = isSummaryBridge(item.bridge);
+
+// Summary Bridge behavior:
+// LOCKED   = fill/update the bridge summary only, then stop.
+// UNLOCKED = use the approved bridge body as downstream source.
+if (isSummaryGate) {
+  if (!item.bridge!.summaryBridgeUnlocked) {
+    const res = await fetch(`/api/repo/${repoId}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        content:
+          `[Artistic Mode]\n` +
+          `Create a readable approved brief from the upstream content.\n\n` +
+
+          `Write AS the content itself.\n` +
+          `NOT ABOUT the content.\n\n` +
+
+          `Do NOT describe what should be created.\n` +
+          `Do NOT give instructions.\n` +
+          `Do NOT speak about "the requested content".\n` +
+          `Do NOT explain the task.\n\n` +
+
+          `Format the result with this exact structure:\n\n` +
+          `Core message:\n` +
+          `One clear sentence capturing the main point.\n\n` +
+          `Key points:\n` +
+          `- Point one\n` +
+          `- Point two\n` +
+          `- Point three\n\n` +
+          `Implication:\n` +
+          `One clear sentence explaining why it matters.\n\n` +
+
+          `Rules:\n` +
+          `- Use short, readable sentences.\n` +
+          `- Avoid dense paragraphs.\n` +
+          `- Keep it executive-readable.\n` +
+          `- Preserve the actual meaning of the upstream content.\n\n` +
+
+          `Inside [Action], return ONLY the approved brief itself.\n` +
+          `Do not create PowerPoint content yet.\n` +
+          `Do not include internal markers.\n\n` +
+
+          `${sourceBody}`,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || `Summary bridge failed (${res.status})`);
+    }
+
+    const raw = await res.text();
+
+    const payload = buildArtisticPresentationPayload(
+      raw || "No summary returned.",
+      "text",
+      "summary"
+    );
+
+    setArtisticCards((prev) =>
+      prev.map((card) =>
+        card.id === item.bridge!.id
+          ? {
+              ...card,
+              body: payload.body,
+            }
+          : card
+      )
+    );
+
+    // Important: locked gate stops here.
+    // It updates the bridge, but does NOT run the downstream output.
+    continue;
+  }
+
+  // Gate is unlocked: downstream output uses the approved bridge body.
+  sourceBody = item.bridge!.body;
+}
+
+
+      
+      const bridgeContext =
+        item.bridge?.bridgeKind === "file_context"
+          ? `\n\nFile context instruction:\n${item.bridge.body}\n\nContext source: ${
+              item.bridge.contextFileName ?? "Unnamed file"
+            }\n\nContext content:\n${item.bridge.contextText ?? ""}`
+            : item.bridge?.bridgeKind === "summary_bridge"
+            ? `\n\nSummary bridge instruction:
+            Use the Summary Bridge body as the approved source material.
+            Do not invent a new topic.
+            Convert only the approved summary into the requested downstream format.`
+            : "";
+
+      if (item.output.outputKind === "image") {
+        const concept = mapToVisualConcept(sourceBody);
+        const imagePrompt = buildVisualPrompt(concept);
+
+        const imageRes = await fetch(`/api/artistic/image`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            prompt: imagePrompt,
+          }),
+        });
+
+        if (!imageRes.ok) {
+          const text = await imageRes.text().catch(() => "");
+          throw new Error(text || `Image request failed (${imageRes.status})`);
+        }
+
+        const imageData = await imageRes.json();
+
+        setArtisticCards((prev) =>
+          prev.map((card) =>
+            card.id === item.output.id
+              ? {
+                  ...card,
+                  body: imagePrompt,
+                  imageStatus: "done",
+                  imageUrl:
+                    typeof imageData?.imageUrl === "string"
+                      ? imageData.imageUrl
+                      : undefined,
+                }
+              : card
+          )
+        );
+
+        continue;
+      }
+
+      const res = await fetch(`/api/repo/${repoId}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content:
+            item.output.outputKind === "text"
+              ? `[Artistic Mode]\n` +
+                `Generate a clean text output card response.\n` +
+                `Keep the normal system response format if required.\n` +
+                `Output role: ${role}.\n` +
+                roleToneBlock +
+                roleFocusBlock +
+                `Inside [Action], return ONLY the final result.
+Do NOT include any markers, labels, or system-style sections.
+Do NOT include __PROPOSAL__, __VERIFY__, or any internal steps.
+Return clean output only.\n` +
+                `Do not explain the request.\n` +
+                `Do not restate what the user asked for.\n` +
+                (role === "email"
+                  ? `For email output, use exactly:\nSUBJECT: ...\nBODY: ...\nDo not include SUBJECT inside BODY.\n`
+                  : role === "report"
+                  ? `For report output, prefer:\nTITLE: ...\nBODY: ...\n`
+                  : `For summary output, prefer:\nTITLE: ...\nBODY: ...\n`) +
+                `The [Observation] and [Assessment] sections may stay brief if required, but [Action] must contain the actual deliverable.\n\n` +
+                `${sourceBody}${bridgeContext}`
+              : item.output.outputKind === "powerpoint"
+              ? `[Artistic Mode]\n` +
+                `Generate a PowerPoint slide concept.\n` +
+                `Prefer this structure when possible:\n\n` +
+                `TITLE: ...\n` +
+                `HOOK: ...\n` +
+                `BULLETS:\n` +
+                `- ...\n` +
+                `- ...\n` +
+                `- ...\n` +
+                `VISUAL: ...\n\n` +
+                `Keep it concise, presentation-ready, and visually strong.\n` +
+                `System formatting may be applied.\n\n` +
+                `${sourceBody}${bridgeContext}`
+              : `[Artistic Mode]\n\n${`${sourceBody}${bridgeContext}`}`,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Request failed (${res.status})`);
+      }
+
+      const raw = await res.text();
+      const trimmed = raw.trim();
+
+      let reply = "";
+
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        try {
+          const data = JSON.parse(trimmed);
+          reply =
+            typeof data?.assistant === "string"
+              ? data.assistant
+              : typeof data?.content === "string"
+              ? data.content
+              : typeof data?.message === "string"
+              ? data.message
+              : typeof data?.reply === "string"
+              ? data.reply
+              : typeof data?.text === "string"
+              ? data.text
+              : typeof data?.output_text === "string"
+              ? data.output_text
+              : typeof data?.raw === "string"
+              ? data.raw
+              : typeof data?.assistantText === "string"
+              ? data.assistantText
+              : trimmed;
+        } catch {
+          reply = trimmed;
+        }
+      } else {
+        reply = trimmed;
+      }
+
+      const payload = buildArtisticPresentationPayload(
+        reply || "Vestaryn returned no visible reply.",
+        item.output.outputKind,
+        item.output.outputRole
+      );
+
+      const nextBody = formatArtisticPayloadForCard(
+        payload,
+        item.output.outputKind,
+        item.output.outputRole
+      );
+
+      setArtisticCards((prev) =>
+        prev.map((card) =>
+          card.id === item.output.id
+            ? {
+                ...card,
+                body: nextBody,
+              }
+            : card
+        )
+      );
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : "Failed to generate output.";
+
+          setArtisticCards((prev) =>
+            prev.map((card) =>
+              card.id === item.output.id
+                ? {
+                    ...card,
+                    body: `Generation failed.\n\n${message}`,
+                    imageStatus:
+                      item.output.outputKind === "image" ? "error" : card.imageStatus,
+                  }
+                : card
+            )
+          );
+        } finally {
+          clearArtisticCardUpdating(item.output.id);
+
+          if (item.bridge?.id) {
+            clearArtisticCardUpdating(item.bridge.id);
+          }
+        }
+      }
+  } finally {
+    setIsRunningArtisticOutputs(false);
+  }
+}
+
+useEffect(() => {
+  function onRetryArtisticOutput(e: Event) {
+    const detail = (e as CustomEvent<{ outputId?: string }>).detail;
+    const outputId = detail?.outputId;
+    if (!outputId) return;
+
+    void runArtisticOutputs([outputId]);
+  }
+
+  window.addEventListener("vestaryn:retry_artistic_output", onRetryArtisticOutput);
+
+  return () => {
+    window.removeEventListener(
+      "vestaryn:retry_artistic_output",
+      onRetryArtisticOutput
+    );
+  };
+}, [artisticCards, repoId]);
+
 const canvasPresetUi = getCanvasPresetClasses(canvasPreset);
   return (
     <div
@@ -910,245 +1342,19 @@ style={
     Artistic
   </button>
 </div>
+
 <button
-  onClick={async () => {
-  const runnableOutputs = artisticCards
-    .filter((card) => card.type === "output" && card.sourceCardId)
-    .map((output) => {
-      const { prompt, bridge } = resolveArtisticInputChain(artisticCards, output);
-      if (!prompt) return null;
-      return { output, prompt, bridge };
-    })
-    .filter(
-      (
-        item
-      ): item is {
-        output: ArtisticCard;
-        prompt: ArtisticCard;
-        bridge: ArtisticCard | null;
-      } => item !== null
-    );
-
-  if (runnableOutputs.length === 0) return;
-
-  setArtisticCards((prev) =>
-    prev.map((card) =>
-      runnableOutputs.some((item) => item.output.id === card.id)
-        ? {
-            ...card,
-            body: "Generating...",
-            imageStatus:
-              card.outputKind === "image" ? "generating" : card.imageStatus,
-            imageUrl: card.outputKind === "image" ? undefined : card.imageUrl,
-          }
-        : card
-    )
-  );
-
-  for (const item of runnableOutputs) {
-  try {
-    const role = item.output.outputRole ?? "summary";
-
-    const roleToneBlock =
-      role === "email"
-        ? `Tone: professional, persuasive, confident.\n` +
-          `Style: structured communication, clear paragraphs, strong opening and closing.\n`
-        : role === "report"
-        ? `Tone: informative and thorough.\n` +
-          `Style: structured, readable, and clear.\n`
-        : `Tone: clear and balanced.\n` +
-          `Style: concise but informative.\n`;
-
-    const roleFocusBlock =
-      role === "report"
-        ? `Expand with supporting explanations and context where useful.\n`
-        : role === "summary"
-        ? `Prioritize clarity and brevity.\n`
-        : "";
-
-    const sourceBody = item.prompt.body;
-
-    const bridgeContext =
-      item.bridge?.bridgeKind === "file_context"
-        ? `\n\nFile context instruction:\n${item.bridge.body}\n\nContext source: ${item.bridge.contextFileName ?? "Unnamed file"}\n\nContext content:\n${item.bridge.contextText ?? ""}`
-        : "";
-
-      if (item.output.outputKind === "image") {
-        const concept = mapToVisualConcept(sourceBody);
-        const imagePrompt = buildVisualPrompt(concept);
-
-        const imageRes = await fetch(`/api/artistic/image`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            prompt: imagePrompt,
-          }),
-        });
-
-        if (!imageRes.ok) {
-          const text = await imageRes.text().catch(() => "");
-          throw new Error(text || `Image request failed (${imageRes.status})`);
-        }
-
-        const imageData = await imageRes.json();
-
-        setArtisticCards((prev) =>
-          prev.map((card) =>
-            card.id === item.output.id
-              ? {
-                  ...card,
-                  body: imagePrompt,
-                  imageStatus: "done",
-                  imageUrl:
-                    typeof imageData?.imageUrl === "string"
-                      ? imageData.imageUrl
-                      : undefined,
-                }
-              : card
-          )
-        );
-
-        continue;
-      }
-
-      const res = await fetch(`/api/repo/${repoId}/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          content:
-            item.output.outputKind === "text"
-              ? `[Artistic Mode]\n` +
-                `Generate a clean text output card response.\n` +
-                `Keep the normal system response format if required.\n` +
-                `Output role: ${role}.\n` +
-                roleToneBlock +
-                roleFocusBlock +
-                `Inside [Action], return ONLY the final result.
-                  Do NOT include any markers, labels, or system-style sections.
-                  Do NOT include __PROPOSAL__, __VERIFY__, or any internal steps.
-                  Return clean output only.\n` +
-                `Do not explain the request.\n` +
-                `Do not restate what the user asked for.\n` +
-                (
-                  role === "email"
-                    ? `For email output, use exactly:\n` +
-                      `SUBJECT: ...\n` +
-                      `BODY: ...\n` +
-                      `Do not include SUBJECT inside BODY.\n`
-                    : role === "report"
-                    ? `For report output, prefer:\n` +
-                      `TITLE: ...\n` +
-                      `BODY: ...\n`
-                    : `For summary output, prefer:\n` +
-                      `TITLE: ...\n` +
-                      `BODY: ...\n`
-                ) +
-                `The [Observation] and [Assessment] sections may stay brief if required, but [Action] must contain the actual deliverable.\n\n` +
-                `${sourceBody}${bridgeContext}`
-              : item.output.outputKind === "powerpoint"
-              ? `[Artistic Mode]\n` +
-                `Generate a PowerPoint slide concept.\n` +
-                `Prefer this structure when possible:\n\n` +
-                `TITLE: ...\n` +
-                `HOOK: ...\n` +
-                `BULLETS:\n` +
-                `- ...\n` +
-                `- ...\n` +
-                `- ...\n` +
-                `VISUAL: ...\n\n` +
-                `Keep it concise, presentation-ready, and visually strong.\n` +
-                `System formatting may be applied.\n\n` +
-                `${sourceBody}${bridgeContext}`
-              : `[Artistic Mode]\n\n${`${sourceBody}${bridgeContext}`}`,
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || `Request failed (${res.status})`);
-      }
-
-      const raw = await res.text();
-      const trimmed = raw.trim();
-
-      let reply = "";
-
-      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        try {
-          const data = JSON.parse(trimmed);
-          reply =
-            typeof data?.assistant === "string"
-              ? data.assistant
-              : typeof data?.content === "string"
-              ? data.content
-              : typeof data?.message === "string"
-              ? data.message
-              : typeof data?.reply === "string"
-              ? data.reply
-              : typeof data?.text === "string"
-              ? data.text
-              : typeof data?.output_text === "string"
-              ? data.output_text
-              : typeof data?.raw === "string"
-              ? data.raw
-              : typeof data?.assistantText === "string"
-              ? data.assistantText
-              : trimmed;
-        } catch {
-          reply = trimmed;
-        }
-      } else {
-        reply = trimmed;
-      }
-
-      const payload = buildArtisticPresentationPayload(
-        reply || "Vestaryn returned no visible reply.",
-        item.output.outputKind,
-        item.output.outputRole
-      );
-
-      const nextBody = formatArtisticPayloadForCard(
-        payload,
-        item.output.outputKind,
-        item.output.outputRole
-      );
-
-      setArtisticCards((prev) =>
-        prev.map((card) =>
-          card.id === item.output.id
-            ? {
-                ...card,
-                body: nextBody,
-              }
-            : card
-        )
-      );
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to generate output.";
-
-      setArtisticCards((prev) =>
-        prev.map((card) =>
-          card.id === item.output.id
-            ? {
-                ...card,
-                body: `Generation failed.\n\n${message}`,
-                imageStatus:
-                  item.output.outputKind === "image" ? "error" : card.imageStatus,
-              }
-            : card
-        )
-      );
-    }
-  }
-}}
-  className="ml-4 rounded-md border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-white/80 hover:bg-white/[0.08]"
+  type="button"
+  disabled={isRunningArtisticOutputs}
+  onClick={() => void runArtisticOutputs()}
+  className={[
+    "ml-4 rounded-md border px-3 py-1.5 text-xs transition-all duration-200",
+    isRunningArtisticOutputs
+      ? "border-blue-400/30 bg-blue-500/20 text-blue-100 animate-pulse cursor-wait"
+      : "border-white/10 bg-white/[0.04] text-white/80 hover:bg-white/[0.08]",
+  ].join(" ")}
 >
-  ▶ Run
+  {isRunningArtisticOutputs ? "⟳ Running..." : "▶ Run"}
 </button>
   {/* Sigil + Chamber Core menu */}
   <div ref={coreRef} className="relative px-3">
@@ -1617,6 +1823,7 @@ style={
             setConnectionPulseCardId={setConnectionPulseCardId}
             bridgeSnapPreviewKey={bridgeSnapPreviewKey}
             setBridgeSnapPreviewKey={setBridgeSnapPreviewKey}
+            updatingCardIds={updatingCardIds}
           />
         )}
       </div>
@@ -1752,6 +1959,8 @@ async function onLogout() {
   await supabase.auth.signOut();
   window.location.href = "/";
 }
+
+
 
 return (
   <div ref={rootRef} className="relative">

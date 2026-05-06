@@ -23,6 +23,7 @@ type ArtisticCardViewProps = {
   isConnectionTargetHovered: boolean;
   cardPresetUi: CardPresetUi;
   isConnectionPulseActive: boolean;
+  isUpdating: boolean;
   viewportPointToWorld: (
     clientX: number,
     clientY: number
@@ -92,6 +93,7 @@ export default function ArtisticCardView({
   resizeStartRef,
   onStartConnection,
   isConnectionPulseActive,
+  isUpdating,
 }: ArtisticCardViewProps) {
    function onCardPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (isPanning || isResizing) return;
@@ -152,6 +154,7 @@ async function loadContextFile(file: File) {
 
   function onResizePointerDown(e: ReactPointerEvent<HTMLButtonElement>) {
     if (isPanning) return;
+    if (card.type === "output" && card.outputKind === "powerpoint") return;
 
     e.stopPropagation();
     e.preventDefault();
@@ -272,6 +275,9 @@ const filePreviewText = useMemo(() => {
         isFrameCard ? "rounded-[28px]" : "rounded-2xl",
         cardPresetUi.shell,
         isFrameCard ? "border-blue-400/20" : "",
+        isUpdating
+          ? "ring-2 ring-blue-400/40 shadow-[0_0_34px_rgba(96,165,250,0.32)] animate-pulse"
+          : "",
         isActive ? "z-[980]" : "z-[850]",
         isResizing
           ? "cursor-se-resize"
@@ -460,14 +466,36 @@ const filePreviewText = useMemo(() => {
                 Image
               </div>
 
-              <div className="text-[11px] text-black/40">
-                {card.imageStatus === "generating"
-                  ? "Generating..."
-                  : card.imageStatus === "error"
-                  ? "Error"
-                  : card.imageStatus === "done"
-                  ? "Ready"
-                  : "Idle"}
+              <div className="flex items-center gap-2">
+                {card.imageStatus === "error" ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+
+                      window.dispatchEvent(
+                        new CustomEvent("vestaryn:retry_artistic_output", {
+                          detail: { outputId: card.id },
+                        })
+                      );
+                    }}
+                    className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-rose-600 hover:bg-rose-100"
+                  >
+                    Retry
+                  </button>
+                ) : null}
+
+
+
+                  <div className="text-[11px] text-black/40">
+                    {card.imageStatus === "generating"
+                      ? "Generating..."
+                      : card.imageStatus === "error"
+                      ? "Error"
+                      : card.imageStatus === "done"
+                      ? "Ready"
+                      : "Idle"}
+                  </div>
               </div>
             </div>
 
@@ -479,11 +507,21 @@ const filePreviewText = useMemo(() => {
                   className="h-full w-full object-cover"
                   draggable={false}
                 />
+              ) : card.imageStatus === "generating" ? (
+                <div className="relative flex h-full items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-blue-50 to-slate-100 px-6 text-center">
+                  <div className="absolute inset-0 overflow-hidden">
+                    <div className="absolute inset-y-0 -left-1/3 w-1/3 bg-gradient-to-r from-transparent via-white/70 to-transparent blur-xl animate-[vestarynFlow_3s_linear_infinite]" />
+                  </div>
+
+                  <div className="absolute inset-0 bg-blue-200/10 animate-pulse" />
+
+                  <div className="relative z-10 text-sm text-black/45">
+                    Generating image preview...
+                  </div>
+                </div>
               ) : (
                 <div className="flex h-full items-center justify-center px-6 text-center text-sm text-black/45">
-                  {card.imageStatus === "generating"
-                    ? "Generating image preview..."
-                    : card.imageStatus === "error"
+                  {card.imageStatus === "error"
                     ? "Image generation failed."
                     : "Awaiting connected prompt..."}
                 </div>
@@ -500,6 +538,16 @@ const filePreviewText = useMemo(() => {
                 className="h-full w-full overflow-auto rounded-xl border border-white/10 bg-white/[0.04] p-3"
                 onWheel={(e) => e.stopPropagation()}
               >
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-black/35">
+                    Slide preview
+                  </div>
+
+                  <div className="rounded-md border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-black/40">
+                    16:9 · 960×540
+                  </div>
+                </div>
+
                 <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
                   <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
                     Title
@@ -688,30 +736,141 @@ const filePreviewText = useMemo(() => {
               className={`min-h-0 flex-1 resize-none bg-transparent text-sm outline-none ${cardPresetUi.body}`}
             />
 
+            {card.type === "bridge" && card.bridgeKind === "summary_bridge" ? (
+  <div
+    onPointerDown={(e) => e.stopPropagation()}
+    className="flex items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 py-2 backdrop-blur-sm"
+  >
+    <div className="flex flex-col">
+      <div className="text-[10px] uppercase tracking-[0.16em] text-blue-700/70">
+        {card.summaryBridgeUnlocked ? "Gate unlocked" : "Gate locked"}
+      </div>
+
+      <div className="mt-0.5 text-[10px] text-blue-700/55">
+        {card.summaryBridgeUnlocked
+          ? "Downstream outputs may continue"
+          : "Review and approve summary first"}
+      </div>
+    </div>
+
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+
+        const nextUnlocked = !card.summaryBridgeUnlocked;
+
+        setArtisticCards((prev) =>
+          prev.map((c) =>
+            c.id === card.id
+              ? {
+                  ...c,
+                  summaryBridgeUnlocked: nextUnlocked,
+                }
+              : c
+          )
+        );
+
+        if (nextUnlocked) {
+          window.dispatchEvent(
+            new CustomEvent("vestaryn:continue_artistic_flow", {
+              detail: { bridgeId: card.id },
+            })
+          );
+        }
+      }}
+      className={[
+        "rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition",
+        card.summaryBridgeUnlocked
+          ? "border border-emerald-300 bg-emerald-100 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800"
+          : "border border-blue-300/80 bg-white/80 text-blue-700 hover:bg-white hover:text-blue-900",
+      ].join(" ")}
+    >
+      {card.summaryBridgeUnlocked ? "Lock Gate" : "Unlock & Continue"}
+    </button>
+  </div>
+) : null}
+
             {card.type === "prompt" ? (
               <div
                 onPointerDown={(e) => e.stopPropagation()}
-                className="flex items-center gap-2 rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm"
+                className="flex flex-col gap-2"
               >
-                <div className="text-[10px] uppercase tracking-[0.18em] text-black/45">
-                  Polish prompt
+                <div className="flex items-center gap-2 rounded-lg border border-black/10 bg-white/70 px-2 py-2 backdrop-blur-sm">
+                  <div className="text-[10px] uppercase tracking-[0.18em] text-black/45">
+                    Polish prompt
+                  </div>
+
+                  {(["short", "medium", "long"] as const).map((length) => (
+                    <button
+                      key={length}
+                      type="button"
+                      onClick={() => {
+                        const nextBody = polishPromptBody(card.body, length);
+                        commitCardBody(card.id, nextBody);
+                        setSelectedCardId(card.id);
+                        setFocusedBodyCardId(card.id);
+                      }}
+                      className="rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/65 transition hover:bg-white hover:text-black"
+                    >
+                      {length === "short"
+                        ? "Polish S"
+                        : length === "medium"
+                        ? "Polish M"
+                        : "Polish L"}
+                    </button>
+                  ))}
                 </div>
 
-                {(["short", "medium", "long"] as const).map((length) => (
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50/80 px-2 py-2 backdrop-blur-sm">
+                  <div className="flex flex-col">
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-blue-700/70">
+                      {card.promptGateUnlocked ? "Prompt gate unlocked" : "Prompt gate locked"}
+                    </div>
+
+                    <div className="mt-0.5 text-[10px] text-blue-700/55">
+                      {card.promptGateUnlocked
+                        ? "Connected image outputs may run"
+                        : "Review prompt before image flow"}
+                    </div>
+                  </div>
+
                   <button
-                    key={length}
                     type="button"
-                    onClick={() => {
-                      const nextBody = polishPromptBody(card.body, length);
-                      commitCardBody(card.id, nextBody);
-                      setSelectedCardId(card.id);
-                      setFocusedBodyCardId(card.id);
+                    onClick={(e) => {
+                      e.stopPropagation();
+
+                      const nextUnlocked = !card.promptGateUnlocked;
+
+                      setArtisticCards((prev) =>
+                        prev.map((c) =>
+                          c.id === card.id
+                            ? {
+                                ...c,
+                                promptGateUnlocked: nextUnlocked,
+                              }
+                            : c
+                        )
+                      );
+
+                      if (nextUnlocked) {
+                        window.dispatchEvent(
+                          new CustomEvent("vestaryn:continue_artistic_flow", {
+                            detail: { promptId: card.id },
+                          })
+                        );
+                      }
                     }}
-                    className="rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-black/65 transition hover:bg-white hover:text-black"
+                    className={[
+                      "rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] transition",
+                      card.promptGateUnlocked
+                        ? "border border-emerald-300 bg-emerald-100 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800"
+                        : "border border-blue-300/80 bg-white/80 text-blue-700 hover:bg-white hover:text-blue-900",
+                    ].join(" ")}
                   >
-                    {length === "short" ? "Polish S" : length === "medium" ? "Polish M" : "Polish L"}
+                    {card.promptGateUnlocked ? "Lock Gate" : "Unlock & Run"}
                   </button>
-                ))}
+                </div>
               </div>
             ) : null}
           </div>
@@ -747,20 +906,22 @@ const filePreviewText = useMemo(() => {
   />
 )}
 
-      <button
-        type="button"
-        data-card-resize-handle
-        onPointerDown={onResizePointerDown}
-        className={[
-          "absolute bottom-2 right-2 z-[980] flex h-5 w-5 items-center justify-center rounded-md bg-white/80 transition hover:bg-white cursor-se-resize",
-          isActive
-            ? "border border-blue-400/30 shadow-[0_0_14px_rgba(96,165,250,0.14)]"
-            : "border border-black/10 shadow-sm",
-        ].join(" ")}
-        title="Resize card"
-      >
-        <div className="h-2.5 w-2.5 rounded-[2px] border-r border-b border-black/35" />
-      </button>
+      {!(card.type === "output" && card.outputKind === "powerpoint") ? (
+        <button
+          type="button"
+          data-card-resize-handle
+          onPointerDown={onResizePointerDown}
+          className={[
+            "absolute bottom-2 right-2 z-[980] flex h-5 w-5 items-center justify-center rounded-md bg-white/80 transition hover:bg-white cursor-se-resize",
+            isActive
+              ? "border border-blue-400/30 shadow-[0_0_14px_rgba(96,165,250,0.14)]"
+              : "border border-black/10 shadow-sm",
+          ].join(" ")}
+          title="Resize card"
+        >
+          <div className="h-2.5 w-2.5 rounded-[2px] border-r border-b border-black/35" />
+        </button>
+      ) : null}
     </div>
   );
 }

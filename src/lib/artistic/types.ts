@@ -7,7 +7,9 @@ export type ArtisticCardType =
   | "bridge";
 
 export type ArtisticOutputKind = "text" | "powerpoint" | "image";
-export type ArtisticBridgeKind = "file_context";
+export type ArtisticBridgeKind =
+  | "file_context"
+  | "summary_bridge"
 export type ArtisticOutputRole =
   | "summary"
   | "email"
@@ -28,6 +30,8 @@ export type ArtisticCard = {
   outputRole?: ArtisticOutputRole;
   bridgeKind?: ArtisticBridgeKind;
   upstreamCardId?: string;
+  summaryBridgeUnlocked?: boolean;
+  promptGateUnlocked?: boolean;
   contextFileName?: string;
   contextText?: string;
   groupId?: string;

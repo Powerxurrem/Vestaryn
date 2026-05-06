@@ -27,7 +27,7 @@ type ArtisticClickMenuProps = {
       body?: string;
       outputKind?: "text" | "powerpoint" | "image";
       outputRole?: "summary" | "email" | "report";
-      bridgeKind?: "file_context";
+      bridgeKind?: "file_context" | "summary_bridge";
       contextFileName?: string;
       contextText?: string;
     }
@@ -89,7 +89,24 @@ export default function ArtisticClickMenu({
     });
   }
 
-function createFileContextCard() {
+  function createFileContextCard() {
+    if (!clickMenu) return;
+
+    const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+
+    createMenuCard(world.x, world.y, {
+      type: "bridge",
+      w: 340,
+      h: 220,
+      title: "File Context",
+      body: "Describe what to use from the file...",
+      bridgeKind: "file_context",
+      contextFileName: "",
+      contextText: "",
+    });
+  }
+
+  function createSummaryBridgeCard() {
   if (!clickMenu) return;
 
   const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
@@ -97,28 +114,12 @@ function createFileContextCard() {
   createMenuCard(world.x, world.y, {
     type: "bridge",
     w: 340,
-    h: 220,
-    title: "File Context",
-    body: "Describe what to use from the file...",
-    bridgeKind: "file_context",
-    contextFileName: "",
-    contextText: "",
+    h: 180,
+    title: "Summary Bridge",
+    body: "Approved summary gate.\n\nUse the connected upstream output as the source for the next card.",
+    bridgeKind: "summary_bridge",
   });
 }
-
-  function createFrameCard() {
-    if (!clickMenu) return;
-
-    const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
-
-    createMenuCard(world.x, world.y, {
-      type: "frame",
-      w: 1920,
-      h: 1080,
-      title: "1920×1080",
-      body: "",
-    });
-  }
 
   function createPromptCard() {
     if (!clickMenu) return;
@@ -128,7 +129,7 @@ function createFileContextCard() {
     createMenuCard(world.x, world.y, {
       type: "prompt",
       w: 320,
-      h: 220,
+      h: 270,
       title: "Prompt",
       body: "Describe what you want...",
     });
@@ -189,8 +190,8 @@ function createReportOutputCard() {
 
     createMenuCard(world.x, world.y, {
       type: "output",
-      w: 640,
-      h: 360,
+      w: 960,
+      h: 540,
       title: "PowerPoint",
       body: "Slide concept\n\nAwaiting connected prompt...\n\nRun the chamber to generate a PowerPoint-oriented result.",
       outputKind: "powerpoint",
@@ -226,16 +227,7 @@ function createImageOutputCard() {
             menuPresetUi.shell,
           ].join(" ")}
         >
-          <button
-            className={[
-              "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm",
-              menuPresetUi.item,
-            ].join(" ")}
-            onMouseEnter={() => setClickMenuSubmenu("new-card")}
-          >
-            <span>New Card</span>
-            <span className={menuPresetUi.subtle}>›</span>
-          </button>
+
 
           <button
             className={[
@@ -245,6 +237,17 @@ function createImageOutputCard() {
             onClick={createPromptCard}
           >
             Prompt Card
+          </button>
+
+          <button
+            className={[
+              "flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm",
+              menuPresetUi.item,
+            ].join(" ")}
+            onMouseEnter={() => setClickMenuSubmenu("new-card")}
+          >
+            <span>Bridge</span>
+            <span className={menuPresetUi.subtle}>›</span>
           </button>
 
           <button
@@ -262,7 +265,7 @@ function createImageOutputCard() {
         {clickMenuSubmenu === "new-card" ? (
           <div
             className={[
-              "absolute left-full top-0 ml-2 w-[210px] rounded-xl p-2",
+              "absolute left-full top-[44px] ml-2 w-[210px] rounded-xl p-2",
               menuPresetUi.shell,
             ].join(" ")}
             onMouseLeave={() => setClickMenuSubmenu(null)}
@@ -272,30 +275,21 @@ function createImageOutputCard() {
                 "w-full rounded-md px-3 py-2 text-left text-sm",
                 menuPresetUi.item,
               ].join(" ")}
-              onClick={createNotesCard}
+              onClick={createFileContextCard}
             >
-              Notes
+              File Context
             </button>
-
-<button
-  className={[
-    "w-full rounded-md px-3 py-2 text-left text-sm",
-    menuPresetUi.item,
-  ].join(" ")}
-  onClick={createFileContextCard}
->
-  File Context
-</button>
 
             <button
               className={[
                 "w-full rounded-md px-3 py-2 text-left text-sm",
                 menuPresetUi.item,
               ].join(" ")}
-              onClick={createFrameCard}
+              onClick={createSummaryBridgeCard}
             >
-              1920×1080 card
+              Summary Bridge
             </button>
+
           </div>
         ) : null}
 

@@ -24,6 +24,7 @@ import {
 import type {
   ArtisticCard,
   ArtisticCardType,
+  ArtisticBridgeKind,
   PanOffset,
   ScreenPoint,
 } from "@/lib/artistic/types";
@@ -108,6 +109,7 @@ type ArtisticCanvasSurfaceProps = {
   resetArtisticPopup: () => void;
   bridgeSnapPreviewKey: string | null;
   setBridgeSnapPreviewKey: Dispatch<SetStateAction<string | null>>;
+  updatingCardIds: string[];
 };
 
 export default function ArtisticCanvasSurface({
@@ -175,6 +177,7 @@ export default function ArtisticCanvasSurface({
   setConnectionPulseCardId,
   bridgeSnapPreviewKey,
   setBridgeSnapPreviewKey,
+  updatingCardIds,
 }: ArtisticCanvasSurfaceProps) {
   function viewportPointToWorld(clientX: number, clientY: number) {
     const viewportPoint = viewportPointFromClient(
@@ -951,7 +954,6 @@ const hoveredConnectionTargetId =
       })?.id ?? null
     : null;
 
-
   function createMenuCard(
   worldX: number,
   worldY: number,
@@ -961,7 +963,7 @@ const hoveredConnectionTargetId =
     h?: number;
     title?: string;
     body?: string;
-    bridgeKind?: "file_context";
+    bridgeKind?: ArtisticBridgeKind;
     contextFileName?: string;
     contextText?: string;
     outputKind?: "text" | "powerpoint" | "image";
@@ -984,8 +986,12 @@ const hoveredConnectionTargetId =
         outputKind: opts?.outputKind,
         outputRole: opts?.outputRole,
         bridgeKind: opts?.bridgeKind,
+        summaryBridgeUnlocked:
+          opts?.bridgeKind === "summary_bridge" ? false : undefined,
         contextFileName: opts?.contextFileName,
         contextText: opts?.contextText,
+        promptGateUnlocked:
+          opts?.type === "prompt" ? false : undefined,
       },
     ]);
 
@@ -1482,7 +1488,22 @@ function findBridgeSnapConnection(bridgeCardId: string) {
     if (card.type !== "output" || !card.sourceCardId) continue;
 
     const source = artisticCards.find((c) => c.id === card.sourceCardId);
-    if (!source || source.type !== "prompt") continue;
+    if (!source) continue;
+
+    // Allow inserting a bridge into:
+    // Prompt → Output
+    // Bridge → Output
+    // Output → Output
+    if (
+      source.type !== "prompt" &&
+      source.type !== "bridge" &&
+      source.type !== "output"
+    ) {
+      continue;
+    }
+
+    // Avoid snapping a bridge into its own downstream output loops.
+    if (source.id === bridge.id || card.id === bridge.id) continue;
 
     const x1 = source.x + source.w;
     const y1 = source.y + source.h / 2;
@@ -1508,7 +1529,7 @@ function findBridgeSnapConnection(bridgeCardId: string) {
     if (dist <= SNAP_DISTANCE) {
       return {
         key: `${source.id}-${card.id}`,
-        sourcePromptId: source.id,
+        upstreamId: source.id,
         outputId: card.id,
       };
     }
@@ -1666,7 +1687,7 @@ function cutConnection(targetKey: string) {
           if (card.id === draggingCardId && card.type === "bridge") {
             return {
               ...card,
-              upstreamCardId: snap.sourcePromptId,
+              upstreamCardId: snap.upstreamId,
             };
           }
 
@@ -2043,32 +2064,22 @@ const isObsidianGroupUi = cardPreset === "obsidian";
 ) : null}
 
 {persistentGroupRenderItems.map((group) => (
-  <div
-    key={group.id}
-    className={[
-      "absolute z-[919]",
-      draggingPersistentGroupId === group.id
-        ? "cursor-grabbing"
-        : "cursor-grab",
-    ].join(" ")}
-    style={{
-      left: group.x,
-      top: group.y,
-      width: group.w,
-      height: group.h,
-    }}
-    onPointerDown={(e) => {
-      const persistentGroup = persistentGroups.find((item) => item.id === group.id);
-      if (persistentGroup) {
-        setSelectedCardIds(persistentGroup.cardIds);
-        setSelectedCardId(
-          persistentGroup.cardIds[persistentGroup.cardIds.length - 1] ?? null
-        );
-      }
-
-      startPersistentGroupDrag(e, group.id);
-    }}
-  >
+<div
+  key={group.id}
+  className={[
+    "absolute z-[760]",
+    draggingPersistentGroupId === group.id
+      ? "cursor-grabbing"
+      : "cursor-grab",
+  ].join(" ")}
+  style={{
+    left: group.x,
+    top: group.y,
+    width: group.w,
+    height: group.h,
+  }}
+  onPointerDown={(e) => startPersistentGroupDrag(e, group.id)}
+>
     <div
       className={
         isObsidianGroupUi
@@ -2090,10 +2101,8 @@ const isObsidianGroupUi = cardPreset === "obsidian";
       }}
     />
 
-    <div
-  className="absolute left-5 top-4 right-5 pointer-events-auto"
-  onPointerDown={(e) => e.stopPropagation()}
-  onClick={(e) => e.stopPropagation()}
+<div
+  className="absolute left-5 top-4 right-5 pointer-events-none"
 >
   <div className="flex items-start justify-between gap-3">
     <div className="min-w-0 flex-1">
@@ -2433,6 +2442,7 @@ const isObsidianGroupUi = cardPreset === "obsidian";
               resizeStartRef={resizeStartRef}
               isConnectionPulseActive={connectionPulseCardId === card.id}
               onStartCardDrag={startCardDrag}
+              isUpdating={updatingCardIds.includes(card.id)}
               onStartConnection={(card) => {
                 setConnectingFromCardId(card.id);
                 setConnectionPreviewPoint({
