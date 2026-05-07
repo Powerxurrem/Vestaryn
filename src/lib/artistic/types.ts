@@ -14,7 +14,15 @@ export type ArtisticOutputRole =
   | "summary"
   | "email"
   | "report";
-  
+
+export type ArtisticPptImageZone = {
+  imageCardId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};  
+
 export type ArtisticCard = {
   id: string;
   type: ArtisticCardType;
@@ -26,6 +34,7 @@ export type ArtisticCard = {
   body: string;
   links?: string[];
   sourceCardId?: string;
+
   outputKind?: ArtisticOutputKind;
   outputRole?: ArtisticOutputRole;
   bridgeKind?: ArtisticBridgeKind;
@@ -37,6 +46,16 @@ export type ArtisticCard = {
   groupId?: string;
   imageStatus?: "idle" | "generating" | "done" | "error";
   imageUrl?: string;
+  
+  linkedImageCardId?: string;
+  linkedImageCardIds?: string[];
+
+  pptImageX?: number;
+  pptImageY?: number;
+  pptImageW?: number;
+  pptImageH?: number;
+  pptImageZones?: ArtisticPptImageZone[];
+
 };
 
 export type ScreenPoint = {

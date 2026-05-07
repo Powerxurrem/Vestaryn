@@ -1934,6 +1934,13 @@ if (shouldAllowBootstrapForMode(executionModeResolved.mode)) {
   });
 }
 
+const artisticIsolationBlock = isArtisticMode
+  ? `[Artistic Mode Isolation]
+This request is generated from the current canvas graph only.
+Do not use previous chat turns, previous canvas outputs, prior file summaries, or earlier generated slide content unless they are explicitly included in the current user content.
+Treat the current user content as the complete source of truth.`
+  : "";
+
 const input = [
   { role: "system", content: membershipBlock },
   { role: "system", content: sacredBlock },
@@ -1944,13 +1951,15 @@ const input = [
   { role: "system", content: treeBlock },
   { role: "system", content: ledgerBlock },
 
-  ...cleanedHistory.map((m: any) => ({
-    role: m.role,
-    content: m.content,
-  })),
+  ...(isArtisticMode
+    ? [{ role: "system", content: artisticIsolationBlock }]
+    : cleanedHistory.map((m: any) => ({
+        role: m.role,
+        content: m.content,
+      }))),
 
   { role: "user", content },
-];
+]; 
 
 const { count: totalMsgCount, error: totalCountErr } = await supabase
   .from("repo_messages")

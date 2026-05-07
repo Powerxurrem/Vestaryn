@@ -233,32 +233,68 @@ useEffect(() => {
 ): {
   prompt: ArtisticCard | null;
   bridge: ArtisticCard | null;
+  bridges: ArtisticCard[];
 } {
-  const direct = cards.find((c) => c.id === output.sourceCardId) ?? null;
-  if (!direct) return { prompt: null, bridge: null };
+  const bridges: ArtisticCard[] = [];
+  const seen = new Set<string>();
 
-  if (direct.type === "prompt") {
-    return { prompt: direct, bridge: null };
-  }
+  let current: ArtisticCard | null =
+    cards.find((card) => card.id === output.sourceCardId) ?? null;
 
-  if (direct.type === "output") {
-    return { prompt: direct, bridge: null };
-  }
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
 
-  if (direct.type === "bridge") {
-    const upstream =
-      cards.find((c) => c.id === direct.upstreamCardId) ?? null;
-
-    if (!upstream) return { prompt: null, bridge: direct };
-
-    if (upstream.type === "prompt" || upstream.type === "output") {
-      return { prompt: upstream, bridge: direct };
+    if (current.type === "prompt" || current.type === "output") {
+      return {
+        prompt: current,
+        bridge: bridges[0] ?? null,
+        bridges,
+      };
     }
 
-    return { prompt: null, bridge: direct };
+        if (current.type === "bridge") {
+      bridges.unshift(current);
+
+      const upstream =
+        cards.find((card) => card.id === current?.upstreamCardId) ?? null;
+
+      // Any bridge can act as a standalone source when it has useful content.
+      // This allows:
+      // File Context → PowerPoint
+      // Summary Bridge → PowerPoint
+      // File Context → Summary Bridge → PowerPoint
+      if (!upstream) {
+        const hasFileContext =
+          current.bridgeKind === "file_context" &&
+          Boolean(current.contextText?.trim());
+
+        const hasUsefulBridgeBody =
+          Boolean(current.body?.trim()) &&
+          !current.body.includes("Approved summary gate.") &&
+          !current.body.includes("Describe what to use from the file");
+
+        if (hasFileContext || hasUsefulBridgeBody) {
+          return {
+            prompt: current,
+            bridge: bridges[0] ?? null,
+            bridges,
+          };
+        }
+      }
+
+      current = upstream;
+
+      continue;
+    }
+
+    break;
   }
 
-  return { prompt: null, bridge: null };
+  return {
+    prompt: null,
+    bridge: bridges[0] ?? null,
+    bridges,
+  };
 }
 
   function stripSystemArtifacts(input: string) {
@@ -413,8 +449,8 @@ useEffect(() => {
   const MIN_CARD_W = 140;
   const MIN_CARD_H = 90;
 
-  const PPT_CARD_W = 960;
-  const PPT_CARD_H = 540;
+  const PPT_CARD_W = 1200;
+  const PPT_CARD_H = 675;
 
   function zoomFromViewportCenter(nextZoom: number) {
     const rect = viewportRef.current?.getBoundingClientRect();
@@ -524,6 +560,21 @@ useEffect(() => {
             duplicatedCard.upstreamCardId = undefined;
           }
 
+          if (card.linkedImageCardId && idMap.has(card.linkedImageCardId)) {
+            duplicatedCard.linkedImageCardId = idMap.get(card.linkedImageCardId)!;
+          } else if (card.linkedImageCardId) {
+            duplicatedCard.linkedImageCardId = undefined;
+          }
+
+          if (card.linkedImageCardIds?.length) {
+            const nextLinkedImageCardIds = card.linkedImageCardIds
+              .filter((linkedId) => idMap.has(linkedId))
+              .map((linkedId) => idMap.get(linkedId)!);
+
+            duplicatedCard.linkedImageCardIds =
+              nextLinkedImageCardIds.length > 0 ? nextLinkedImageCardIds : undefined;
+          }
+
           return duplicatedCard;
         });
 
@@ -579,6 +630,13 @@ useEffect(() => {
               card.upstreamCardId && deleteSet.has(card.upstreamCardId)
                 ? undefined
                 : card.upstreamCardId,
+            linkedImageCardId:
+              card.linkedImageCardId && deleteSet.has(card.linkedImageCardId)
+                ? undefined
+                : card.linkedImageCardId,
+            linkedImageCardIds: card.linkedImageCardIds?.filter(
+              (id) => !deleteSet.has(id)
+            ),
           }))
       );
 
@@ -884,6 +942,92 @@ function isSummaryBridge(card: ArtisticCard | null) {
   return card?.type === "bridge" && card.bridgeKind === "summary_bridge";
 }
 
+function looksLikeDeliverableBrief(value: string) {
+  const text = String(value ?? "").toLowerCase();
+
+  const hasCreationLanguage =
+    text.includes("create ") ||
+    text.includes("generate ") ||
+    text.includes("make ") ||
+    text.includes("write ") ||
+    text.includes("powerpoint") ||
+    text.includes("slide");
+
+  const hasFormatLanguage =
+    text.includes("bullet") ||
+    text.includes("executive tone") ||
+    text.includes("more detailed") ||
+    text.includes("richer") ||
+    text.includes("longer") ||
+    text.includes("presentation");
+
+  const hasBusinessFacts =
+    /\b(revenue|sales|margin|orders|customers|forecast|discount|region|pipeline|cost|profit|net sales|gross sales|units|average order)\b/i.test(
+      text
+    );
+
+  return hasCreationLanguage && hasFormatLanguage && !hasBusinessFacts;
+}
+
+function buildPowerPointSourceForModel(sourceBody: string) {
+  const raw = String(sourceBody ?? "").trim();
+
+  if (!looksLikeDeliverableBrief(raw)) {
+    return {
+      topic: raw,
+      constraints: "",
+      sourceMode: "business_source",
+    };
+  }
+
+  return {
+    sourceMode: "request_brief",
+    topic:
+      "Executive decision quality: balancing growth ambition, risk control, execution discipline, and strategic focus.",
+    constraints: raw,
+  };
+}
+
+function isPlaceholderPromptBody(body: string) {
+  const value = String(body ?? "").trim().toLowerCase();
+
+  return (
+    !value ||
+    value === "describe what you want..." ||
+    value === "awaiting connected prompt..." ||
+    value.includes("awaiting connected prompt")
+  );
+}
+
+function shouldBlockArtisticRun(item: {
+  output: ArtisticCard;
+  prompt: ArtisticCard;
+  bridge: ArtisticCard | null;
+  bridges?: ArtisticCard[];
+}) {
+  const sourceIsPrompt = item.prompt.type === "prompt";
+  const sourceIsFileContext =
+    item.prompt.type === "bridge" && item.prompt.bridgeKind === "file_context";
+
+  if (sourceIsPrompt && isPlaceholderPromptBody(item.prompt.body)) {
+    return true;
+  }
+
+  if (sourceIsFileContext && !item.prompt.contextText?.trim()) {
+    return true;
+  }
+
+  if (
+    item.output.outputKind === "image" &&
+    sourceIsPrompt &&
+    item.prompt.promptGateUnlocked !== true
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function markArtisticCardUpdating(cardId: string) {
   setUpdatingCardIds((prev) =>
     prev.includes(cardId) ? prev : [...prev, cardId]
@@ -913,9 +1057,15 @@ setIsRunningArtisticOutputs(true);
       return true;
     })
     .map((output) => {
-      const { prompt, bridge } = resolveArtisticInputChain(artisticCards, output);
-      if (!prompt) return null;
-      return { output, prompt, bridge };
+      const chain = resolveArtisticInputChain(artisticCards, output);
+      if (!chain.prompt) return null;
+
+      return {
+        output,
+        prompt: chain.prompt,
+        bridge: chain.bridge,
+        bridges: chain.bridges ?? [],
+      };
     })
     .filter(
       (
@@ -924,10 +1074,26 @@ setIsRunningArtisticOutputs(true);
         output: ArtisticCard;
         prompt: ArtisticCard;
         bridge: ArtisticCard | null;
+        bridges: ArtisticCard[];
       } => item !== null
-    );
-
+    )
+    .filter((item) => !shouldBlockArtisticRun(item));
+    
   if (runnableOutputs.length === 0) return;
+
+  console.log("[artistic runnable outputs]", {
+    targetOutputIds,
+    count: runnableOutputs.length,
+    outputs: runnableOutputs.map((item) => ({
+      outputId: item.output.id,
+      outputKind: item.output.outputKind,
+      outputTitle: item.output.title,
+      promptId: item.prompt.id,
+      promptType: item.prompt.type,
+      promptBridgeKind: item.prompt.bridgeKind,
+      bridgeCount: item.bridges?.length ?? 0,
+    })),
+  });
 
   setArtisticCards((prev) =>
     prev.map((card) =>
@@ -970,9 +1136,22 @@ setIsRunningArtisticOutputs(true);
           ? `Prioritize clarity and brevity.\n`
           : "";
 
-      let sourceBody = item.prompt.body;
+           let sourceBody =
+            item.prompt.type === "bridge" && item.prompt.bridgeKind === "file_context"
+              ? `Analyze this file context and create the requested downstream output.
 
-const isSummaryGate = isSummaryBridge(item.bridge);
+          File context instruction:
+          ${item.prompt.body}
+
+          Context source: ${item.prompt.contextFileName ?? "Unnamed file"}
+
+          Context content:
+          ${item.prompt.contextText?.trim() || item.prompt.body || "[No file context loaded yet.]"}`
+              : item.prompt.body;
+
+          let powerPointSource = buildPowerPointSourceForModel(sourceBody);
+
+          const isSummaryGate = isSummaryBridge(item.bridge);
 
 // Summary Bridge behavior:
 // LOCKED   = fill/update the bridge summary only, then stop.
@@ -987,15 +1166,26 @@ if (isSummaryGate) {
       body: JSON.stringify({
         content:
           `[Artistic Mode]\n` +
-          `Create a readable approved brief from the upstream content.\n\n` +
+          `Create a readable approved brief from the CURRENT upstream content only.\n\n` +
 
-          `Write AS the content itself.\n` +
-          `NOT ABOUT the content.\n\n` +
+          `Your job is to preserve the actual user intent.\n` +
+          `If the upstream content is a request or instruction, extract the intended deliverable, audience, topic, format, and constraints.\n` +
+          `Do not make the approved brief about the act of creating content.\n` +
+          `If the upstream content is source material, summarize the source material.\n\n` +
 
-          `Do NOT describe what should be created.\n` +
-          `Do NOT give instructions.\n` +
-          `Do NOT speak about "the requested content".\n` +
-          `Do NOT explain the task.\n\n` +
+          `Do NOT replace the request with a generic executive template.\n` +
+          `Do NOT invent a different topic.\n` +
+          `Do NOT say vague things like "This is a high-level executive brief" unless the upstream actually says that.\n` +
+          `Do NOT describe the task from the outside.\n` +
+          `Do NOT mention previous files, previous summaries, previous slides, or previous chat turns.\n\n` +
+
+          `Preservation rules:\n` +
+          `- Preserve explicit requested format details, such as slide count, bullet count, tone, audience, and level of detail.\n` +
+          `- Preserve the actual subject of the upstream request.\n` +
+          `- If the upstream asks for 5 bullet points, the brief should mention 5 bullet points.\n` +
+          `- If the upstream is vague, keep the brief honest and do not fabricate specifics.\n\n` +
+          `- Separate the actual topic from formatting instructions.\n` +
+          `- The downstream output should fulfill the request, not describe the request.\n` +
 
           `Format the result with this exact structure:\n\n` +
           `Core message:\n` +
@@ -1003,7 +1193,9 @@ if (isSummaryGate) {
           `Key points:\n` +
           `- Point one\n` +
           `- Point two\n` +
-          `- Point three\n\n` +
+          `- Point three\n` +
+          `- Optional point four if needed\n` +
+          `- Optional point five if needed\n\n` +
           `Implication:\n` +
           `One clear sentence explaining why it matters.\n\n` +
 
@@ -1017,7 +1209,16 @@ if (isSummaryGate) {
           `Do not create PowerPoint content yet.\n` +
           `Do not include internal markers.\n\n` +
 
-          `${sourceBody}`,
+          `Critical source rule:\n` +
+          `Use ONLY the current upstream content below.\n` +
+          `Ignore previous chat history, previous summaries, previous files, and previous slide outputs.\n` +
+          `If the current upstream content does not mention a file, do not mention file-derived metrics.\n\n` +
+
+          `CURRENT UPSTREAM CONTENT START\n` +
+          `${sourceBody}\n` +
+          `CURRENT UPSTREAM CONTENT END\n\n` +
+
+          `Remember: the approved brief must be based only on the current upstream content above.`,
       }),
     });
 
@@ -1052,21 +1253,73 @@ if (isSummaryGate) {
 
   // Gate is unlocked: downstream output uses the approved bridge body.
   sourceBody = item.bridge!.body;
+  powerPointSource = buildPowerPointSourceForModel(sourceBody);
 }
 
 
       
-      const bridgeContext =
-        item.bridge?.bridgeKind === "file_context"
-          ? `\n\nFile context instruction:\n${item.bridge.body}\n\nContext source: ${
-              item.bridge.contextFileName ?? "Unnamed file"
-            }\n\nContext content:\n${item.bridge.contextText ?? ""}`
-            : item.bridge?.bridgeKind === "summary_bridge"
-            ? `\n\nSummary bridge instruction:
-            Use the Summary Bridge body as the approved source material.
-            Do not invent a new topic.
-            Convert only the approved summary into the requested downstream format.`
-            : "";
+      const fileContextBridges = (item.bridges ?? []).filter(
+        (bridge) => bridge.bridgeKind === "file_context"
+      );
+
+      const summaryBridge = (item.bridges ?? []).find(
+        (bridge) => bridge.bridgeKind === "summary_bridge"
+      );
+
+      const fileContextBlock = fileContextBridges
+        .map((bridge) => {
+          const hasContextText = Boolean(bridge.contextText?.trim());
+
+          return `\n\nFile context instruction:
+${bridge.body}
+
+Context source: ${bridge.contextFileName ?? "Unnamed file"}
+
+Context content:
+${
+  hasContextText
+    ? bridge.contextText
+    : "[No readable text context loaded from this file yet.]"
+}`;
+        })
+        .join("\n\n");
+
+      const summaryBridgeContext = summaryBridge
+        ? `\n\nSummary bridge instruction:
+Use the Summary Bridge body as the approved source material.
+Do not invent a new topic.
+Convert only the approved summary into the requested downstream format.`
+        : "";
+
+      const bridgeContext = `${fileContextBlock}${summaryBridgeContext}`;
+
+      const linkedImageIds = Array.from(
+        new Set([
+          ...(item.output.linkedImageCardIds ?? []),
+          ...(item.output.linkedImageCardId ? [item.output.linkedImageCardId] : []),
+        ])
+      );
+
+const linkedImageCards = linkedImageIds
+  .map((id) => artisticCards.find((card) => card.id === id) ?? null)
+  .filter((card): card is ArtisticCard => {
+    if (!card) return false;
+
+    return card.type === "output" && card.outputKind === "image";
+  });
+
+      const slideImageLayoutContext =
+        item.output.outputKind === "powerpoint" && linkedImageCards.length > 0
+          ? `\n\nSlide layout constraint:
+      There are ${linkedImageCards.length} reserved image zone(s) on the right side of the slide.
+      Do not place text in the reserved image zone(s).
+      Use the left side for the title, hook, bullets, and takeaway.
+      Because the slide card is larger, you may use slightly richer bullets, but keep the slide clean.
+      Linked image cards: ${linkedImageCards
+        .map((card) => card.title || "Image")
+        .join(", ")}.
+      The VISUAL field should briefly explain how the linked image zone(s) support the core message.`
+          : "";
 
       if (item.output.outputKind === "image") {
         const concept = mapToVisualConcept(sourceBody);
@@ -1087,6 +1340,8 @@ if (isSummaryGate) {
           throw new Error(text || `Image request failed (${imageRes.status})`);
         }
 
+
+        
         const imageData = await imageRes.json();
 
         setArtisticCards((prev) =>
@@ -1137,18 +1392,63 @@ Return clean output only.\n` +
                 `${sourceBody}${bridgeContext}`
               : item.output.outputKind === "powerpoint"
               ? `[Artistic Mode]\n` +
-                `Generate a PowerPoint slide concept.\n` +
-                `Prefer this structure when possible:\n\n` +
-                `TITLE: ...\n` +
-                `HOOK: ...\n` +
+                `Generate ONE polished executive PowerPoint slide concept.\n\n` +
+
+                `Use exactly this structure:\n\n` +
+                `TITLE: A clear slide title, maximum 10 words.\n` +
+                `HOOK: One strong executive takeaway, maximum 24 words.\n` +
                 `BULLETS:\n` +
-                `- ...\n` +
-                `- ...\n` +
-                `- ...\n` +
-                `VISUAL: ...\n\n` +
-                `Keep it concise, presentation-ready, and visually strong.\n` +
-                `System formatting may be applied.\n\n` +
-                `${sourceBody}${bridgeContext}`
+                `- Bullet one, maximum 18 words.\n` +
+                `- Bullet two, maximum 18 words.\n` +
+                `- Bullet three, maximum 18 words.\n` +
+                `- Optional bullet four, only if it adds a distinct useful point.\n` +
+                `TAKEAWAY: One decisive closing insight, maximum 22 words.\n` +
+                `VISUAL: One short phrase describing how the visual supports the message.\n\n` +
+
+                `Interpretation rule:\n` +
+                `- The source below may be either business source material OR a request brief.\n` +
+                `- If it contains business facts, create the slide from those facts.\n` +
+                `- If it describes a requested deliverable, fulfill that deliverable.\n` +
+                `- Do NOT make the slide about the instruction itself.\n` +
+                `- Do NOT say the source is missing, unavailable, insufficient, or ungrounded.\n` +
+                `- Do NOT ask for more source material.\n` +
+                `- Do NOT title the slide after prompt wording like "Executive Summary" unless that is the actual topic.\n` +
+                `- If no concrete topic is provided, use the CURRENT TOPIC fallback and do not mention that fallback was chosen.\n\n` +
+
+                `Slide quality rules:\n` +
+                `- Create a slide, not a report.\n` +
+                `- Use 3 to 4 bullets depending on available substance.\n` +
+                `- Each bullet should carry one distinct executive insight.\n` +
+                `- Preserve the strongest usable ideas from the Summary Bridge: core message, key points, implication, requested format, and constraints.\n` +
+                `- Do not shrink a rich approved summary into a vague generic slide.\n` +
+                `- Prefer business signal over raw detail.\n` +
+                `- Avoid generic filler like "improve performance" unless backed by context.\n` +
+                `- If file context is provided, extract the strongest pattern, average, risk, or opportunity.\n` +
+                `- If an image zone is linked, keep text balanced for the left side and let the visual carry part of the message.\n` +
+                `- Make it boardroom-ready, clean, and decisive.\n` +
+                `- Do not include markdown.\n` +
+                `- Do not include explanations outside the requested structure.\n\n` +
+
+                `Inside [Action], return ONLY the slide content in the requested TITLE / HOOK / BULLETS / TAKEAWAY / VISUAL structure.\n\n` +
+
+                `CURRENT TOPIC START\n` +
+                `${powerPointSource.topic}\n` +
+                `CURRENT TOPIC END\n\n` +
+
+                (powerPointSource.constraints
+                  ? `REQUEST CONSTRAINTS START\n` +
+                    `${powerPointSource.constraints}\n` +
+                    `REQUEST CONSTRAINTS END\n\n`
+                  : "") +
+
+                `${bridgeContext}${slideImageLayoutContext}\n\n` +
+
+                `Generation rule:\n` +
+                `Use CURRENT TOPIC as the slide subject.\n` +
+                `Use REQUEST CONSTRAINTS only as formatting and quality guidance.\n` +
+                `Never put REQUEST CONSTRAINTS into the slide title, hook, bullets, or takeaway.\n` +
+                `Never make the slide about creating slides, richer wording, bullet counts, or presentation formatting.\n` +
+                `Generate the slide now.`
               : `[Artistic Mode]\n\n${`${sourceBody}${bridgeContext}`}`,
         }),
       });

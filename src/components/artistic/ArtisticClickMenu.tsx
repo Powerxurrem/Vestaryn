@@ -190,8 +190,8 @@ function createReportOutputCard() {
 
     createMenuCard(world.x, world.y, {
       type: "output",
-      w: 960,
-      h: 540,
+      w: 1200,
+      h: 675,
       title: "PowerPoint",
       body: "Slide concept\n\nAwaiting connected prompt...\n\nRun the chamber to generate a PowerPoint-oriented result.",
       outputKind: "powerpoint",

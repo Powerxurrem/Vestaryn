@@ -8,11 +8,17 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react";
-import type { ArtisticCard, CardPresetUi } from "@/lib/artistic/types";
+import type {
+  ArtisticCard,
+  ArtisticPptImageZone,
+  CardPresetUi,
+} from "@/lib/artistic/types";
 
 
 type ArtisticCardViewProps = {
   card: ArtisticCard;
+  artisticCards: ArtisticCard[];
+  linkedImageCard?: ArtisticCard | null;
   isActive: boolean;
   isPanning: boolean;
   isDragging: boolean;
@@ -42,17 +48,22 @@ selectedCardIds: string[];
     e: ReactPointerEvent<HTMLDivElement>,
     card: ArtisticCard
   ) => void;
-  updateCard: (
-    cardId: string,
-    patch: Partial<{
-      title: string;
-      body: string;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-    }>
-  ) => void;
+    updateCard: (
+      cardId: string,
+      patch: Partial<{
+        title: string;
+        body: string;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        pptImageX: number;
+        pptImageY: number;
+        pptImageW: number;
+        pptImageH: number;
+        pptImageZones: ArtisticPptImageZone[];
+      }>
+    ) => void;
   commitCardTitle: (cardId: string, title: string) => void;
   commitCardBody: (cardId: string, body: string) => void;
   cardDragOffsetRef: RefObject<{ x: number; y: number }>;
@@ -66,6 +77,8 @@ selectedCardIds: string[];
 
 export default function ArtisticCardView({
   card,
+  artisticCards,
+  linkedImageCard,
   isActive,
   isPanning,
   isDragging,
@@ -203,9 +216,12 @@ function parseEmailOutputBody(body: string) {
   function parsePowerPointBody(body: string) {
   const titleMatch = body.match(/TITLE:\s*(.*)/i);
   const hookMatch = body.match(/HOOK:\s*(.*)/i);
+  const takeawayMatch = body.match(/TAKEAWAY:\s*(.*)/i);
   const visualMatch = body.match(/VISUAL:\s*(.*)/i);
 
-  const bulletsSectionMatch = body.match(/BULLETS:\s*([\s\S]*?)(?:VISUAL:|$)/i);
+  const bulletsSectionMatch = body.match(
+  /BULLETS:\s*([\s\S]*?)(?:TAKEAWAY:|VISUAL:|$)/i
+);
 
   const bullets =
     bulletsSectionMatch?.[1]
@@ -214,11 +230,28 @@ function parseEmailOutputBody(body: string) {
       .filter((line) => line.startsWith("-"))
       .map((line) => line.replace(/^-+\s*/, "").trim()) ?? [];
 
+  function clampWords(value: string, maxWords: number) {
+    const words = String(value ?? "").trim().split(/\s+/).filter(Boolean);
+
+    if (words.length <= maxWords) return String(value ?? "").trim();
+
+    return `${words.slice(0, maxWords).join(" ")}...`;
+  }
+
+const cleanTitle = clampWords(titleMatch?.[1]?.trim() || card.title, 10);
+const cleanHook = clampWords(hookMatch?.[1]?.trim() || "", 24);
+const cleanBullets = bullets
+  .map((bullet) => clampWords(bullet, 18))
+  .slice(0, 4);
+const cleanTakeaway = clampWords(takeawayMatch?.[1]?.trim() || "", 22);
+const cleanVisual = clampWords(visualMatch?.[1]?.trim() || "", 18);
+
   return {
-    title: titleMatch?.[1]?.trim() || card.title,
-    hook: hookMatch?.[1]?.trim() || "",
-    bullets,
-    visual: visualMatch?.[1]?.trim() || "",
+    title: cleanTitle,
+    hook: cleanHook,
+    bullets: cleanBullets,
+    takeaway: cleanTakeaway,
+    visual: cleanVisual,
     raw: body,
   };
 }
@@ -259,10 +292,189 @@ function polishPromptBody(
 const [isFileDragOver, setIsFileDragOver] = useState(false);
 const [showFilePreview, setShowFilePreview] = useState(false);
 
+const [pptImageDrag, setPptImageDrag] = useState<null | {
+  imageCardId: string;
+  mode: "move" | "resize";
+  startClientX: number;
+  startClientY: number;
+  startX: number;
+  startY: number;
+  startW: number;
+  startH: number;
+}>(null);
+
+function clampPptImagePlacement(next: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}) {
+  const slideW = Math.max(1, card.w - 24);
+  const slideH = Math.max(1, card.h - 84);
+
+  const minW = 120;
+  const minH = 90;
+
+  const w = Math.max(minW, Math.min(next.w, slideW));
+  const h = Math.max(minH, Math.min(next.h, slideH));
+
+  return {
+    x: Math.max(0, Math.min(next.x, slideW - w)),
+    y: Math.max(0, Math.min(next.y, slideH - h)),
+    w,
+    h,
+  };
+}
+
+function getDefaultZoneForIndex(index: number): ArtisticPptImageZone {
+  const defaultW = 300;
+  const defaultH = 210;
+
+  const columnX = Math.max(0, card.w - 24 - defaultW - 70);
+  const firstY = 70;
+  const gap = 18;
+
+  return {
+    imageCardId: "",
+    x: columnX,
+    y: firstY + index * (defaultH + gap),
+    w: defaultW,
+    h: defaultH,
+  };
+}
+
+function getZoneForImage(imageCardId: string, index: number): ArtisticPptImageZone {
+  const existing = card.pptImageZones?.find(
+    (zone) => zone.imageCardId === imageCardId
+  );
+
+  if (existing) return existing;
+
+  const fallback = getDefaultZoneForIndex(index);
+
+  return {
+    ...fallback,
+    imageCardId,
+  };
+}
+
+function upsertPptImageZone(nextZone: ArtisticPptImageZone) {
+  const existing = card.pptImageZones ?? [];
+  const withoutCurrent = existing.filter(
+    (zone) => zone.imageCardId !== nextZone.imageCardId
+  );
+
+  updateCard(card.id, {
+    pptImageZones: [...withoutCurrent, nextZone],
+  });
+}
+
+function startPptImageMove(
+  e: ReactPointerEvent<HTMLDivElement>,
+  imageCardId: string,
+  index: number
+) {
+  e.stopPropagation();
+  e.preventDefault();
+
+  const zone = getZoneForImage(imageCardId, index);
+
+  setPptImageDrag({
+    imageCardId,
+    mode: "move",
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    startX: zone.x,
+    startY: zone.y,
+    startW: zone.w,
+    startH: zone.h,
+  });
+}
+
+function startPptImageResize(
+  e: ReactPointerEvent<HTMLButtonElement>,
+  imageCardId: string,
+  index: number
+) {
+  e.stopPropagation();
+  e.preventDefault();
+
+  const zone = getZoneForImage(imageCardId, index);
+
+  setPptImageDrag({
+    imageCardId,
+    mode: "resize",
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    startX: zone.x,
+    startY: zone.y,
+    startW: zone.w,
+    startH: zone.h,
+  });
+}
+
+function movePptImage(e: ReactPointerEvent<HTMLDivElement>) {
+  if (!pptImageDrag) return;
+
+  e.stopPropagation();
+  e.preventDefault();
+
+  const dx = e.clientX - pptImageDrag.startClientX;
+  const dy = e.clientY - pptImageDrag.startClientY;
+
+  const next =
+    pptImageDrag.mode === "move"
+      ? clampPptImagePlacement({
+          x: pptImageDrag.startX + dx,
+          y: pptImageDrag.startY + dy,
+          w: pptImageDrag.startW,
+          h: pptImageDrag.startH,
+        })
+      : clampPptImagePlacement({
+          x: pptImageDrag.startX,
+          y: pptImageDrag.startY,
+          w: pptImageDrag.startW + dx,
+          h: pptImageDrag.startH + dy,
+        });
+
+  upsertPptImageZone({
+    imageCardId: pptImageDrag.imageCardId,
+    x: next.x,
+    y: next.y,
+    w: next.w,
+    h: next.h,
+  });
+}
+
+function stopPptImageInteraction(e: ReactPointerEvent<HTMLDivElement>) {
+  if (!pptImageDrag) return;
+
+  e.stopPropagation();
+  e.preventDefault();
+
+  setPptImageDrag(null);
+}
+
 const filePreviewText = useMemo(() => {
   if (!card.contextText) return "";
   return card.contextText.split(/\r?\n/).slice(0, 10).join("\n");
 }, [card.contextText]);
+
+const linkedImageCards = useMemo(() => {
+  const ids = Array.from(
+    new Set([
+      ...(card.linkedImageCardIds ?? []),
+      ...(card.linkedImageCardId ? [card.linkedImageCardId] : []),
+    ])
+  );
+
+  return ids
+    .map((id) => artisticCards.find((candidate) => candidate.id === id) ?? null)
+    .filter((candidate): candidate is ArtisticCard => {
+      if (!candidate) return false;
+      return candidate.type === "output" && candidate.outputKind === "image";
+    });
+}, [artisticCards, card.linkedImageCardId, card.linkedImageCardIds]);
 
   return (
     <div
@@ -531,11 +743,26 @@ const filePreviewText = useMemo(() => {
         ) : card.type === "output" && card.outputKind === "powerpoint" ? (
           (() => {
             const ppt = parsePowerPointBody(card.body);
+            const linkedImageCards = Array.from(
+              new Set([
+                ...(card.linkedImageCardIds ?? []),
+                ...(card.linkedImageCardId ? [card.linkedImageCardId] : []),
+              ])
+            )
+              .map((id) => artisticCards.find((candidate) => candidate.id === id) ?? null)
+              .filter((candidate): candidate is ArtisticCard => {
+                if (!candidate) return false;
+                return candidate.type === "output" && candidate.outputKind === "image";
+              });
+            
 
             return (
-              <div
+                            <div
                 onPointerDown={(e) => e.stopPropagation()}
-                className="h-full w-full overflow-auto rounded-xl border border-white/10 bg-white/[0.04] p-3"
+                onPointerMove={movePptImage}
+                onPointerUp={stopPptImageInteraction}
+                onPointerLeave={stopPptImageInteraction}
+                className="h-full w-full overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] p-3"
                 onWheel={(e) => e.stopPropagation()}
               >
                 <div className="mb-2 flex items-center justify-between">
@@ -543,56 +770,109 @@ const filePreviewText = useMemo(() => {
                     Slide preview
                   </div>
 
-                  <div className="rounded-md border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-black/40">
-                    16:9 · 960×540
+                  <div className="flex items-center gap-2">
+                    {linkedImageCards.length > 0 ? (
+                      <div className="rounded-md border border-blue-300 bg-blue-50 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-blue-600">
+                        {linkedImageCards.length > 1
+                          ? `${linkedImageCards.length} image zones linked`
+                          : "Image zone linked"}
+                      </div>
+                    ) : null}
+
+                    <div className="rounded-md border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-black/40">
+                      16:9 · {Math.round(card.w)}×{Math.round(card.h)}
+                    </div>
                   </div>
                 </div>
 
-                <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
-                    Title
-                  </div>
-                  <div className={`mt-1 text-base font-semibold leading-snug ${cardPresetUi.body}`}>
-                    {ppt.title}
-                  </div>
-                </div>
+                <div className="relative h-[calc(100%-28px)] overflow-hidden rounded-xl border border-black/10 bg-white">
+                  <div className="absolute left-[44px] top-[56px] w-[52%]">
+                    <div className="text-[30px] font-semibold leading-[1.1] tracking-[-0.03em] text-black/82">
+                      {ppt.title}
+                    </div>
 
-                {ppt.hook ? (
-                  <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
-                      Hook
-                    </div>
-                    <div className={`mt-1 text-sm leading-6 ${cardPresetUi.body}`}>
-                      {ppt.hook}
-                    </div>
-                  </div>
-                ) : null}
+                    {ppt.hook ? (
+                      <div className="mt-5 max-w-[560px] text-[15px] leading-7 text-black/58">
+                        {ppt.hook}
+                      </div>
+                    ) : null}
 
-                {ppt.bullets.length > 0 ? (
-                  <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                    <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/35">
-                      Bullets
-                    </div>
-                    <div className="space-y-2">
-                      {ppt.bullets.map((bullet, i) => (
-                        <div key={i} className={`text-sm leading-6 ${cardPresetUi.body}`}>
-                          - {bullet}
+                    {ppt.bullets.length > 0 ? (
+                      <div className="mt-7 space-y-4">
+                        {ppt.bullets.map((bullet, i) => (
+                          <div key={i} className="flex gap-4 text-[13px] leading-6 text-black/70">
+                            <span className="mt-[8px] h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400" />
+                            <span>{bullet}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {ppt.visual ? (
+                      <div className="mt-7 max-w-[520px] rounded-2xl border border-blue-200 bg-blue-50 px-5 py-4">
+                        <div className="text-[10px] uppercase tracking-[0.18em] text-blue-500">
+                          Takeaway
                         </div>
-                      ))}
-                    </div>
+                        <div className="mt-2 text-[13px] leading-6 text-black/68">
+                          {ppt.visual}
+                        </div>
+                      </div> 
+                    ) : null}
                   </div>
-                ) : null}
 
-                {ppt.visual ? (
-                  <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/35">
-                      Visual
-                    </div>
-                    <div className={`mt-1 text-sm leading-6 ${cardPresetUi.body}`}>
-                      {ppt.visual}
-                    </div>
-                  </div>
-                ) : null}
+                  {linkedImageCards.length > 0 ? (
+                    <>
+                      {linkedImageCards.slice(0, 4).map((imageCard, index) => {
+                        const zone = getZoneForImage(imageCard.id, index);
+                        const isDraggingThisZone = pptImageDrag?.imageCardId === imageCard.id;
+
+                        return (
+                          <div
+                            key={imageCard.id}
+                            onPointerDown={(e) => startPptImageMove(e, imageCard.id, index)}
+                            className={[
+                              "absolute cursor-move overflow-hidden rounded-2xl border bg-white shadow-[0_24px_70px_rgba(0,0,0,0.14)]",
+                              isDraggingThisZone || isActive
+                                ? "border-blue-300 ring-2 ring-blue-300/40"
+                                : "border-black/10",
+                            ].join(" ")}
+                            style={{
+                              left: zone.x,
+                              top: zone.y,
+                              width: zone.w,
+                              height: zone.h,
+                            }}
+                          >
+                            {imageCard.imageUrl ? (
+                              <img
+                                src={imageCard.imageUrl}
+                                alt={imageCard.title || `Linked slide visual ${index + 1}`}
+                                className="h-full w-full object-cover"
+                                draggable={false}
+                              />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center px-5 text-center text-[11px] leading-5 text-blue-500/75">
+                                Linked image has no preview yet.
+                              </div>
+                            )}
+
+                            <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-white/40 bg-white/70 px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-black/45 backdrop-blur">
+                              Image {index + 1}
+                            </div>
+
+                            <button
+                              type="button"
+                              data-card-resize-handle
+                              onPointerDown={(e) => startPptImageResize(e, imageCard.id, index)}
+                              className="absolute bottom-2 right-2 h-4 w-4 rounded-md border border-blue-300 bg-white/85 shadow-sm hover:bg-blue-50"
+                              title="Resize slide image"
+                            />
+                          </div>
+                        );
+                      })}
+                    </>
+                  ) : null}
+                </div>
               </div>
             );
           })()
@@ -879,7 +1159,9 @@ const filePreviewText = useMemo(() => {
 
 
 
-{(card.type === "prompt" || card.type === "bridge") && (
+{(card.type === "prompt" ||
+  card.type === "bridge" ||
+  (card.type === "output" && card.outputKind === "image")) && (
   <button
     type="button"
     onPointerDown={(e) => {

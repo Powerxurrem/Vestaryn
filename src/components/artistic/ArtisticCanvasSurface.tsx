@@ -320,7 +320,7 @@ function commitPersistentGroupNote(groupId: string, note: string) {
   });
 }
 
-  function updateCard(
+    function updateCard(
     cardId: string,
     patch: Partial<{
       title: string;
@@ -329,6 +329,10 @@ function commitPersistentGroupNote(groupId: string, note: string) {
       y: number;
       w: number;
       h: number;
+      pptImageX: number;
+      pptImageY: number;
+      pptImageW: number;
+      pptImageH: number;
     }>
   ) {
     setArtisticCards((prev) =>
@@ -393,19 +397,44 @@ function runPromptCard(promptCard: ArtisticCard) {
 
 const connections = artisticCards
   .flatMap((card) => {
+    const out: Array<{ key: string; from: ArtisticCard; to: ArtisticCard }> = [];
+
     if (card.type === "output" && card.sourceCardId) {
       const source = artisticCards.find((c) => c.id === card.sourceCardId);
-      if (!source) return [];
-      return [{ key: `${source.id}-${card.id}`, from: source, to: card }];
+      if (source) {
+        out.push({ key: `${source.id}-${card.id}`, from: source, to: card });
+      }
+    }
+
+    if (card.type === "output" && card.outputKind === "powerpoint") {
+      const linkedImageIds = Array.from(
+        new Set([
+          ...(card.linkedImageCardIds ?? []),
+          ...(card.linkedImageCardId ? [card.linkedImageCardId] : []),
+        ])
+      );
+
+      for (const imageId of linkedImageIds) {
+        const imageSource = artisticCards.find((c) => c.id === imageId);
+
+        if (imageSource) {
+          out.push({
+            key: `${imageSource.id}-${card.id}-image`,
+            from: imageSource,
+            to: card,
+          });
+        }
+      }
     }
 
     if (card.type === "bridge" && card.upstreamCardId) {
       const source = artisticCards.find((c) => c.id === card.upstreamCardId);
-      if (!source) return [];
-      return [{ key: `${source.id}-${card.id}`, from: source, to: card }];
+      if (source) {
+        out.push({ key: `${source.id}-${card.id}`, from: source, to: card });
+      }
     }
 
-    return [];
+    return out;
   });
 
 const activePersistentGroup = useMemo(() => {
@@ -1002,7 +1031,7 @@ const hoveredConnectionTargetId =
   }
 
 function startPersistentGroupDrag(
-  e: ReactPointerEvent<HTMLDivElement>,
+  e: ReactPointerEvent<HTMLElement>,
   groupId: string
 ) {
   const group = persistentGroups.find((item) => item.id === groupId);
@@ -1480,20 +1509,43 @@ function findBridgeSnapConnection(bridgeCardId: string) {
   const bridge = artisticCards.find((c) => c.id === bridgeCardId);
   if (!bridge || bridge.type !== "bridge") return null;
 
-  const centerX = bridge.x + bridge.w / 2;
-  const centerY = bridge.y + bridge.h / 2;
-  const BASE_SNAP_DISTANCE = 36;
+  const bridgeAnchors = [
+    {
+      x: bridge.x,
+      y: bridge.y + bridge.h / 2,
+    },
+    {
+      x: bridge.x + bridge.w / 2,
+      y: bridge.y + bridge.h / 2,
+    },
+    {
+      x: bridge.x + bridge.w,
+      y: bridge.y + bridge.h / 2,
+    },
+  ];
+
+  const BASE_SNAP_DISTANCE = bridge.bridgeKind === "file_context" ? 58 : 42;
 
   for (const card of artisticCards) {
-    if (card.type !== "output" || !card.sourceCardId) continue;
+    const targetSourceId =
+      card.type === "output"
+        ? card.sourceCardId
+        : card.type === "bridge"
+        ? card.upstreamCardId
+        : null;
 
-    const source = artisticCards.find((c) => c.id === card.sourceCardId);
+    if (!targetSourceId) continue;
+
+    const source = artisticCards.find((c) => c.id === targetSourceId);
     if (!source) continue;
 
     // Allow inserting a bridge into:
     // Prompt → Output
+    // Prompt → Bridge
     // Bridge → Output
+    // Bridge → Bridge
     // Output → Output
+    // Output → Bridge
     if (
       source.type !== "prompt" &&
       source.type !== "bridge" &&
@@ -1502,7 +1554,7 @@ function findBridgeSnapConnection(bridgeCardId: string) {
       continue;
     }
 
-    // Avoid snapping a bridge into its own downstream output loops.
+    // Avoid snapping a bridge into itself or direct loops.
     if (source.id === bridge.id || card.id === bridge.id) continue;
 
     const x1 = source.x + source.w;
@@ -1524,13 +1576,18 @@ function findBridgeSnapConnection(bridgeCardId: string) {
       BASE_SNAP_DISTANCE + bendExtra / 140 + chord / 1100
     );
 
-    const dist = distancePointToBezier(centerX, centerY, p0, p1, p2, p3);
+    const dist = Math.min(
+      ...bridgeAnchors.map((anchor) =>
+        distancePointToBezier(anchor.x, anchor.y, p0, p1, p2, p3)
+      )
+    );
 
     if (dist <= SNAP_DISTANCE) {
       return {
         key: `${source.id}-${card.id}`,
         upstreamId: source.id,
-        outputId: card.id,
+        targetId: card.id,
+        targetType: card.type,
       };
     }
   }
@@ -1562,6 +1619,27 @@ function cutConnection(targetKey: string) {
       if (card.id !== match.to.id) return card;
 
       if (card.type === "output") {
+        if (card.outputKind === "powerpoint") {
+          const nextLinkedImageCardIds = (card.linkedImageCardIds ?? []).filter(
+            (id) => id !== match.from.id
+          );
+
+          if (
+            card.linkedImageCardId === match.from.id ||
+            nextLinkedImageCardIds.length !== (card.linkedImageCardIds ?? []).length
+          ) {
+            return {
+              ...card,
+              linkedImageCardId:
+                card.linkedImageCardId === match.from.id
+                  ? undefined
+                  : card.linkedImageCardId,
+              linkedImageCardIds:
+                nextLinkedImageCardIds.length > 0 ? nextLinkedImageCardIds : undefined,
+            };
+          }
+        }
+
         return {
           ...card,
           sourceCardId: undefined,
@@ -1569,6 +1647,16 @@ function cutConnection(targetKey: string) {
       }
 
       if (card.type === "bridge") {
+        if (card.bridgeKind === "summary_bridge") {
+          return {
+            ...card,
+            upstreamCardId: undefined,
+            summaryBridgeUnlocked: false,
+            body:
+              "Approved summary gate.\n\nUse the connected upstream output as the source for the next card.",
+          };
+        }
+
         return {
           ...card,
           upstreamCardId: undefined,
@@ -1592,8 +1680,16 @@ function cutConnection(targetKey: string) {
     if (connectingFromCardId && connectionPreviewPoint) {
   const SNAP_DISTANCE = 40;
 
+  const sourceCard = artisticCards.find((card) => card.id === connectingFromCardId);
+  const isImageToSlideConnection =
+    sourceCard?.type === "output" && sourceCard.outputKind === "image";
+
   const target = artisticCards.find((card) => {
-    if (card.type !== "output" && card.type !== "bridge") return false;
+    if (isImageToSlideConnection) {
+      if (card.type !== "output" || card.outputKind !== "powerpoint") return false;
+    } else {
+      if (card.type !== "output" && card.type !== "bridge") return false;
+    }
 
     const cx = card.x;
     const cy = card.y + card.h / 2;
@@ -1610,6 +1706,29 @@ function cutConnection(targetKey: string) {
         if (c.id !== target.id) return c;
 
         if (c.type === "output") {
+          if (
+            sourceCard?.type === "output" &&
+            sourceCard.outputKind === "image" &&
+            c.outputKind === "powerpoint"
+          ) {
+            const existingIds = Array.from(
+              new Set([
+                ...(c.linkedImageCardIds ?? []),
+                ...(c.linkedImageCardId ? [c.linkedImageCardId] : []),
+              ])
+            );
+
+            const nextLinkedImageCardIds = existingIds.includes(connectingFromCardId)
+              ? existingIds
+              : [...existingIds, connectingFromCardId];
+
+            return {
+              ...c,
+              linkedImageCardId: undefined,
+              linkedImageCardIds: nextLinkedImageCardIds,
+            };
+          }
+
           return {
             ...c,
             sourceCardId: connectingFromCardId,
@@ -1617,6 +1736,16 @@ function cutConnection(targetKey: string) {
         }
 
         if (c.type === "bridge") {
+          if (c.bridgeKind === "summary_bridge") {
+            return {
+              ...c,
+              upstreamCardId: connectingFromCardId,
+              summaryBridgeUnlocked: false,
+              body:
+                "Approved summary gate.\n\nUse the connected upstream output as the source for the next card.",
+            };
+          }
+
           return {
             ...c,
             upstreamCardId: connectingFromCardId,
@@ -1628,6 +1757,7 @@ function cutConnection(targetKey: string) {
     );
 
     setConnectionPulseCardId(target.id);
+
     window.setTimeout(() => {
       setConnectionPulseCardId((prev) => (prev === target.id ? null : prev));
     }, 220);
@@ -1691,10 +1821,17 @@ function cutConnection(targetKey: string) {
             };
           }
 
-          if (card.id === snap.outputId && card.type === "output") {
+          if (card.id === snap.targetId && card.type === "output") {
             return {
               ...card,
               sourceCardId: draggingCardId,
+            };
+          }
+
+          if (card.id === snap.targetId && card.type === "bridge") {
+            return {
+              ...card,
+              upstreamCardId: draggingCardId,
             };
           }
 
@@ -2102,7 +2239,8 @@ const isObsidianGroupUi = cardPreset === "obsidian";
     />
 
 <div
-  className="absolute left-5 top-4 right-5 pointer-events-none"
+  className="absolute left-5 top-4 right-5 pointer-events-auto"
+  onPointerDown={(e) => e.stopPropagation()}
 >
   <div className="flex items-start justify-between gap-3">
     <div className="min-w-0 flex-1">
@@ -2137,6 +2275,22 @@ const isObsidianGroupUi = cardPreset === "obsidian";
       >
         {group.count} cards
       </div>
+
+      <button
+        type="button"
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          startPersistentGroupDrag(e, group.id);
+        }}
+        className={
+          isObsidianGroupUi
+            ? "rounded-full border border-blue-300/30 bg-blue-400/[0.10] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-blue-100/85 hover:bg-blue-400/[0.16]"
+            : "rounded-full border border-sky-300 bg-sky-50/95 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-sky-700 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:bg-white"
+        }
+      >
+        Move
+      </button>
 
       <button
         type="button"
@@ -2208,29 +2362,24 @@ const isObsidianGroupUi = cardPreset === "obsidian";
   </div>
 ))}
 
-    {selectedGroupBounds && !isPersistentGroupUi ? (
+    {selectedGroupBounds ? (
       <div
-        className={[
-          "absolute z-[923]",
-          draggingPersistentGroupId
-            ? "cursor-grabbing"
-            : isPersistentGroupUi
-              ? "cursor-grab"
-              : "",
-        ].join(" ")}
-        style={{
-          left: selectedGroupBounds.x,
-          top: selectedGroupBounds.y,
-          width: selectedGroupBounds.w,
-          height: selectedGroupBounds.h,
-          pointerEvents: isPersistentGroupUi ? "auto" : "none",
-        }}
-        onPointerDown={
-          isPersistentGroupUi && activePersistentGroup
-            ? (e) => startPersistentGroupDrag(e, activePersistentGroup.id)
-            : undefined
-        }
-      >
+  className={[
+    "absolute z-[923]",
+    draggingPersistentGroupId
+      ? "cursor-grabbing"
+      : isPersistentGroupUi
+        ? "cursor-grab"
+        : "",
+  ].join(" ")}
+  style={{
+    left: selectedGroupBounds.x,
+    top: selectedGroupBounds.y,
+    width: selectedGroupBounds.w,
+    height: selectedGroupBounds.h,
+    pointerEvents: "none",
+  }}
+>
     <div
       className={
         isObsidianGroupUi
@@ -2417,6 +2566,12 @@ const isObsidianGroupUi = cardPreset === "obsidian";
             <ArtisticCardView
               key={card.id}
               card={card}
+              artisticCards={artisticCards}
+              linkedImageCard={
+                card.type === "output" && card.outputKind === "powerpoint" && card.linkedImageCardId
+                  ? artisticCards.find((candidate) => candidate.id === card.linkedImageCardId) ?? null
+                  : null
+              }
               isActive={isCardActive(card.id)}
               isPanning={isPanning}
               isDragging={draggingCardId === card.id}
