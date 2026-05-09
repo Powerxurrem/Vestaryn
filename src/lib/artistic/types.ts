@@ -6,15 +6,26 @@ export type ArtisticCardType =
   | "output"
   | "bridge";
 
-export type ArtisticOutputKind = "text" | "powerpoint" | "image";
+export type ArtisticOutputKind =
+  | "text"
+  | "powerpoint"
+  | "image"
+  | "book_page";
 export type ArtisticBridgeKind =
   | "file_context"
   | "summary_bridge"
+  | "image_processor";
+  export type ArtisticImageProcessorKind =
+  | "remove_background";
+  export type ArtisticProcessorAdjustments = {
+    saturation?: number;
+    brightness?: number;
+    contrast?: number;
+  };
 export type ArtisticOutputRole =
   | "summary"
   | "email"
   | "report";
-
 export type ArtisticPptImageZone = {
   imageCardId: string;
   x: number;
@@ -22,7 +33,19 @@ export type ArtisticPptImageZone = {
   w: number;
   h: number;
 };  
-
+export type ArtisticBookPageRatio =
+  | "square"
+  | "portrait"
+  | "landscape";
+export type ArtisticImageAspect =
+  | "square"
+  | "portrait"
+  | "landscape";
+export type ArtisticImageMode =
+  | "presentation_visual"
+  | "book_background"
+  | "book_character"
+  | "print_illustration";
 export type ArtisticCard = {
   id: string;
   type: ArtisticCardType;
@@ -34,19 +57,28 @@ export type ArtisticCard = {
   body: string;
   links?: string[];
   sourceCardId?: string;
-
+  
   outputKind?: ArtisticOutputKind;
   outputRole?: ArtisticOutputRole;
   bridgeKind?: ArtisticBridgeKind;
   upstreamCardId?: string;
   summaryBridgeUnlocked?: boolean;
-  promptGateUnlocked?: boolean;
+  promptGateUnlocked?: boolean; 
   contextFileName?: string;
   contextText?: string;
   groupId?: string;
   imageStatus?: "idle" | "generating" | "done" | "error";
   imageUrl?: string;
-  
+  imageMode?: ArtisticImageMode;
+  imageAspect?: ArtisticImageAspect;
+
+  imageProcessorKind?: ArtisticImageProcessorKind;
+  inputImageCardId?: string;
+  processedImageUrl?: string;
+  processorStatus?: "idle" | "processing" | "done" | "error";
+  processorError?: string;
+  processorAdjustments?: ArtisticProcessorAdjustments;
+  bookPageRatio?: ArtisticBookPageRatio;
   linkedImageCardId?: string;
   linkedImageCardIds?: string[];
 

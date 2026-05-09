@@ -7,38 +7,113 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+function resolveImageSize(imageAspect: string | undefined) {
+  switch (imageAspect) {
+    case "portrait":
+      return "1024x1536" as const;
+    case "landscape":
+      return "1536x1024" as const;
+    case "square":
+    default:
+      return "1024x1024" as const;
+  }
+}
 
+function buildSafePrompt(args: {
+  prompt: string;
+  imageMode?: string;
+}) {
+  const baseRules = `
+Rules:
+- no text
+- no letters
+- no logos
+- no watermarks
+`.trim();
+
+  if (args.imageMode === "book_background") {
+    return `
+children's book background illustration,
+warm storybook atmosphere,
+soft painterly detail,
+child-friendly,
+environment only,
+
+${baseRules}
+- no people
+- no faces
+- no characters
+- background only
+
+User request:
+${args.prompt.trim()}
+`.trim();
+  }
+
+  if (args.imageMode === "book_character") {
+    return `
+children's book character illustration,
+single reusable character,
+warm storybook design,
+simple clean background,
+child-friendly,
+
+${baseRules}
+
+User request:
+${args.prompt.trim()}
+`.trim();
+  }
+
+  if (args.imageMode === "print_illustration") {
+    return `
+children's book print illustration,
+polished storybook artwork,
+warm readable composition,
+child-friendly,
+print page style,
+
+${baseRules}
+
+User request:
+${args.prompt.trim()}
+`.trim();
+  }
+
+  return `
+professional presentation illustration,
+clean composition,
+high quality,
+modern visual style,
+
+${baseRules}
+- no people
+- no faces
+
+User request:
+${args.prompt.trim()}
+`.trim();
+}
 
 export async function POST(req: Request) {
   try {
-    const { prompt } = await req.json();
+    const { prompt, imageMode, imageAspect } = await req.json();
 
     if (!prompt?.trim()) {
       return Response.json({ error: "Missing prompt" }, { status: 400 });
     }
 
-    const safePrompt = `
-    professional presentation illustration,
-    clean composition,
-    high quality,
-    modern visual style,
+    const safePrompt = buildSafePrompt({
+      prompt,
+      imageMode,
+    });
 
-    Rules:
-    - no people
-    - no faces
-    - no text
-    - no letters
-    - no logos
-    - no watermarks
-
-    User request:
-    ${prompt.trim()}
-    `.trim();
+const size = resolveImageSize(imageAspect);
 
        const result = await openai.images.generate({
       model: "gpt-image-1-mini",
       prompt: safePrompt,
-      size: "1024x1024",
+      size,
     });
 
 

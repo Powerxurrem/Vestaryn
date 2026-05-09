@@ -76,10 +76,18 @@ type ArtisticCanvasSurfaceProps = {
   setArtisticCards: Dispatch<SetStateAction<ArtisticCard[]>>;
   clickMenu: ScreenPoint | null;
   setClickMenu: Dispatch<SetStateAction<ScreenPoint | null>>;
-  clickMenuSubmenu: null | "new-card" | "outputs" | "text-output";
-  setClickMenuSubmenu: React.Dispatch<
-    React.SetStateAction<null | "new-card" | "outputs" | "text-output">
-  >;
+  clickMenuSubmenu:
+  | null
+  | "new-card"
+  | "outputs"
+  | "text-output"
+  | "book-output";
+
+setClickMenuSubmenu: React.Dispatch<
+  React.SetStateAction<
+    null | "new-card" | "outputs" | "text-output" | "book-output"
+  >
+>;
   artisticMenu: ScreenPoint | null;
   setArtisticMenu: Dispatch<SetStateAction<ScreenPoint | null>>;
   artisticPrompt: string;
@@ -320,21 +328,132 @@ function commitPersistentGroupNote(groupId: string, note: string) {
   });
 }
 
-    function updateCard(
-    cardId: string,
-    patch: Partial<{
-      title: string;
-      body: string;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-      pptImageX: number;
-      pptImageY: number;
-      pptImageW: number;
-      pptImageH: number;
-    }>
-  ) {
+function removeSelectedCardsFromPersistentGroup(groupId: string) {
+  const selectedIds = normalizeGroupCardIds(
+    selectedCardIds.length > 0
+      ? selectedCardIds
+      : selectedCardId
+      ? [selectedCardId]
+      : []
+  );
+
+  if (selectedIds.length === 0) return;
+
+  const selectedSet = new Set(selectedIds);
+
+  setPersistentGroups((prev) => {
+    const next = prev
+      .map((group) => {
+        if (group.id !== groupId) return group;
+
+        const nextCardIds = normalizeGroupCardIds(
+          group.cardIds.filter((cardId) => !selectedSet.has(cardId))
+        );
+
+        return {
+          ...group,
+          cardIds: nextCardIds,
+        };
+      })
+      .filter((group) => group.cardIds.length >= 2);
+
+    try {
+      localStorage.setItem(
+        "vestaryn_artistic_persistent_groups",
+        JSON.stringify(next)
+      );
+    } catch {
+      // ignore
+    }
+
+    return next;
+  });
+
+  setArtisticCards((prev) =>
+    prev.map((card) =>
+      selectedSet.has(card.id) && card.groupId === groupId
+        ? {
+            ...card,
+            groupId: undefined,
+          }
+        : card
+    )
+  );
+
+  setSelectedCardIds([]);
+  setSelectedCardId(null);
+}
+
+function addSelectedCardsToPersistentGroup(groupId: string) {
+  const selectedIds = normalizeGroupCardIds(
+    selectedCardIds.length > 0
+      ? selectedCardIds
+      : selectedCardId
+      ? [selectedCardId]
+      : []
+  );
+
+  if (selectedIds.length === 0) return;
+
+  setPersistentGroups((prev) => {
+    const next = prev.map((group) => {
+      if (group.id !== groupId) return group;
+
+      const nextCardIds = normalizeGroupCardIds([
+        ...group.cardIds,
+        ...selectedIds,
+      ]);
+
+      return {
+        ...group,
+        cardIds: nextCardIds,
+      };
+    });
+
+    try {
+      localStorage.setItem(
+        "vestaryn_artistic_persistent_groups",
+        JSON.stringify(next)
+      );
+    } catch {
+      // ignore
+    }
+
+    return next;
+  });
+
+  setArtisticCards((prev) =>
+    prev.map((card) =>
+      selectedIds.includes(card.id)
+        ? {
+            ...card,
+            groupId,
+          }
+        : card
+    )
+  );
+}
+
+function updateCard(
+  cardId: string,
+  patch: Partial<{
+    title: string;
+    body: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    imageMode:
+      | "presentation_visual"
+      | "book_background"
+      | "book_character"
+      | "print_illustration";
+    pptImageX: number;
+    pptImageY: number;
+    pptImageW: number;
+    pptImageH: number;
+  }>
+) {
     setArtisticCards((prev) =>
       prev.map((card) =>
         card.id === cardId
@@ -395,6 +514,136 @@ function runPromptCard(promptCard: ArtisticCard) {
   });
 }
 
+type ArtisticConnectionSlot =
+  | "source"
+  | "upstream"
+  | "visual"
+  | "processor_input";
+
+function getConnectionSlot(args: {
+  source: ArtisticCard | null;
+  target: ArtisticCard | null;
+}): ArtisticConnectionSlot | null {
+  const { source, target } = args;
+
+  if (!source || !target) return null;
+  if (source.id === target.id) return null;
+
+  // Image → Image Processor
+  if (
+    source.type === "output" &&
+    source.outputKind === "image" &&
+    target.type === "bridge" &&
+    target.bridgeKind === "image_processor"
+  ) {
+    return "processor_input";
+  }
+
+  // Image → visual composition targets
+  if (
+    source.type === "output" &&
+    source.outputKind === "image" &&
+    target.type === "output" &&
+    (target.outputKind === "powerpoint" || target.outputKind === "book_page")
+  ) {
+    return "visual";
+  }
+
+  // Image Processor → visual composition targets
+  if (
+    source.type === "bridge" &&
+    source.bridgeKind === "image_processor" &&
+    target.type === "output" &&
+    (target.outputKind === "powerpoint" || target.outputKind === "book_page")
+  ) {
+    return "visual";
+  }
+
+  // Prompt / bridge / non-output content → output source
+  if (
+    target.type === "output" &&
+    source.type !== "output"
+  ) {
+    return "source";
+  }
+
+  // Generic card/bridge → bridge upstream
+  if (target.type === "bridge") {
+    return "upstream";
+  }
+
+  return null;
+}
+
+function applyConnectionToTarget(args: {
+  target: ArtisticCard;
+  sourceId: string;
+  slot: ArtisticConnectionSlot;
+}): ArtisticCard {
+  const { target, sourceId, slot } = args;
+
+  if (slot === "source") {
+    if (target.type !== "output") return target;
+
+    return {
+      ...target,
+      sourceCardId: sourceId,
+    };
+  }
+
+  if (slot === "upstream") {
+    if (target.type !== "bridge") return target;
+
+    return {
+      ...target,
+      upstreamCardId: sourceId,
+    };
+  }
+
+  if (slot === "processor_input") {
+    if (target.type !== "bridge" || target.bridgeKind !== "image_processor") {
+      return target;
+    }
+
+    return {
+      ...target,
+      inputImageCardId: sourceId,
+      upstreamCardId: sourceId,
+      processedImageUrl: undefined,
+      processorStatus: "idle",
+      processorError: undefined,
+    };
+  }
+
+  if (slot === "visual") {
+    if (
+      target.type !== "output" ||
+      (target.outputKind !== "powerpoint" && target.outputKind !== "book_page")
+    ) {
+      return target;
+    }
+
+    const existingIds = Array.from(
+      new Set([
+        ...(target.linkedImageCardIds ?? []),
+        ...(target.linkedImageCardId ? [target.linkedImageCardId] : []),
+      ])
+    );
+
+    const nextLinkedImageCardIds = existingIds.includes(sourceId)
+      ? existingIds
+      : [...existingIds, sourceId];
+
+    return {
+      ...target,
+      linkedImageCardId: undefined,
+      linkedImageCardIds: nextLinkedImageCardIds,
+    };
+  }
+
+  return target;
+}
+
 const connections = artisticCards
   .flatMap((card) => {
     const out: Array<{ key: string; from: ArtisticCard; to: ArtisticCard }> = [];
@@ -406,7 +655,10 @@ const connections = artisticCards
       }
     }
 
-    if (card.type === "output" && card.outputKind === "powerpoint") {
+    if (
+      card.type === "output" &&
+      (card.outputKind === "powerpoint" || card.outputKind === "book_page")
+    ) {
       const linkedImageIds = Array.from(
         new Set([
           ...(card.linkedImageCardIds ?? []),
@@ -427,12 +679,25 @@ const connections = artisticCards
       }
     }
 
-    if (card.type === "bridge" && card.upstreamCardId) {
-      const source = artisticCards.find((c) => c.id === card.upstreamCardId);
-      if (source) {
-        out.push({ key: `${source.id}-${card.id}`, from: source, to: card });
-      }
-    }
+    if (card.type === "bridge" && card.bridgeKind === "image_processor") {
+  const sourceId = card.inputImageCardId ?? card.upstreamCardId;
+  const source = sourceId
+    ? artisticCards.find((c) => c.id === sourceId)
+    : null;
+
+  if (source) {
+    out.push({
+      key: `${source.id}-${card.id}-processor-input`,
+      from: source,
+      to: card,
+    });
+  }
+} else if (card.type === "bridge" && card.upstreamCardId) {
+  const source = artisticCards.find((c) => c.id === card.upstreamCardId);
+  if (source) {
+    out.push({ key: `${source.id}-${card.id}`, from: source, to: card });
+  }
+}
 
     return out;
   });
@@ -970,17 +1235,29 @@ const isObsidianGroupUi = cardPreset === "obsidian";
 const isPersistentGroupUi = Boolean(activePersistentGroup);
 const hoveredConnectionTargetId =
   connectingFromCardId && connectionPreviewPoint
-    ? artisticCards.find((card) => {
-        if (card.type !== "output" && card.type !== "bridge") return false;
+    ? (() => {
+        const sourceCard =
+          artisticCards.find((card) => card.id === connectingFromCardId) ?? null;
 
-        const cx = card.x;
-        const cy = card.y + card.h / 2;
+        return (
+          artisticCards.find((card) => {
+            const slot = getConnectionSlot({
+              source: sourceCard,
+              target: card,
+            });
 
-        const dx = cx - connectionPreviewPoint.x;
-        const dy = cy - connectionPreviewPoint.y;
+            if (!slot) return false;
 
-        return Math.sqrt(dx * dx + dy * dy) < 40;
-      })?.id ?? null
+            const cx = card.x;
+            const cy = card.y + card.h / 2;
+
+            const dx = cx - connectionPreviewPoint.x;
+            const dy = cy - connectionPreviewPoint.y;
+
+            return Math.sqrt(dx * dx + dy * dy) < 40;
+          })?.id ?? null
+        );
+      })()
     : null;
 
   function createMenuCard(
@@ -995,10 +1272,24 @@ const hoveredConnectionTargetId =
     bridgeKind?: ArtisticBridgeKind;
     contextFileName?: string;
     contextText?: string;
-    outputKind?: "text" | "powerpoint" | "image";
+    outputKind?: "text" | "powerpoint" | "image" | "book_page";
     outputRole?: "summary" | "email" | "report";
-  }
-) {
+    imageMode?:
+      | "presentation_visual"
+      | "book_background"
+      | "book_character"
+      | "print_illustration";
+    imageAspect?: "square" | "portrait" | "landscape";
+    bookPageRatio?: "square" | "portrait" | "landscape";
+    imageProcessorKind?: "remove_background";
+    processorStatus?: "idle" | "processing" | "done" | "error";
+    processorAdjustments?: {
+    saturation?: number;
+    brightness?: number;
+    contrast?: number;
+  };
+      }
+  ) {
     const newCardId = makeCardId();
 
     setArtisticCards((prev) => [
@@ -1014,7 +1305,13 @@ const hoveredConnectionTargetId =
         body: opts?.body ?? "",
         outputKind: opts?.outputKind,
         outputRole: opts?.outputRole,
+        imageMode: opts?.imageMode,
+        imageAspect: opts?.imageAspect,
+        bookPageRatio: opts?.bookPageRatio,
         bridgeKind: opts?.bridgeKind,
+        imageProcessorKind: opts?.imageProcessorKind,
+        processorStatus: opts?.processorStatus,
+        processorAdjustments: opts?.processorAdjustments,
         summaryBridgeUnlocked:
           opts?.bridgeKind === "summary_bridge" ? false : undefined,
         contextFileName: opts?.contextFileName,
@@ -1088,27 +1385,88 @@ function handlePanMove(clientX: number, clientY: number) {
   document.body.style.cursor = "grabbing";
 }
 
+function getBookPageAspectRatio(card: ArtisticCard) {
+  if (card.outputKind !== "book_page") return null;
+
+  switch (card.bookPageRatio ?? "square") {
+    case "landscape":
+      return 3 / 2;
+    case "portrait":
+      return 2 / 3;
+    case "square":
+    default:
+      return 1;
+  }
+}
+
+function getImageAspectRatio(card: ArtisticCard) {
+  if (card.outputKind !== "image") return null;
+
+  switch (card.imageAspect ?? "square") {
+    case "landscape":
+      return 1536 / 1024;
+    case "portrait":
+      return 1024 / 1536;
+    case "square":
+    default:
+      return 1;
+  }
+}
+
 function handleResizeMove(clientX: number, clientY: number) {
   const start = resizeStartRef.current;
   if (!start || !resizingCardId) return;
 
   const worldPoint = viewportPointToWorld(clientX, clientY);
 
-  const nextW = Math.max(
+  const rawW = Math.max(
     MIN_CARD_W,
     start.startW + (worldPoint.x - start.startX)
   );
-  const nextH = Math.max(
+
+  const rawH = Math.max(
     MIN_CARD_H,
     start.startH + (worldPoint.y - start.startY)
   );
 
   setArtisticCards((prev) =>
-    prev.map((card) =>
-      card.id === resizingCardId
-        ? { ...card, w: nextW, h: nextH }
-        : card
-    )
+    prev.map((card) => {
+      if (card.id !== resizingCardId) return card;
+
+      const aspectRatio =
+        getImageAspectRatio(card) ?? getBookPageAspectRatio(card);
+
+      if (!aspectRatio) {
+        return {
+          ...card,
+          w: rawW,
+          h: rawH,
+        };
+      }
+
+      const deltaW = Math.abs(rawW - start.startW);
+      const deltaH = Math.abs(rawH - start.startH);
+
+      if (deltaW >= deltaH) {
+        const lockedW = rawW;
+        const lockedH = Math.max(MIN_CARD_H, lockedW / aspectRatio);
+
+        return {
+          ...card,
+          w: lockedW,
+          h: lockedH,
+        };
+      }
+
+      const lockedH = rawH;
+      const lockedW = Math.max(MIN_CARD_W, lockedH * aspectRatio);
+
+      return {
+        ...card,
+        w: lockedW,
+        h: lockedH,
+      };
+    })
   );
 }
 
@@ -1527,17 +1885,33 @@ function findBridgeSnapConnection(bridgeCardId: string) {
   const BASE_SNAP_DISTANCE = bridge.bridgeKind === "file_context" ? 58 : 42;
 
   for (const card of artisticCards) {
-    const targetSourceId =
+    const targetSourceIds =
       card.type === "output"
-        ? card.sourceCardId
+        ? [
+            ...(card.sourceCardId ? [card.sourceCardId] : []),
+            ...(card.outputKind === "powerpoint" || card.outputKind === "book_page"
+              ? [
+                  ...(card.linkedImageCardIds ?? []),
+                  ...(card.linkedImageCardId ? [card.linkedImageCardId] : []),
+                ]
+              : []),
+          ]
         : card.type === "bridge"
-        ? card.upstreamCardId
-        : null;
+        ? [
+            ...(card.upstreamCardId ? [card.upstreamCardId] : []),
+            ...(card.bridgeKind === "image_processor" && card.inputImageCardId
+              ? [card.inputImageCardId]
+              : []),
+          ]
+        : [];
 
-    if (!targetSourceId) continue;
+    const uniqueTargetSourceIds = Array.from(new Set(targetSourceIds));
 
-    const source = artisticCards.find((c) => c.id === targetSourceId);
-    if (!source) continue;
+    if (uniqueTargetSourceIds.length === 0) continue;
+
+for (const targetSourceId of uniqueTargetSourceIds) {
+  const source = artisticCards.find((c) => c.id === targetSourceId);
+  if (!source) continue;
 
     // Allow inserting a bridge into:
     // Prompt → Output
@@ -1591,6 +1965,7 @@ function findBridgeSnapConnection(bridgeCardId: string) {
       };
     }
   }
+}
 
   return null;
 }
@@ -1619,15 +1994,19 @@ function cutConnection(targetKey: string) {
       if (card.id !== match.to.id) return card;
 
       if (card.type === "output") {
-        if (card.outputKind === "powerpoint") {
-          const nextLinkedImageCardIds = (card.linkedImageCardIds ?? []).filter(
+        if (card.outputKind === "powerpoint" || card.outputKind === "book_page") {
+          const linkedIds = Array.from(
+            new Set([
+              ...(card.linkedImageCardIds ?? []),
+              ...(card.linkedImageCardId ? [card.linkedImageCardId] : []),
+            ])
+          );
+
+          const nextLinkedImageCardIds = linkedIds.filter(
             (id) => id !== match.from.id
           );
 
-          if (
-            card.linkedImageCardId === match.from.id ||
-            nextLinkedImageCardIds.length !== (card.linkedImageCardIds ?? []).length
-          ) {
+          if (nextLinkedImageCardIds.length !== linkedIds.length) {
             return {
               ...card,
               linkedImageCardId:
@@ -1640,14 +2019,32 @@ function cutConnection(targetKey: string) {
           }
         }
 
-        return {
-          ...card,
-          sourceCardId: undefined,
-        };
+        if (card.sourceCardId === match.from.id) {
+          return {
+            ...card,
+            sourceCardId: undefined,
+          };
+        }
+
+        return card;
       }
 
       if (card.type === "bridge") {
-        if (card.bridgeKind === "summary_bridge") {
+        if (
+          card.bridgeKind === "image_processor" &&
+          (card.inputImageCardId === match.from.id || card.upstreamCardId === match.from.id)
+        ) {
+          return {
+            ...card,
+            inputImageCardId: undefined,
+            upstreamCardId: undefined,
+            processedImageUrl: undefined,
+            processorStatus: "idle",
+            processorError: undefined,
+          };
+        }
+
+        if (card.bridgeKind === "summary_bridge" && card.upstreamCardId === match.from.id) {
           return {
             ...card,
             upstreamCardId: undefined,
@@ -1657,10 +2054,14 @@ function cutConnection(targetKey: string) {
           };
         }
 
-        return {
-          ...card,
-          upstreamCardId: undefined,
-        };
+        if (card.upstreamCardId === match.from.id) {
+          return {
+            ...card,
+            upstreamCardId: undefined,
+          };
+        }
+
+        return card;
       }
 
       return card;
@@ -1680,16 +2081,16 @@ function cutConnection(targetKey: string) {
     if (connectingFromCardId && connectionPreviewPoint) {
   const SNAP_DISTANCE = 40;
 
-  const sourceCard = artisticCards.find((card) => card.id === connectingFromCardId);
-  const isImageToSlideConnection =
-    sourceCard?.type === "output" && sourceCard.outputKind === "image";
+  const sourceCard =
+    artisticCards.find((card) => card.id === connectingFromCardId) ?? null;
 
   const target = artisticCards.find((card) => {
-    if (isImageToSlideConnection) {
-      if (card.type !== "output" || card.outputKind !== "powerpoint") return false;
-    } else {
-      if (card.type !== "output" && card.type !== "bridge") return false;
-    }
+    const slot = getConnectionSlot({
+      source: sourceCard,
+      target: card,
+    });
+
+    if (!slot) return false;
 
     const cx = card.x;
     const cy = card.y + card.h / 2;
@@ -1700,72 +2101,37 @@ function cutConnection(targetKey: string) {
     return Math.sqrt(dx * dx + dy * dy) < SNAP_DISTANCE;
   });
 
-  if (target) {
-    setArtisticCards((prev) =>
-      prev.map((c) => {
-        if (c.id !== target.id) return c;
+  if (target && sourceCard) {
+    const slot = getConnectionSlot({
+      source: sourceCard,
+      target,
+    });
 
-        if (c.type === "output") {
-          if (
-            sourceCard?.type === "output" &&
-            sourceCard.outputKind === "image" &&
-            c.outputKind === "powerpoint"
-          ) {
-            const existingIds = Array.from(
-              new Set([
-                ...(c.linkedImageCardIds ?? []),
-                ...(c.linkedImageCardId ? [c.linkedImageCardId] : []),
-              ])
-            );
+    if (slot) {
+      setArtisticCards((prev) =>
+        prev.map((card) =>
+          card.id === target.id
+            ? applyConnectionToTarget({
+                target: card,
+                sourceId: connectingFromCardId,
+                slot,
+              })
+            : card
+        )
+      );
 
-            const nextLinkedImageCardIds = existingIds.includes(connectingFromCardId)
-              ? existingIds
-              : [...existingIds, connectingFromCardId];
+      setConnectionPulseCardId(target.id);
 
-            return {
-              ...c,
-              linkedImageCardId: undefined,
-              linkedImageCardIds: nextLinkedImageCardIds,
-            };
-          }
-
-          return {
-            ...c,
-            sourceCardId: connectingFromCardId,
-          };
-        }
-
-        if (c.type === "bridge") {
-          if (c.bridgeKind === "summary_bridge") {
-            return {
-              ...c,
-              upstreamCardId: connectingFromCardId,
-              summaryBridgeUnlocked: false,
-              body:
-                "Approved summary gate.\n\nUse the connected upstream output as the source for the next card.",
-            };
-          }
-
-          return {
-            ...c,
-            upstreamCardId: connectingFromCardId,
-          };
-        }
-
-        return c;
-      })
-    );
-
-    setConnectionPulseCardId(target.id);
-
-    window.setTimeout(() => {
-      setConnectionPulseCardId((prev) => (prev === target.id ? null : prev));
-    }, 220);
+      window.setTimeout(() => {
+        setConnectionPulseCardId((prev) => (prev === target.id ? null : prev));
+      }, 220);
+    }
   }
 
   setConnectingFromCardId(null);
   setConnectionPreviewPoint(null);
 }
+
     if (isPanning) {
       panStartRef.current = null;
       document.body.style.cursor = isPanning ? "grab" : "";
@@ -1814,13 +2180,76 @@ function cutConnection(targetKey: string) {
     if (snap) {
       setArtisticCards((prev) =>
         prev.map((card) => {
+          // The dragged bridge receives the original upstream source.
+          // For Image Processor bridges, keep both upstreamCardId and inputImageCardId in sync.
           if (card.id === draggingCardId && card.type === "bridge") {
+            if (card.bridgeKind === "image_processor") {
+              return {
+                ...card,
+                upstreamCardId: snap.upstreamId,
+                inputImageCardId: snap.upstreamId,
+                processedImageUrl: undefined,
+                processorStatus: "idle",
+                processorError: undefined,
+              };
+            }
+
             return {
               ...card,
               upstreamCardId: snap.upstreamId,
             };
           }
 
+          // If dropping into a visual attachment link:
+          // Image → Book Page / PowerPoint
+          // becomes:
+          // Image → Processor → Book Page / PowerPoint
+          if (
+            card.id === snap.targetId &&
+            card.type === "output" &&
+            (card.outputKind === "powerpoint" || card.outputKind === "book_page")
+          ) {
+            const linkedIds = Array.from(
+              new Set([
+                ...(card.linkedImageCardIds ?? []),
+                ...(card.linkedImageCardId ? [card.linkedImageCardId] : []),
+              ])
+            );
+
+            const nextLinkedImageCardIds = linkedIds.map((id) =>
+              id === snap.upstreamId ? draggingCardId : id
+            );
+
+            return {
+              ...card,
+              linkedImageCardId: undefined,
+              linkedImageCardIds:
+                nextLinkedImageCardIds.length > 0
+                  ? nextLinkedImageCardIds
+                  : undefined,
+            };
+          }
+
+          // If dropping into Image → Image Processor,
+          // update the processor input to the dragged bridge.
+          if (
+            card.id === snap.targetId &&
+            card.type === "bridge" &&
+            card.bridgeKind === "image_processor" &&
+            (card.inputImageCardId === snap.upstreamId ||
+              card.upstreamCardId === snap.upstreamId)
+          ) {
+            return {
+              ...card,
+              inputImageCardId: draggingCardId,
+              upstreamCardId: draggingCardId,
+              processedImageUrl: undefined,
+              processorStatus: "idle",
+              processorError: undefined,
+            };
+          }
+
+          // Generic output bridge drop-in fallback.
           if (card.id === snap.targetId && card.type === "output") {
             return {
               ...card,
@@ -1828,6 +2257,7 @@ function cutConnection(targetKey: string) {
             };
           }
 
+          // Generic bridge drop-in fallback.
           if (card.id === snap.targetId && card.type === "bridge") {
             return {
               ...card,
@@ -2201,22 +2631,16 @@ const isObsidianGroupUi = cardPreset === "obsidian";
 ) : null}
 
 {persistentGroupRenderItems.map((group) => (
-<div
-  key={group.id}
-  className={[
-    "absolute z-[760]",
-    draggingPersistentGroupId === group.id
-      ? "cursor-grabbing"
-      : "cursor-grab",
-  ].join(" ")}
-  style={{
-    left: group.x,
-    top: group.y,
-    width: group.w,
-    height: group.h,
-  }}
-  onPointerDown={(e) => startPersistentGroupDrag(e, group.id)}
->
+  <div
+    key={group.id}
+    className="pointer-events-none absolute z-[760]"
+    style={{
+      left: group.x,
+      top: group.y,
+      width: group.w,
+      height: group.h,
+    }}
+  >
     <div
       className={
         isObsidianGroupUi
@@ -2275,22 +2699,47 @@ const isObsidianGroupUi = cardPreset === "obsidian";
       >
         {group.count} cards
       </div>
+        <button
+          type="button"
+          onPointerDown={(e) => startPersistentGroupDrag(e, group.id)}
+          className={
+            isObsidianGroupUi
+              ? "rounded-lg border border-blue-300/20 bg-blue-500/10 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-blue-100/75 hover:bg-blue-500/15"
+              : "rounded-lg border border-sky-300/70 bg-white/60 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-sky-900/70 hover:bg-white/80"
+          }
+        >
+          Move
+        </button>
 
-      <button
-        type="button"
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          startPersistentGroupDrag(e, group.id);
-        }}
-        className={
-          isObsidianGroupUi
-            ? "rounded-full border border-blue-300/30 bg-blue-400/[0.10] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-blue-100/85 hover:bg-blue-400/[0.16]"
-            : "rounded-full border border-sky-300 bg-sky-50/95 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-sky-700 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:bg-white"
-        }
-      >
-        Move
-      </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            addSelectedCardsToPersistentGroup(group.id);
+          }}
+          className={
+            isObsidianGroupUi
+              ? "rounded-lg border border-emerald-300/20 bg-emerald-500/10 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-emerald-100/75 hover:bg-emerald-500/15"
+              : "rounded-lg border border-emerald-300/70 bg-white/60 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-emerald-900/70 hover:bg-white/80"
+          }
+        >
+          + Add selected
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            removeSelectedCardsFromPersistentGroup(group.id);
+          }}
+          className={
+            isObsidianGroupUi
+              ? "rounded-lg border border-rose-300/20 bg-rose-500/10 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-rose-100/75 hover:bg-rose-500/15"
+              : "rounded-lg border border-rose-300/70 bg-white/60 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-rose-900/70 hover:bg-white/80"
+          }
+        >
+          − Remove selected
+        </button>
 
       <button
         type="button"
@@ -2568,7 +3017,7 @@ const isObsidianGroupUi = cardPreset === "obsidian";
               card={card}
               artisticCards={artisticCards}
               linkedImageCard={
-                card.type === "output" && card.outputKind === "powerpoint" && card.linkedImageCardId
+                card.type === "output" && (card.outputKind === "powerpoint" || card.outputKind === "book_page") && card.linkedImageCardId
                   ? artisticCards.find((candidate) => candidate.id === card.linkedImageCardId) ?? null
                   : null
               }

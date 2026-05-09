@@ -428,8 +428,8 @@ useEffect(() => {
   const [connectingFromCardId, setConnectingFromCardId] =   useState<string | null>(null);
   const [connectionPreviewPoint, setConnectionPreviewPoint] =   useState<ScreenPoint | null>(null);
   const [clickMenuSubmenu, setClickMenuSubmenu] = useState<
-    null | "new-card" | "outputs" | "text-output"
-  >(null);
+  null | "new-card" | "outputs" | "text-output" | "book-output"
+>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
   const [canvasPreset, setCanvasPreset] = useState<"soft" | "grid" | "obsidian">("soft");
@@ -849,35 +849,111 @@ function mapToVisualConcept(raw: string) {
   return raw;
 }
 
-function buildVisualPrompt(raw: string) {
+function buildVisualPrompt(
+  raw: string,
+  imageMode: ArtisticCard["imageMode"] = "presentation_visual"
+) {
   const cleaned = String(raw ?? "").replace(/\s+/g, " ").trim();
 
-  return `
-A modern, minimal, professional presentation-style illustration.
-
-Style:
-- clean corporate design
-- soft gradients
-- blue and teal color palette
-- subtle depth and shadows
-- high quality, minimal composition
-
+  const sharedRules = `
 Rules:
 - no text
 - no letters or numbers
 - no logos
-- no people
-- no faces
-- no realistic scenes
 - no brands
+- no watermarks
+`.trim();
 
-Visual metaphor:
+  if (imageMode === "book_background") {
+    return `
+A children's book background illustration.
+
+Style:
+- warm storybook atmosphere
+- soft painterly detail
+- gentle lighting
+- child-friendly color palette
+- clean composition with open space for characters and text
+
+Scene:
 ${cleaned}
 
+${sharedRules}
+- no characters
+- no people
+- no faces
+- environment only
+
 Output:
-abstract, symbolic, presentation-ready visual
+background-only illustration, page-friendly composition
 `.trim();
-}
+  }
+
+  if (imageMode === "book_character") {
+    return `
+A children's book character illustration.
+
+Style:
+- warm storybook character design
+- charming, expressive, child-friendly
+- clean silhouette
+- consistent visual identity
+- simple uncluttered background
+
+Character:
+${cleaned}
+
+${sharedRules}
+
+Output:
+single character-focused illustration, suitable for reuse across story pages
+`.trim();
+  }
+
+  if (imageMode === "print_illustration") {
+    return `
+      A children's book print illustration.
+
+      Style:
+      - polished storybook artwork
+      - warm and readable composition
+      - soft painterly detail
+      - child-friendly mood
+      - clear focal point
+      - suitable for a printed picture book page
+
+      Scene:
+      ${cleaned}
+
+      ${sharedRules}
+
+      Output:
+      print-ready storybook-style illustration
+      `.trim();
+        }
+
+        return `
+      A modern, minimal, professional presentation-style illustration.
+
+      Style:
+      - clean corporate design
+      - soft gradients
+      - blue and teal color palette
+      - subtle depth and shadows
+      - high quality, minimal composition
+
+      ${sharedRules}
+      - no people
+      - no faces
+      - no realistic scenes
+
+      Visual metaphor:
+      ${cleaned}
+
+      Output:
+      abstract, symbolic, presentation-ready visual
+      `.trim();
+      }
 
 function isCardActive(cardId: string) {
   return (
@@ -1323,7 +1399,10 @@ const linkedImageCards = linkedImageIds
 
       if (item.output.outputKind === "image") {
         const concept = mapToVisualConcept(sourceBody);
-        const imagePrompt = buildVisualPrompt(concept);
+        const imagePrompt = buildVisualPrompt(
+          concept,
+          item.output.imageMode ?? "presentation_visual"
+        );
 
         const imageRes = await fetch(`/api/artistic/image`, {
           method: "POST",
@@ -1332,6 +1411,8 @@ const linkedImageCards = linkedImageIds
           },
           body: JSON.stringify({
             prompt: imagePrompt,
+            imageMode: item.output.imageMode ?? "presentation_visual",
+            imageAspect: item.output.imageAspect ?? "square",
           }),
         });
 

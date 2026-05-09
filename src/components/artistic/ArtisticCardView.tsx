@@ -49,21 +49,26 @@ selectedCardIds: string[];
     card: ArtisticCard
   ) => void;
     updateCard: (
-      cardId: string,
-      patch: Partial<{
-        title: string;
-        body: string;
-        x: number;
-        y: number;
-        w: number;
-        h: number;
-        pptImageX: number;
-        pptImageY: number;
-        pptImageW: number;
-        pptImageH: number;
-        pptImageZones: ArtisticPptImageZone[];
-      }>
-    ) => void;
+  cardId: string,
+  patch: Partial<{
+    title: string;
+    body: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    imageMode:
+      | "presentation_visual"
+      | "book_background"
+      | "book_character"
+      | "print_illustration";
+    pptImageX: number;
+    pptImageY: number;
+    pptImageW: number;
+    pptImageH: number;
+    pptImageZones: ArtisticPptImageZone[];
+  }>
+) => void;
   commitCardTitle: (cardId: string, title: string) => void;
   commitCardBody: (cardId: string, body: string) => void;
   cardDragOffsetRef: RefObject<{ x: number; y: number }>;
@@ -460,7 +465,52 @@ const filePreviewText = useMemo(() => {
   return card.contextText.split(/\r?\n/).slice(0, 10).join("\n");
 }, [card.contextText]);
 
-const linkedImageCards = useMemo(() => {
+function resolveVisualSource(cardOrProcessor: ArtisticCard) {
+  if (
+    cardOrProcessor.type === "bridge" &&
+    cardOrProcessor.bridgeKind === "image_processor"
+  ) {
+    const inputImage = cardOrProcessor.inputImageCardId
+      ? artisticCards.find(
+          (candidate) => candidate.id === cardOrProcessor.inputImageCardId
+        )
+      : null;
+
+    const adjustments = cardOrProcessor.processorAdjustments ?? {
+      saturation: 100,
+      brightness: 100,
+      contrast: 100,
+    };
+
+    return {
+      id: cardOrProcessor.id,
+      title: cardOrProcessor.title || "Processed image",
+      imageMode: inputImage?.imageMode ?? "book_character",
+      imageUrl: cardOrProcessor.processedImageUrl || inputImage?.imageUrl,
+      sourceCard: inputImage ?? cardOrProcessor,
+      isProcessed: Boolean(cardOrProcessor.processedImageUrl),
+      processorKind: cardOrProcessor.imageProcessorKind,
+      processorFilter: [
+        `saturate(${adjustments.saturation ?? 100}%)`,
+        `brightness(${adjustments.brightness ?? 100}%)`,
+        `contrast(${adjustments.contrast ?? 100}%)`,
+      ].join(" "),
+    };
+  }
+
+  return {
+    id: cardOrProcessor.id,
+    title: cardOrProcessor.title || "Image",
+    imageMode: cardOrProcessor.imageMode,
+    imageUrl: cardOrProcessor.imageUrl,
+    sourceCard: cardOrProcessor,
+    isProcessed: false,
+    processorKind: undefined,
+    processorFilter: undefined,
+  };
+}
+
+const linkedVisualCards = useMemo(() => {
   const ids = Array.from(
     new Set([
       ...(card.linkedImageCardIds ?? []),
@@ -472,9 +522,102 @@ const linkedImageCards = useMemo(() => {
     .map((id) => artisticCards.find((candidate) => candidate.id === id) ?? null)
     .filter((candidate): candidate is ArtisticCard => {
       if (!candidate) return false;
-      return candidate.type === "output" && candidate.outputKind === "image";
-    });
+
+      const isImage =
+        candidate.type === "output" && candidate.outputKind === "image";
+
+      const isImageProcessor =
+        candidate.type === "bridge" && candidate.bridgeKind === "image_processor";
+
+      return isImage || isImageProcessor;
+    })
+    .map(resolveVisualSource);
 }, [artisticCards, card.linkedImageCardId, card.linkedImageCardIds]);
+
+function getProcessorAdjustmentValue(
+  key: "saturation" | "brightness" | "contrast",
+  fallback = 100
+) {
+  return card.processorAdjustments?.[key] ?? fallback;
+}
+
+function updateProcessorAdjustment(
+  key: "saturation" | "brightness" | "contrast",
+  value: number
+) {
+  setArtisticCards((prev) =>
+    prev.map((candidate) =>
+      candidate.id === card.id
+        ? {
+            ...candidate,
+            processorAdjustments: {
+              saturation: candidate.processorAdjustments?.saturation ?? 100,
+              brightness: candidate.processorAdjustments?.brightness ?? 100,
+              contrast: candidate.processorAdjustments?.contrast ?? 100,
+              [key]: value,
+            },
+            processorStatus:
+              candidate.processedImageUrl || candidate.processorStatus === "done"
+                ? "idle"
+                : candidate.processorStatus,
+          }
+        : candidate
+    )
+  );
+}
+
+const processorFilter = [
+  `saturate(${getProcessorAdjustmentValue("saturation")}%)`,
+  `brightness(${getProcessorAdjustmentValue("brightness")}%)`,
+  `contrast(${getProcessorAdjustmentValue("contrast")}%)`,
+].join(" ");
+
+function ProcessorSliderRow({
+  label,
+  value,
+  min,
+  max,
+  step = 5,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-black/10 bg-white/45 px-3 py-2">
+      <div className="w-[92px] shrink-0">
+        <div className="text-xs font-medium text-black/65">{label}</div>
+        <div className="mt-0.5 text-[10px] text-black/35">{value}%</div>
+      </div>
+
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="min-w-0 flex-1 accent-purple-500"
+      />
+
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange(100);
+        }}
+        className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-black/35 hover:bg-black/[0.06]"
+      >
+        Reset
+      </button>
+    </div>
+  );
+}
 
   return (
     <div
@@ -518,6 +661,8 @@ const linkedImageCards = useMemo(() => {
             ? "TEXT"
             : card.outputKind === "powerpoint"
             ? "PPT"
+            : card.outputKind === "book_page"
+            ? "BOOK"
             : "IMAGE"}
         </span>
 
@@ -634,6 +779,116 @@ const linkedImageCards = useMemo(() => {
               </div>
             );
           })()
+
+          ) : card.type === "output" && card.outputKind === "book_page" ? (
+  <div
+    onPointerDown={(e) => e.stopPropagation()}
+    className="flex h-full flex-col rounded-xl border border-black/10 bg-white p-3"
+  >
+    <div className="mb-3 flex items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-black/45">
+          Book Page
+        </div>
+
+        <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-black/45">
+          {(card.bookPageRatio ?? "square").toUpperCase()}
+        </div>
+      </div>
+
+      <div className="text-[11px] text-black/40">
+        Composition
+      </div>
+    </div>
+
+    <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-black/10 bg-[#fffaf0]">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(251,191,36,0.16),transparent_32%),linear-gradient(135deg,rgba(255,255,255,0.92),rgba(254,243,199,0.35))]" />
+
+      <div className="absolute left-[8%] top-[8%] right-[8%] rounded-2xl border border-amber-200/80 bg-white/55 px-5 py-4 shadow-sm backdrop-blur-sm">
+        <div className="text-[10px] uppercase tracking-[0.18em] text-amber-700/55">
+          Story text area
+        </div>
+
+        <div className="mt-2 text-[18px] font-medium leading-snug text-black/70">
+          Connect story text and book images here.
+        </div>
+      </div>
+
+      <div className="absolute bottom-[8%] left-[8%] right-[8%] h-[46%] overflow-hidden rounded-3xl border border-dashed border-amber-300/80 bg-white/35">
+        {linkedVisualCards.length > 0 ? (
+          <div className="relative h-full w-full">
+            {linkedVisualCards.slice(0, 3).map((imageCard, index) => {
+              const isBackground = imageCard.imageMode === "book_background";
+              const isCharacter = imageCard.imageMode === "book_character";
+
+              const placement =
+                isBackground
+                  ? {
+                      left: "0%",
+                      top: "0%",
+                      width: "100%",
+                      height: "100%",
+                      zIndex: 1,
+                    }
+                  : isCharacter
+                  ? {
+                      left: index === 0 ? "28%" : "48%",
+                      top: "8%",
+                      width: "38%",
+                      height: "84%",
+                      zIndex: 3,
+                    }
+                  : {
+                      left: `${8 + index * 18}%`,
+                      top: `${10 + index * 8}%`,
+                      width: "58%",
+                      height: "72%",
+                      zIndex: 2 + index,
+                    };
+
+              return (
+                <div
+                  key={imageCard.id}
+                  className="absolute overflow-hidden rounded-2xl border border-white/45 bg-white/70 shadow-[0_18px_50px_rgba(0,0,0,0.14)]"
+                  style={placement}
+                >
+                  {imageCard.imageUrl ? (
+                    <img
+                      src={imageCard.imageUrl}
+                      alt={imageCard.title || `Book visual ${index + 1}`}
+                      className="h-full w-full object-cover"
+                      style={
+                        imageCard.processorFilter
+                          ? { filter: imageCard.processorFilter }
+                          : undefined
+                      }
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center px-4 text-center text-[11px] leading-5 text-amber-800/45">
+                      Linked book image has no preview yet.
+                    </div>
+                  )}
+
+                  <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-white/40 bg-white/70 px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-black/45 backdrop-blur">
+                    {imageCard.imageMode === "book_background"
+                      ? "Background"
+                      : imageCard.imageMode === "book_character"
+                      ? "Character"
+                      : `Image ${index + 1}`}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center px-6 text-center text-sm leading-6 text-amber-800/45">
+            Connect Book Background, Book Character, or Book Illustration cards here.
+          </div>
+        )}
+      </div>
+    </div>
+  </div>
         ) : card.type === "output" && card.outputKind === "text" ? (
           (() => {
             const parsed = parseTextOutputBody(card.body);
@@ -674,8 +929,22 @@ const linkedImageCards = useMemo(() => {
             className="flex h-full flex-col rounded-xl border border-black/10 bg-white p-3"
           >
             <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-black/45">
-                Image
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-black/45">
+                  Image
+                </div>
+
+                <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-black/45">
+                  {(card.imageMode ?? "presentation_visual")
+                    .replace("presentation_visual", "Image Creation")
+                    .replace("book_background", "Book Background")
+                    .replace("book_character", "Book Character")
+                    .replace("print_illustration", "Book Illustration")}
+                </div>
+
+                <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-black/35">
+                  {(card.imageAspect ?? "square").toUpperCase()}
+                </div>
               </div>
 
               <div className="flex items-center gap-2">
@@ -1070,7 +1339,232 @@ const linkedImageCards = useMemo(() => {
     </button>
   </div>
 ) : null}
+{card.type === "bridge" && card.bridgeKind === "image_processor" ? (
+  <div
+    onPointerDown={(e) => e.stopPropagation()}
+    className="flex h-full flex-col gap-3 rounded-xl border border-black/10 bg-white/70 p-3 backdrop-blur-sm"
+  >
+    <div className="flex items-center justify-between gap-2">
+      <div className="rounded-full border border-purple-200 bg-purple-50 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-purple-700/70">
+        Image Processor
+      </div>
 
+      <div className="text-[11px] text-black/40">
+        {card.processorStatus === "processing"
+          ? "Processing..."
+          : card.processorStatus === "error"
+          ? "Error"
+          : card.processorStatus === "done"
+          ? "Ready"
+          : "Idle"}
+      </div>
+    </div>
+
+    <div className="space-y-2 rounded-xl border border-black/10 bg-white/55 p-2">
+  <button
+    type="button"
+    onClick={(e) => {
+      e.stopPropagation();
+
+      setArtisticCards((prev) =>
+        prev.map((candidate) =>
+          candidate.id === card.id
+            ? {
+                ...candidate,
+                imageProcessorKind: "remove_background",
+                processorStatus: candidate.processorStatus ?? "idle",
+                processorError: undefined,
+              }
+            : candidate
+        )
+      );
+    }}
+    className={[
+      "flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left transition",
+      card.imageProcessorKind === "remove_background"
+        ? "border-purple-300 bg-purple-50 text-purple-800"
+        : "border-black/10 bg-white/70 text-black/60 hover:bg-white",
+    ].join(" ")}
+  >
+    <span className="text-xs font-medium">Remove background</span>
+    <span className="text-[10px] uppercase tracking-[0.14em] opacity-60">
+      {card.imageProcessorKind === "remove_background" ? "Active" : "Select"}
+    </span>
+  </button>
+
+  <div className="flex items-center justify-between rounded-lg border border-black/10 bg-white/45 px-3 py-2">
+    <div>
+      <div className="text-xs font-medium text-black/65">Input image</div>
+      <div className="mt-0.5 text-[10px] text-black/35">
+        {card.inputImageCardId ? "Connected" : "Awaiting image card"}
+      </div>
+    </div>
+
+    <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-black/35">
+      Source
+    </div>
+  </div>
+
+  <div className="flex items-center justify-between rounded-lg border border-black/10 bg-white/45 px-3 py-2">
+    <div>
+      <div className="text-xs font-medium text-black/65">Output</div>
+      <div className="mt-0.5 text-[10px] text-black/35">
+        {card.processedImageUrl
+          ? "Processed image ready"
+          : "Uses original until processed"}
+      </div>
+    </div>
+
+    <div className="rounded-full border border-black/10 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-black/35">
+      PNG
+    </div>
+  </div>
+
+  <div className="my-2 h-px bg-black/10" />
+
+  <ProcessorSliderRow
+    label="Saturation"
+    value={getProcessorAdjustmentValue("saturation")}
+    min={0}
+    max={200}
+    onChange={(value) => updateProcessorAdjustment("saturation", value)}
+  />
+
+  <ProcessorSliderRow
+    label="Brightness"
+    value={getProcessorAdjustmentValue("brightness")}
+    min={50}
+    max={150}
+    onChange={(value) => updateProcessorAdjustment("brightness", value)}
+  />
+
+  <ProcessorSliderRow
+    label="Contrast"
+    value={getProcessorAdjustmentValue("contrast")}
+    min={50}
+    max={150}
+    onChange={(value) => updateProcessorAdjustment("contrast", value)}
+  />
+</div>
+
+    <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
+      {(() => {
+        const inputImage = card.inputImageCardId
+          ? artisticCards.find((candidate) => candidate.id === card.inputImageCardId)
+          : null;
+
+        const originalUrl = inputImage?.imageUrl;
+        const processedUrl = card.processedImageUrl;
+
+        if (!originalUrl) {
+          return (
+            <div className="col-span-2 flex h-full items-center justify-center rounded-xl border border-black/10 bg-white px-5 text-center text-sm leading-6 text-black/40">
+              Connect an Image card to this processor.
+            </div>
+          );
+        }
+
+        return (
+          <>
+            <div className="relative min-h-0 overflow-hidden rounded-xl border border-black/10 bg-white">
+              <img
+                src={originalUrl}
+                alt="Original image"
+                className="h-full w-full object-contain"
+                draggable={false}
+              />
+
+              <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-white/50 bg-white/75 px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-black/45 backdrop-blur">
+                Original
+              </div>
+            </div>
+
+            <div className="relative min-h-0 overflow-hidden rounded-xl border border-purple-200 bg-white">
+              {processedUrl ? (
+                <img
+                  src={processedUrl}
+                  alt="Processed image"
+                  className="h-full w-full object-contain"
+                  style={{ filter: processorFilter }}
+                  draggable={false}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center px-4 text-center text-[11px] leading-5 text-purple-700/45">
+                  Processed preview will appear here.
+                </div>
+              )}
+
+              <div className="pointer-events-none absolute left-2 top-2 rounded-md border border-purple-200 bg-purple-50/90 px-2 py-0.5 text-[9px] uppercase tracking-[0.14em] text-purple-700/60 backdrop-blur">
+                Processed
+              </div>
+
+              {!processedUrl ? (
+                <div className="absolute bottom-2 left-2 right-2 rounded-lg border border-amber-200 bg-amber-50/90 px-2 py-1 text-[10px] leading-4 text-amber-800/70">
+                  Not processed yet.
+                </div>
+              ) : null}
+            </div>
+          </>
+        );
+      })()}
+    </div>
+
+    <button
+  type="button"
+  onClick={(e) => {
+    e.stopPropagation();
+
+    const inputImage = card.inputImageCardId
+      ? artisticCards.find((candidate) => candidate.id === card.inputImageCardId)
+      : null;
+
+    if (!inputImage?.imageUrl) {
+      setArtisticCards((prev) =>
+        prev.map((candidate) =>
+          candidate.id === card.id
+            ? {
+                ...candidate,
+                processorStatus: "error",
+                processorError: "No input image connected.",
+              }
+            : candidate
+        )
+      );
+
+      return;
+    }
+
+    setArtisticCards((prev) =>
+      prev.map((candidate) =>
+        candidate.id === card.id
+          ? {
+              ...candidate,
+              processorStatus: "done",
+              processedImageUrl: inputImage.imageUrl,
+              processorError: undefined,
+              processorAdjustments: {
+                saturation: candidate.processorAdjustments?.saturation ?? 100,
+                brightness: candidate.processorAdjustments?.brightness ?? 100,
+                contrast: candidate.processorAdjustments?.contrast ?? 100,
+              },
+            }
+          : candidate
+      )
+    );
+  }}
+  className="rounded-xl border border-purple-200 bg-purple-50 px-3 py-2 text-xs font-medium uppercase tracking-[0.14em] text-purple-700 transition hover:bg-purple-100"
+>
+  Apply Processor
+</button>
+
+{card.processorError ? (
+  <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] leading-5 text-rose-700">
+    {card.processorError}
+  </div>
+) : null}
+
+  </div>
+) : null}
             {card.type === "prompt" ? (
               <div
                 onPointerDown={(e) => e.stopPropagation()}
