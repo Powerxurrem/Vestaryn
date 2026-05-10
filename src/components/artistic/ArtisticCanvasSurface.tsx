@@ -22,9 +22,12 @@ import {
   viewportPointToWorldAtZoom,
 } from "@/lib/artistic/canvasUtils";
 import type {
+  ArtisticBookImageZone,
+  ArtisticBookTextZone,
+  ArtisticBridgeKind,
   ArtisticCard,
   ArtisticCardType,
-  ArtisticBridgeKind,
+  ArtisticPptImageZone,
   PanOffset,
   ScreenPoint,
 } from "@/lib/artistic/types";
@@ -452,6 +455,10 @@ function updateCard(
     pptImageY: number;
     pptImageW: number;
     pptImageH: number;
+    pptImageZones: ArtisticPptImageZone[];
+    bookImageZones: ArtisticBookImageZone[];
+    bookTextZone: ArtisticBookTextZone;
+    promptIntent: ArtisticCard["promptIntent"];
   }>
 ) {
     setArtisticCards((prev) =>
@@ -518,7 +525,8 @@ type ArtisticConnectionSlot =
   | "source"
   | "upstream"
   | "visual"
-  | "processor_input";
+  | "processor_input"
+  | "text_style_input";
 
 function getConnectionSlot(args: {
   source: ArtisticCard | null;
@@ -538,6 +546,16 @@ function getConnectionSlot(args: {
   ) {
     return "processor_input";
   }
+
+// Text Output → Text Style Processor
+if (
+  source.type === "output" &&
+  source.outputKind === "text" &&
+  target.type === "bridge" &&
+  target.bridgeKind === "text_style_processor"
+) {
+  return "text_style_input";
+}
 
   // Image → visual composition targets
   if (
@@ -559,13 +577,33 @@ function getConnectionSlot(args: {
     return "visual";
   }
 
-  // Prompt / bridge / non-output content → output source
-  if (
-    target.type === "output" &&
-    source.type !== "output"
-  ) {
-    return "source";
-  }
+// Text Style Processor → Book Page story source
+if (
+  source.type === "bridge" &&
+  source.bridgeKind === "text_style_processor" &&
+  target.type === "output" &&
+  target.outputKind === "book_page"
+) {
+  return "source";
+}
+
+// Text Output → Book Page story source
+if (
+  source.type === "output" &&
+  source.outputKind === "text" &&
+  target.type === "output" &&
+  target.outputKind === "book_page"
+) {
+  return "source";
+}
+
+// Prompt / bridge / non-output content → output source
+if (
+  target.type === "output" &&
+  source.type !== "output"
+) {
+  return "source";
+}
 
   // Generic card/bridge → bridge upstream
   if (target.type === "bridge") {
@@ -641,6 +679,20 @@ function applyConnectionToTarget(args: {
     };
   }
 
+  if (slot === "text_style_input") {
+    if (target.type !== "bridge" || target.bridgeKind !== "text_style_processor") {
+      return target;
+    }
+
+    return {
+      ...target,
+      inputTextCardId: sourceId,
+      upstreamCardId: sourceId,
+      textStyleProcessorStatus: "idle",
+      textStyleProcessorError: undefined,
+    };
+  }
+
   return target;
 }
 
@@ -688,6 +740,19 @@ const connections = artisticCards
   if (source) {
     out.push({
       key: `${source.id}-${card.id}-processor-input`,
+      from: source,
+      to: card,
+    });
+  }
+} else if (card.type === "bridge" && card.bridgeKind === "text_style_processor") {
+  const sourceId = card.inputTextCardId ?? card.upstreamCardId;
+  const source = sourceId
+    ? artisticCards.find((c) => c.id === sourceId)
+    : null;
+
+  if (source) {
+    out.push({
+      key: `${source.id}-${card.id}-text-style-input`,
       from: source,
       to: card,
     });
@@ -1284,10 +1349,12 @@ const hoveredConnectionTargetId =
     imageProcessorKind?: "remove_background";
     processorStatus?: "idle" | "processing" | "done" | "error";
     processorAdjustments?: {
-    saturation?: number;
-    brightness?: number;
-    contrast?: number;
-  };
+      saturation?: number;
+      brightness?: number;
+      contrast?: number;
+    };
+    textStyleProcessorStatus?: "idle" | "processing" | "done" | "error";
+    textStyleSettings?: ArtisticCard["textStyleSettings"];
       }
   ) {
     const newCardId = makeCardId();
@@ -1312,6 +1379,8 @@ const hoveredConnectionTargetId =
         imageProcessorKind: opts?.imageProcessorKind,
         processorStatus: opts?.processorStatus,
         processorAdjustments: opts?.processorAdjustments,
+        textStyleProcessorStatus: opts?.textStyleProcessorStatus,
+        textStyleSettings: opts?.textStyleSettings,
         summaryBridgeUnlocked:
           opts?.bridgeKind === "summary_bridge" ? false : undefined,
         contextFileName: opts?.contextFileName,
@@ -1957,8 +2026,28 @@ for (const targetSourceId of uniqueTargetSourceIds) {
     );
 
     if (dist <= SNAP_DISTANCE) {
+      const linkedImageIds =
+        card.type === "output" &&
+        (card.outputKind === "powerpoint" || card.outputKind === "book_page")
+          ? Array.from(
+              new Set([
+                ...(card.linkedImageCardIds ?? []),
+                ...(card.linkedImageCardId ? [card.linkedImageCardId] : []),
+              ])
+            )
+          : [];
+
+      const connectionKey =
+        card.type === "output" && linkedImageIds.includes(source.id)
+          ? `${source.id}-${card.id}-image`
+          : card.type === "bridge" && card.bridgeKind === "image_processor"
+          ? `${source.id}-${card.id}-processor-input`
+          : card.type === "bridge" && card.bridgeKind === "text_style_processor"
+          ? `${source.id}-${card.id}-text-style-input`
+          : `${source.id}-${card.id}`;
+
       return {
-        key: `${source.id}-${card.id}`,
+        key: connectionKey,
         upstreamId: source.id,
         targetId: card.id,
         targetType: card.type,
@@ -2194,6 +2283,16 @@ function cutConnection(targetKey: string) {
               };
             }
 
+            if (card.bridgeKind === "text_style_processor") {
+              return {
+                ...card,
+                upstreamCardId: snap.upstreamId,
+                inputTextCardId: snap.upstreamId,
+                textStyleProcessorStatus: "idle",
+                textStyleProcessorError: undefined,
+              };
+            }
+
             return {
               ...card,
               upstreamCardId: snap.upstreamId,
@@ -2216,18 +2315,22 @@ function cutConnection(targetKey: string) {
               ])
             );
 
-            const nextLinkedImageCardIds = linkedIds.map((id) =>
-              id === snap.upstreamId ? draggingCardId : id
-            );
+            const isVisualDropIn = linkedIds.includes(snap.upstreamId);
 
-            return {
-              ...card,
-              linkedImageCardId: undefined,
-              linkedImageCardIds:
-                nextLinkedImageCardIds.length > 0
-                  ? nextLinkedImageCardIds
-                  : undefined,
-            };
+            if (isVisualDropIn) {
+              const nextLinkedImageCardIds = linkedIds.map((id) =>
+                id === snap.upstreamId ? draggingCardId : id
+              );
+
+              return {
+                ...card,
+                linkedImageCardId: undefined,
+                linkedImageCardIds:
+                  nextLinkedImageCardIds.length > 0
+                    ? nextLinkedImageCardIds
+                    : undefined,
+              };
+            }
           }
 
           // If dropping into Image → Image Processor,

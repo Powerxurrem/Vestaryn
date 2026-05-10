@@ -39,16 +39,33 @@ type ArtisticClickMenuProps = {
         | "print_illustration";
       imageAspect?: "square" | "portrait" | "landscape";
       bookPageRatio?: "square" | "portrait" | "landscape";
-      bridgeKind?: "file_context" | "summary_bridge" | "image_processor";
+      bridgeKind?:
+        | "file_context"
+        | "summary_bridge"
+        | "image_processor"
+        | "text_style_processor";
       imageProcessorKind?: "remove_background";
       processorStatus?: "idle" | "processing" | "done" | "error";
       contextFileName?: string;
       contextText?: string;
       processorAdjustments?: {
-      saturation?: number;
-      brightness?: number;
-      contrast?: number;
-    };
+        saturation?: number;
+        brightness?: number;
+        contrast?: number;
+      };
+      textStyleProcessorStatus?: "idle" | "processing" | "done" | "error";
+      textStyleSettings?: {
+        fontFamily?: "storybook" | "serif" | "sans" | "handwritten" | "display";
+        fontSize?: number;
+        color?: string;
+        opacity?: number;
+        rotation?: number;
+        letterSpacing?: number;
+        lineHeight?: number;
+        textShadow?: "none" | "soft" | "strong" | "glow";
+        textOutline?: "none" | "light" | "dark";
+        fontWeight?: "normal" | "medium" | "semibold" | "bold";
+      };
     }
   ) => void;
 };
@@ -137,12 +154,41 @@ function createImageProcessorCard() {
     title: "Image Processor",
     body: "Adjust and process the connected image before passing it downstream.",
     bridgeKind: "image_processor",
-    imageProcessorKind: "remove_background",
+    imageProcessorKind: undefined,
     processorStatus: "idle",
     processorAdjustments: {
       saturation: 100,
       brightness: 100,
       contrast: 100,
+    },
+  });
+}
+
+function createTextStyleProcessorCard() {
+  if (!clickMenu) return;
+
+  const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+
+  createMenuCard(world.x, world.y, {
+    type: "bridge",
+    bridgeKind: "text_style_processor",
+    w: 420,
+    h: 360,
+    title: "Text Style Processor",
+    body:
+      "Typography style bridge.\n\nConnect a text output, then connect this processor to a Book Page.",
+    textStyleProcessorStatus: "idle",
+    textStyleSettings: {
+      fontFamily: "storybook",
+      fontSize: 24,
+      color: "#2f2418",
+      opacity: 100,
+      rotation: 0,
+      letterSpacing: 0,
+      lineHeight: 1.15,
+      textShadow: "soft",
+      textOutline: "none",
+      fontWeight: "semibold",
     },
   });
 }
@@ -224,6 +270,23 @@ function createReportOutputCard() {
   });
 }
 
+function createBookStoryTextCard() {
+  if (!clickMenu) return;
+
+  const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
+
+  createMenuCard(world.x, world.y, {
+    type: "output",
+    w: 420,
+    h: 260,
+    title: "Book Story Text",
+    body:
+      "Awaiting connected prompt...\n\nRun the chamber to generate short story text for a book page.",
+    outputKind: "text",
+    outputRole: "summary",
+  });
+}
+
   function createPowerPointOutputCard() {
     if (!clickMenu) return;
 
@@ -287,20 +350,30 @@ function createBookPageLandscapeCard() {
   });
 }
 
-function createBookBackgroundCard() {
+function createBookBackgroundCard(
+  imageAspect: "square" | "portrait" | "landscape"
+) {
   if (!clickMenu) return;
 
   const world = viewportPointToWorld(clickMenu.x + 8, clickMenu.y + 8);
 
+  const sizeByAspect = {
+    square: { w: 420, h: 420, title: "Book Background Square" },
+    portrait: { w: 360, h: 520, title: "Book Background Portrait" },
+    landscape: { w: 520, h: 340, title: "Book Background Landscape" },
+  } as const;
+
+  const selected = sizeByAspect[imageAspect];
+
   createMenuCard(world.x, world.y, {
     type: "output",
-    w: 520,
-    h: 340,
-    title: "Book Background",
-    body: "Awaiting connected prompt...\n\nRun the chamber to generate a book background.",
+    w: selected.w,
+    h: selected.h,
+    title: selected.title,
+    body: `Awaiting connected prompt...\n\nRun the chamber to generate a ${imageAspect} book background.`,
     outputKind: "image",
     imageMode: "book_background",
-    imageAspect: "landscape",
+    imageAspect,
   });
 }
 
@@ -441,6 +514,16 @@ function createImageOutputCard() {
               Image Processor
             </button>
 
+            <button
+              className={[
+                "w-full rounded-md px-3 py-2 text-left text-sm",
+                menuPresetUi.item,
+              ].join(" ")}
+              onClick={createTextStyleProcessorCard}
+            >
+              Text Style Processor
+            </button>
+
           </div>
         ) : null}
 
@@ -516,14 +599,46 @@ function createImageOutputCard() {
       Book Outputs
     </div>
 
+<button
+  className={[
+    "w-full rounded-md px-3 py-2 text-left text-sm",
+    menuPresetUi.item,
+  ].join(" ")}
+  onClick={createBookStoryTextCard}
+>
+  Book Story Text
+</button>
+
+<div className="my-2 h-px bg-black/10" />
+
     <button
       className={[
         "w-full rounded-md px-3 py-2 text-left text-sm",
         menuPresetUi.item,
       ].join(" ")}
-      onClick={createBookBackgroundCard}
+      onClick={() => createBookBackgroundCard("square")}
     >
-      Book Background
+      Book Background Square
+    </button>
+
+    <button
+      className={[
+        "w-full rounded-md px-3 py-2 text-left text-sm",
+        menuPresetUi.item,
+      ].join(" ")}
+      onClick={() => createBookBackgroundCard("portrait")}
+    >
+      Book Background Portrait
+    </button>
+
+    <button
+      className={[
+        "w-full rounded-md px-3 py-2 text-left text-sm",
+        menuPresetUi.item,
+      ].join(" ")}
+      onClick={() => createBookBackgroundCard("landscape")}
+    >
+      Book Background Landscape
     </button>
 
     <button

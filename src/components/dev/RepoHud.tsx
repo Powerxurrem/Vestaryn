@@ -159,25 +159,93 @@ export function VestarynFrame({
   >([]);
   const [artisticCards, setArtisticCards] = useState<ArtisticCard[]>([]);
 
-  useEffect(() => {
+  const hasLoadedArtisticCanvasRef = useRef(false);
+const artisticCanvasSaveTimerRef = useRef<number | null>(null);
+
+useEffect(() => {
+  let cancelled = false;
+
+  async function loadArtisticCanvas() {
     try {
-      const raw = localStorage.getItem("vestaryn_artistic_canvas");
-      if (!raw) return;
-      setArtisticCards(JSON.parse(raw));
-    } catch {
-      // ignore
+      const res = await fetch(`/api/repo/${repoId}/artistic-canvas`, {
+        cache: "no-store",
+      });
+
+      if (!res.ok) {
+        throw new Error(`Canvas load failed (${res.status})`);
+      }
+
+      const data = await res.json();
+      const cards = Array.isArray(data?.state?.cards)
+        ? data.state.cards
+        : [];
+
+      if (cancelled) return;
+
+      setArtisticCards(cards);
+      hasLoadedArtisticCanvasRef.current = true;
+    } catch (err) {
+      console.warn("[artistic canvas] server load failed, falling back local", err);
+
+      try {
+        const raw = localStorage.getItem(`vestaryn_artistic_canvas:${repoId}`);
+        if (!raw || cancelled) {
+          hasLoadedArtisticCanvasRef.current = true;
+          return;
+        }
+
+        setArtisticCards(JSON.parse(raw));
+      } catch {
+        // ignore
+      } finally {
+        hasLoadedArtisticCanvasRef.current = true;
+      }
     }
-  }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        "vestaryn_artistic_canvas",
-        JSON.stringify(artisticCards)
-      );
-    } catch (e) {
-      console.warn("Failed to persist canvas", e);
+  }
+
+  void loadArtisticCanvas();
+
+  return () => {
+    cancelled = true;
+  };
+}, [repoId]);
+
+useEffect(() => {
+  if (!hasLoadedArtisticCanvasRef.current) return;
+
+  try {
+    localStorage.setItem(
+      `vestaryn_artistic_canvas:${repoId}`,
+      JSON.stringify(artisticCards)
+    );
+  } catch {
+    // local backup only
+  }
+
+  if (artisticCanvasSaveTimerRef.current) {
+    window.clearTimeout(artisticCanvasSaveTimerRef.current);
+  }
+
+  artisticCanvasSaveTimerRef.current = window.setTimeout(() => {
+    void fetch(`/api/repo/${repoId}/artistic-canvas`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        cards: artisticCards,
+      }),
+    }).catch((err) => {
+      console.warn("[artistic canvas] server save failed", err);
+    });
+  }, 700);
+
+  return () => {
+    if (artisticCanvasSaveTimerRef.current) {
+      window.clearTimeout(artisticCanvasSaveTimerRef.current);
     }
-  }, [artisticCards]);
+  };
+}, [artisticCards, repoId]);
   const [clickMenu, setClickMenu] = useState<ScreenPoint | null>(null);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
   const [dragCurrent, setDragCurrent] = useState<{ x: number; y: number } | null>(null);
@@ -1045,6 +1113,112 @@ function looksLikeDeliverableBrief(value: string) {
   return hasCreationLanguage && hasFormatLanguage && !hasBusinessFacts;
 }
 
+function buildPromptIntentInstruction(
+  promptIntent?: ArtisticCard["promptIntent"]
+) {
+  switch (promptIntent) {
+    case "book_title":
+      return `
+Book prompt mode: BOOK TITLE.
+
+Output rules:
+- Return only one children's book title.
+- Maximum 6 words.
+- Do not include "TITLE:".
+- Do not include "BODY:".
+- Do not use markdown.
+- Do not explain.
+`.trim();
+
+    case "book_page_text":
+      return `
+Book prompt mode: BOOK PAGE TEXT.
+
+Output rules:
+- Write short children's book page text.
+- Use 1 to 3 warm storybook sentences.
+- Keep it suitable for a picture book page.
+- Do not include "TITLE:".
+- Do not include "BODY:".
+- Do not use markdown.
+- Do not explain.
+`.trim();
+
+    case "book_character":
+      return `
+Book prompt mode: BOOK CHARACTER.
+
+Output rules:
+- Describe one reusable children's book character.
+- Focus on visual appearance, personality, and recognizable traits.
+- Do not describe a background scene.
+- Do not include labels like "TITLE:" or "BODY:".
+- Do not use markdown.
+`.trim();
+
+    case "book_background":
+      return `
+Book prompt mode: BOOK BACKGROUND.
+
+Output rules:
+- Describe only the environment/background scene.
+- Do not include characters, people, faces, or dialogue.
+- Make it suitable for a children's book background image prompt.
+- Do not include labels like "TITLE:" or "BODY:".
+- Do not use markdown.
+`.trim();
+
+    case "book_illustration":
+      return `
+Book prompt mode: BOOK ILLUSTRATION.
+
+Output rules:
+- Describe a polished children's book illustration scene.
+- Include mood, setting, and clear focal action.
+- Keep it concise and image-generation friendly.
+- Do not include labels like "TITLE:" or "BODY:".
+- Do not use markdown.
+`.trim();
+
+    case "general":
+    default:
+      return "";
+  }
+}
+
+function cleanPromptIntentOutput(
+  raw: string,
+  promptIntent?: ArtisticCard["promptIntent"]
+) {
+  let value = String(raw ?? "")
+    .replace(/\[Observation\][\s\S]*?(?=\[Assessment\]|\[Action\]|$)/gi, "")
+    .replace(/\[Assessment\][\s\S]*?(?=\[Action\]|$)/gi, "")
+    .replace(/\[Action\]\s*/gi, "")
+    .replace(/^TITLE:\s*/i, "")
+    .replace(/^BODY:\s*/i, "")
+    .replace(/^SUBJECT:\s*/i, "")
+    .replace(/^["“]|["”]$/g, "")
+    .trim();
+
+  if (promptIntent === "book_title") {
+    value =
+      value
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .find((line) => !/^title\s*:/i.test(line)) ?? value;
+
+    value = value
+      .replace(/^TITLE:\s*/i, "")
+      .replace(/^BODY:\s*/i, "")
+      .replace(/^SUBJECT:\s*/i, "")
+      .replace(/^["“]|["”]$/g, "")
+      .trim();
+  }
+
+  return value;
+}
+
 function buildPowerPointSourceForModel(sourceBody: string) {
   const raw = String(sourceBody ?? "").trim();
 
@@ -1194,6 +1368,11 @@ setIsRunningArtisticOutputs(true);
 
     try {
       const role = item.output.outputRole ?? "summary";
+
+      const promptIntent =
+        item.prompt.type === "prompt" ? item.prompt.promptIntent ?? "general" : "general";
+
+      const promptIntentInstruction = buildPromptIntentInstruction(promptIntent);
 
       const roleToneBlock =
         role === "email"
@@ -1452,25 +1631,30 @@ const linkedImageCards = linkedImageIds
         body: JSON.stringify({
           content:
             item.output.outputKind === "text"
-              ? `[Artistic Mode]\n` +
-                `Generate a clean text output card response.\n` +
-                `Keep the normal system response format if required.\n` +
-                `Output role: ${role}.\n` +
-                roleToneBlock +
-                roleFocusBlock +
-                `Inside [Action], return ONLY the final result.
-Do NOT include any markers, labels, or system-style sections.
-Do NOT include __PROPOSAL__, __VERIFY__, or any internal steps.
-Return clean output only.\n` +
-                `Do not explain the request.\n` +
-                `Do not restate what the user asked for.\n` +
-                (role === "email"
-                  ? `For email output, use exactly:\nSUBJECT: ...\nBODY: ...\nDo not include SUBJECT inside BODY.\n`
-                  : role === "report"
-                  ? `For report output, prefer:\nTITLE: ...\nBODY: ...\n`
-                  : `For summary output, prefer:\nTITLE: ...\nBODY: ...\n`) +
-                `The [Observation] and [Assessment] sections may stay brief if required, but [Action] must contain the actual deliverable.\n\n` +
-                `${sourceBody}${bridgeContext}`
+            ? `[Artistic Mode]\n` +
+              `Generate a clean text output card response.\n` +
+              `Keep the normal system response format if required.\n` +
+              `Output role: ${role}.\n` +
+              (promptIntentInstruction
+                ? `\n${promptIntentInstruction}\n\n`
+                : "") +
+              roleToneBlock +
+              roleFocusBlock +
+              `Inside [Action], return ONLY the final result.
+          Do NOT include any markers, labels, or system-style sections.
+          Do NOT include __PROPOSAL__, __VERIFY__, or any internal steps.
+          Return clean output only.\n` +
+              `Do not explain the request.\n` +
+              `Do not restate what the user asked for.\n` +
+              (promptIntentInstruction
+                ? `Do not add TITLE:, BODY:, SUBJECT:, markdown headings, bullets, labels, or wrappers unless explicitly required by the active prompt mode.\n`
+                : role === "email"
+                ? `For email output, use exactly:\nSUBJECT: ...\nBODY: ...\nDo not include SUBJECT inside BODY.\n`
+                : role === "report"
+                ? `For report output, prefer:\nTITLE: ...\nBODY: ...\n`
+                : `For summary output, prefer:\nTITLE: ...\nBODY: ...\n`) +
+              `The [Observation] and [Assessment] sections may stay brief if required, but [Action] must contain the actual deliverable.\n\n` +
+              `${sourceBody}${bridgeContext}`
               : item.output.outputKind === "powerpoint"
               ? `[Artistic Mode]\n` +
                 `Generate ONE polished executive PowerPoint slide concept.\n\n` +
@@ -1577,6 +1761,12 @@ Return clean output only.\n` +
         item.output.outputKind,
         item.output.outputRole
       );
+
+      if (promptIntent !== "general" && item.output.outputKind === "text") {
+        payload.body = cleanPromptIntentOutput(payload.body, promptIntent);
+        payload.title = "";
+        payload.subject = "";
+      }
 
       const nextBody = formatArtisticPayloadForCard(
         payload,
