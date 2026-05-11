@@ -233,7 +233,7 @@ useEffect(() => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        cards: artisticCards,
+        cards: sanitizeArtisticCardsForSave(artisticCards),
       }),
     }).catch((err) => {
       console.warn("[artistic canvas] server save failed", err);
@@ -372,7 +372,19 @@ useEffect(() => {
       .replace(/__APPLY__[\s\S]*/gi, "")
       .trim();
   }
+function sanitizeArtisticCardsForSave(cards: ArtisticCard[]) {
+  return cards.map((card) => ({
+    ...card,
 
+    imageUrl: card.imageUrl?.startsWith("data:image/")
+      ? undefined
+      : card.imageUrl,
+
+    processedImageUrl: card.processedImageUrl?.startsWith("data:image/")
+      ? undefined
+      : card.processedImageUrl,
+  }));
+}
   function buildArtisticPresentationPayload(
     raw: string,
     outputKind: ArtisticOutputKind,

@@ -184,6 +184,8 @@ export type ArtisticCard = {
   processorStatus?: "idle" | "processing" | "done" | "error";
   processorError?: string;
   processorAdjustments?: ArtisticProcessorAdjustments;
+  processorFlipX?: boolean;
+  processorFlipY?: boolean;
   promptIntent?: ArtisticPromptIntent; 
   bookPageRatio?: ArtisticBookPageRatio;
   linkedImageCardId?: string;

@@ -992,10 +992,12 @@ function resolveVisualSource(cardOrProcessor: ArtisticCard) {
       isProcessed: Boolean(cardOrProcessor.processedImageUrl),
       processorKind: cardOrProcessor.imageProcessorKind,
       processorFilter: [
+        cardOrProcessor.processorFlipX ? "scaleX(-1)" : "",
+        cardOrProcessor.processorFlipY ? "scaleY(-1)" : "",
         `saturate(${adjustments.saturation ?? 100}%)`,
         `brightness(${adjustments.brightness ?? 100}%)`,
         `contrast(${adjustments.contrast ?? 100}%)`,
-      ].join(" "),
+      ].filter(Boolean).join(" "),
     };
   }
 
@@ -2473,6 +2475,8 @@ function ProcessorSliderRow({
     </div>
   </div>
 
+
+
   <div className="flex items-center justify-between rounded-lg border border-black/10 bg-white/45 px-3 py-2">
     <div>
       <div className="text-xs font-medium text-black/65">Output</div>
@@ -2661,9 +2665,10 @@ function ProcessorSliderRow({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          operation: card.imageProcessorKind,
           imageUrl: inputImage.imageUrl,
-          adjustments,
+          operation: card.imageProcessorKind,
+          adjustments: card.processorAdjustments,
+          imageAspect: inputImage.imageAspect ?? "square",
         }),
       });
 
