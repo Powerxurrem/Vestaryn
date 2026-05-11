@@ -1278,6 +1278,33 @@ function shouldBlockArtisticRun(item: {
   return false;
 }
 
+async function persistArtisticImageAsset(args: {
+  dataUrl: string;
+  kind: "generated" | "processed";
+}) {
+  const res = await fetch(`/api/repo/${repoId}/artistic-assets`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      dataUrl: args.dataUrl,
+      kind: args.kind,
+    }),
+  });
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok || !data?.storagePath || !data?.signedUrl) {
+    throw new Error(data?.error || `Asset upload failed (${res.status})`);
+  }
+
+  return {
+    storagePath: String(data.storagePath),
+    signedUrl: String(data.signedUrl),
+  };
+}
+
 function markArtisticCardUpdating(cardId: string) {
   setUpdatingCardIds((prev) =>
     prev.includes(cardId) ? prev : [...prev, cardId]
@@ -1600,9 +1627,26 @@ const linkedImageCards = linkedImageIds
           throw new Error(text || `Image request failed (${imageRes.status})`);
         }
 
-
-        
         const imageData = await imageRes.json();
+
+        const generatedImageUrl =
+          typeof imageData?.imageUrl === "string" ? imageData.imageUrl : "";
+
+        if (!generatedImageUrl) {
+          throw new Error("No image returned.");
+        }
+
+        let durableImage = {
+          storagePath: "",
+          signedUrl: generatedImageUrl,
+        };
+
+        if (generatedImageUrl.startsWith("data:image/")) {
+          durableImage = await persistArtisticImageAsset({
+            dataUrl: generatedImageUrl,
+            kind: "generated",
+          });
+        }
 
         setArtisticCards((prev) =>
           prev.map((card) =>
@@ -1611,10 +1655,9 @@ const linkedImageCards = linkedImageIds
                   ...card,
                   body: imagePrompt,
                   imageStatus: "done",
-                  imageUrl:
-                    typeof imageData?.imageUrl === "string"
-                      ? imageData.imageUrl
-                      : undefined,
+                  imageUrl: durableImage.signedUrl,
+                  imageStoragePath:
+                    durableImage.storagePath || card.imageStoragePath,
                 }
               : card
           )

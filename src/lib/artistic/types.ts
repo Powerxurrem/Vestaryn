@@ -153,13 +153,34 @@ export type ArtisticCard = {
   contextText?: string;
   groupId?: string;
   imageStatus?: "idle" | "generating" | "done" | "error";
+
+  /**
+   * Display URL used by the browser.
+   * Can be a fresh signed URL, data URL fallback, or temporary preview URL.
+   */
   imageUrl?: string;
+
+  /**
+   * Durable Supabase Storage path.
+   * This is the real persisted asset reference.
+   */
+  imageStoragePath?: string;
+
   imageMode?: ArtisticImageMode;
   imageAspect?: ArtisticImageAspect;
 
   imageProcessorKind?: ArtisticImageProcessorKind;
   inputImageCardId?: string;
+
+  /**
+   * Display URL for processed image output.
+   */
   processedImageUrl?: string;
+
+  /**
+   * Durable Supabase Storage path for processed output.
+   */
+  processedImageStoragePath?: string;
   processorStatus?: "idle" | "processing" | "done" | "error";
   processorError?: string;
   processorAdjustments?: ArtisticProcessorAdjustments;
