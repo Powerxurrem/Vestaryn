@@ -38,6 +38,7 @@ type ArtisticMessage = {
 };
 
 type ArtisticCanvasSurfaceProps = {
+  repoId: string;
   viewportRef: RefObject<HTMLDivElement | null>;
   canvasPresetUi: {
     viewportBg: string;
@@ -124,6 +125,7 @@ setClickMenuSubmenu: React.Dispatch<
 };
 
 export default function ArtisticCanvasSurface({
+  repoId,
   viewportRef,
   canvasPresetUi,
   cardPreset,
@@ -3116,6 +3118,7 @@ const isObsidianGroupUi = cardPreset === "obsidian";
 
           return (
             <ArtisticCardView
+              repoId={repoId}
               key={card.id}
               card={card}
               artisticCards={artisticCards}

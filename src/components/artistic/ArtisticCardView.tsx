@@ -17,6 +17,7 @@ import type {
 } from "@/lib/artistic/types";
 
 type ArtisticCardViewProps = {
+  repoId: string;
   card: ArtisticCard;
   artisticCards: ArtisticCard[];
   linkedImageCard?: ArtisticCard | null;
@@ -86,6 +87,7 @@ selectedCardIds: string[];
 };
 
 export default function ArtisticCardView({
+  repoId,
   card,
   artisticCards,
   linkedImageCard,
@@ -122,9 +124,13 @@ export default function ArtisticCardView({
     if (isPanning || isResizing) return;
   
     const target = e.target as HTMLElement;
+
     if (target.closest("[data-card-resize-handle]")) return;
+    if (target.closest("[data-card-no-drag]")) return;
     if (target.closest("input")) return;
     if (target.closest("textarea")) return;
+    if (target.closest("select")) return;
+    if (target.closest("button")) return;
 
     e.stopPropagation();
     e.preventDefault();
@@ -173,6 +179,32 @@ async function loadContextFile(file: File) {
   } catch (err) {
     console.error(err);
   }
+}
+
+async function persistProcessedImageAsset(dataUrl: string) {
+  const res = await fetch(`/api/repo/${repoId}/artistic-assets`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      dataUrl,
+      kind: "processed",
+    }),
+  });
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok || !data?.storagePath || !data?.signedUrl) {
+    throw new Error(
+      data?.error || `Processed asset upload failed (${res.status})`
+    );
+  }
+
+  return {
+    storagePath: String(data.storagePath),
+    signedUrl: String(data.signedUrl),
+  };
 }
 
   function onResizePointerDown(e: ReactPointerEvent<HTMLButtonElement>) {
@@ -1221,7 +1253,7 @@ function ProcessorSliderRow({
     >
 <div
   className={[
-    "flex items-center justify-between px-3 py-2 transition-colors duration-150",
+    "relative z-[25] flex items-center justify-between px-3 py-2 transition-colors duration-150",
     cardPresetUi.header,
   ].join(" ")}
 >
@@ -1295,13 +1327,38 @@ function ProcessorSliderRow({
 
   <button
     type="button"
-    onClick={(e) => {
-      e.stopPropagation();
-      setArtisticCards((prev) => prev.filter((c) => c.id !== card.id));
-      setEditingCardId((prev) => (prev === card.id ? null : prev));
-      setFocusedBodyCardId((prev) => (prev === card.id ? null : prev));
-      setSelectedCardId((prev) => (prev === card.id ? null : prev));
-    }}
+      onClick={(e) => {
+        e.stopPropagation();
+
+        setArtisticCards((prev) =>
+          prev
+            .filter((c) => c.id !== card.id)
+            .map((c) => ({
+              ...c,
+              links: c.links?.filter((id) => id !== card.id),
+              sourceCardId: c.sourceCardId === card.id ? undefined : c.sourceCardId,
+              upstreamCardId: c.upstreamCardId === card.id ? undefined : c.upstreamCardId,
+              linkedImageCardId:
+                c.linkedImageCardId === card.id ? undefined : c.linkedImageCardId,
+              linkedImageCardIds: c.linkedImageCardIds?.filter((id) => id !== card.id),
+              inputImageCardId:
+                c.inputImageCardId === card.id ? undefined : c.inputImageCardId,
+              inputTextCardId:
+                c.inputTextCardId === card.id ? undefined : c.inputTextCardId,
+              pptImageZones: c.pptImageZones?.filter(
+                (zone) => zone.imageCardId !== card.id
+              ),
+              bookImageZones: c.bookImageZones?.filter(
+                (zone) => zone.visualCardId !== card.id
+              ),
+            }))
+        );
+
+        setEditingCardId((prev) => (prev === card.id ? null : prev));
+        setFocusedBodyCardId((prev) => (prev === card.id ? null : prev));
+        setSelectedCardId((prev) => (prev === card.id ? null : prev));
+        setSelectedCardIds((prev) => prev.filter((id) => id !== card.id));
+      }}
     className="ml-2 rounded-md px-2 py-1 text-[11px] text-black/35 hover:bg-black/5 hover:text-black/65"
   >
     ✕
@@ -1313,9 +1370,8 @@ function ProcessorSliderRow({
           (() => {
             const email = parseEmailOutputBody(card.body);
 
-            return (
+           return (
               <div
-                onPointerDown={(e) => e.stopPropagation()}
                 className="h-full w-full rounded-xl border border-white/10 bg-white/[0.035] p-4"
               >
                 {email.subject ? (
@@ -1676,7 +1732,6 @@ function ProcessorSliderRow({
 
             return (
               <div
-                onPointerDown={(e) => e.stopPropagation()}
                 className="h-full w-full rounded-xl border border-white/10 bg-white/[0.04] p-3"
               >
                 {parsed.title ? (
@@ -1706,7 +1761,6 @@ function ProcessorSliderRow({
           })()
         ) : card.type === "output" && card.outputKind === "image" ? (
           <div
-            onPointerDown={(e) => e.stopPropagation()}
             className="flex h-full flex-col rounded-xl border border-black/10 bg-white p-3"
           >
             <div className="mb-3 flex items-center justify-between gap-3">
@@ -1765,9 +1819,9 @@ function ProcessorSliderRow({
               {card.imageUrl ? (
                 <img
                   src={card.imageUrl}
-                  alt={card.title || "Generated image"}
-                  className="h-full w-full object-cover"
+                  alt=""
                   draggable={false}
+                  className="pointer-events-none h-full w-full object-contain"
                 />
               ) : card.imageStatus === "generating" ? (
                 <div className="relative flex h-full items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-blue-50 to-slate-100 px-6 text-center">
@@ -1928,8 +1982,8 @@ function ProcessorSliderRow({
           })()
         ) : card.type === "output" ? (
           <div
-            onPointerDown={(e) => e.stopPropagation()}
             className={`h-full w-full overflow-auto whitespace-pre-wrap text-sm leading-7 ${cardPresetUi.body}`}
+            onWheel={(e) => e.stopPropagation()}
           >
             {card.body}
           </div>
@@ -2679,16 +2733,29 @@ function ProcessorSliderRow({
 
       const data = await res.json();
 
+      const processedImageUrl =
+        typeof data?.processedImageUrl === "string"
+          ? data.processedImageUrl
+          : inputImage.imageUrl;
+
+      let durableProcessed = {
+        storagePath: inputImage.processedImageStoragePath ?? inputImage.imageStoragePath ?? "",
+        signedUrl: processedImageUrl,
+      };
+
+      if (processedImageUrl.startsWith("data:image/")) {
+        durableProcessed = await persistProcessedImageAsset(processedImageUrl);
+      }
+
       setArtisticCards((prev) =>
         prev.map((candidate) =>
           candidate.id === card.id
             ? {
                 ...candidate,
                 processorStatus: "done",
-                processedImageUrl:
-                  typeof data?.processedImageUrl === "string"
-                    ? data.processedImageUrl
-                    : inputImage.imageUrl,
+                processedImageUrl: durableProcessed.signedUrl,
+                processedImageStoragePath:
+                  durableProcessed.storagePath || candidate.processedImageStoragePath,
                 processorError: undefined,
                 processorAdjustments: adjustments,
               }

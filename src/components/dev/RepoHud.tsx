@@ -81,7 +81,7 @@ function Sigil({
     <button
       type="button"
       onClick={onClick}
-      className="relative flex items-center justify-center mt-12 group cursor-pointer"
+      className="relative flex items-center justify-center mt-12 group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/40 focus-visible:ring-offset-2 focus-visible:ring-offset-black rounded-full"
     >
       {/* glow */}
 <div
@@ -90,6 +90,15 @@ function Sigil({
     active
       ? "opacity-90 scale-110"
       : "opacity-60 group-hover:opacity-90 group-hover:scale-110",
+  ].join(" ")}
+/>
+
+<div
+  className={[
+    "absolute h-[106px] w-[106px] rounded-full border transition-all duration-300",
+    active
+      ? "border-blue-300/25 opacity-80 scale-100"
+      : "border-blue-300/10 opacity-35 scale-95 group-hover:opacity-70 group-hover:scale-100",
   ].join(" ")}
 />
 
@@ -124,9 +133,20 @@ function Sigil({
       </div>
 
       {/* tooltip */}
-      <div className="pointer-events-none absolute top-full mt-2 rounded-md border border-white/10 bg-black/10 px-2 py-1 text-[10px] uppercase tracking-wide text-white/70 opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 backdrop-blur-md">
-        Chamber Core
-      </div>
+        <div className="pointer-events-none absolute top-full mt-2 rounded-md border border-blue-300/20 bg-black/30 px-2.5 py-1.5 text-[10px] uppercase tracking-[0.18em] text-blue-100/80 opacity-0 translate-y-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-y-0 backdrop-blur-md">
+    Open Chamber Core
+  </div>
+
+  <div
+  className={[
+    "pointer-events-none absolute top-full mt-9 rounded-full border px-2.5 py-1 text-[9px] uppercase tracking-[0.18em] backdrop-blur-md transition-all duration-200",
+    active
+      ? "border-blue-300/25 bg-blue-500/12 text-blue-100/70 opacity-100"
+      : "border-white/10 bg-white/[0.04] text-white/35 opacity-70 group-hover:border-blue-300/20 group-hover:bg-blue-500/10 group-hover:text-blue-100/70 group-hover:opacity-100",
+  ].join(" ")}
+>
+  Click core
+</div>
     </button>
   );
 }
@@ -145,9 +165,12 @@ export function VestarynFrame({
   children: ReactNode;
 }) {
 
-  const [coreOpen, setCoreOpen] = useState(false);
-  type CoreView = "menu" | "capabilities" | "calibration";
-  const [coreView, setCoreView] = useState<CoreView>("menu");
+  const [navPanelOpen, setNavPanelOpen] = useState<
+  null | "menu" | "shortcuts" | "assets"
+>(null);
+
+type CoreView = "menu" | "capabilities" | "calibration";
+const [coreView, setCoreView] = useState<CoreView>("menu");
   const coreRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState(false);
   const [appMode, setAppMode] = useState<"engineering" | "artistic">("artistic");
@@ -161,6 +184,81 @@ export function VestarynFrame({
 
   const hasLoadedArtisticCanvasRef = useRef(false);
 const artisticCanvasSaveTimerRef = useRef<number | null>(null);
+
+function sanitizeArtisticCardsForSave(cards: ArtisticCard[]) {
+  return cards.map((card) => ({
+    ...card,
+
+    // Never persist base64/data URLs in canvas JSON.
+    // The canvas should store pointers only.
+    imageUrl: card.imageUrl?.startsWith("data:image/")
+      ? undefined
+      : card.imageUrl,
+
+    processedImageUrl: card.processedImageUrl?.startsWith("data:image/")
+      ? undefined
+      : card.processedImageUrl,
+  }));
+}
+
+async function refreshArtisticAssetUrls(cards: ArtisticCard[]) {
+  const storagePaths = Array.from(
+    new Set(
+      cards
+        .flatMap((card) => [
+          card.imageStoragePath,
+          card.processedImageStoragePath,
+        ])
+        .filter(Boolean) as string[]
+    )
+  );
+
+  if (storagePaths.length === 0) return cards;
+
+  const res = await fetch(`/api/repo/${repoId}/artistic-assets`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      storagePaths,
+    }),
+  });
+
+  if (!res.ok) {
+    console.warn("[artistic assets] signed url refresh failed", res.status);
+    return cards;
+  }
+
+  const data = await res.json().catch(() => null);
+  const signedUrls = data?.signedUrls ?? {};
+
+  return cards.map((card) => ({
+    ...card,
+
+    imageUrl:
+      card.imageStoragePath && signedUrls[card.imageStoragePath]
+        ? signedUrls[card.imageStoragePath]
+        : card.imageUrl,
+
+    processedImageUrl:
+      card.processedImageStoragePath && signedUrls[card.processedImageStoragePath]
+        ? signedUrls[card.processedImageStoragePath]
+        : card.processedImageUrl,
+  }));
+}
+
+function toggleNavPanel(panel: "menu" | "shortcuts" | "assets") {
+  setNavPanelOpen((cur) => {
+    const next = cur === panel ? null : panel;
+
+    if (next !== "menu") {
+      setCoreView("menu");
+    }
+
+    return next;
+  });
+}
 
 useEffect(() => {
   let cancelled = false;
@@ -182,7 +280,11 @@ useEffect(() => {
 
       if (cancelled) return;
 
-      setArtisticCards(cards);
+      const hydratedCards = await refreshArtisticAssetUrls(cards);
+
+      if (cancelled) return;
+
+      setArtisticCards(hydratedCards);
       hasLoadedArtisticCanvasRef.current = true;
     } catch (err) {
       console.warn("[artistic canvas] server load failed, falling back local", err);
@@ -213,10 +315,12 @@ useEffect(() => {
 useEffect(() => {
   if (!hasLoadedArtisticCanvasRef.current) return;
 
+  const cardsForSave = sanitizeArtisticCardsForSave(artisticCards);
+
   try {
     localStorage.setItem(
       `vestaryn_artistic_canvas:${repoId}`,
-      JSON.stringify(artisticCards)
+      JSON.stringify(cardsForSave)
     );
   } catch {
     // local backup only
@@ -233,7 +337,7 @@ useEffect(() => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        cards: sanitizeArtisticCardsForSave(artisticCards),
+        cards: cardsForSave,
       }),
     }).catch((err) => {
       console.warn("[artistic canvas] server save failed", err);
@@ -372,19 +476,7 @@ useEffect(() => {
       .replace(/__APPLY__[\s\S]*/gi, "")
       .trim();
   }
-function sanitizeArtisticCardsForSave(cards: ArtisticCard[]) {
-  return cards.map((card) => ({
-    ...card,
 
-    imageUrl: card.imageUrl?.startsWith("data:image/")
-      ? undefined
-      : card.imageUrl,
-
-    processedImageUrl: card.processedImageUrl?.startsWith("data:image/")
-      ? undefined
-      : card.processedImageUrl,
-  }));
-}
   function buildArtisticPresentationPayload(
     raw: string,
     outputKind: ArtisticOutputKind,
@@ -581,7 +673,7 @@ useEffect(() => {
       tag === "textarea" ||
       target?.isContentEditable;
 
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "d") {
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.shiftKey && e.key.toLowerCase() === "d") {
       if (isTypingTarget) return;
 
       e.preventDefault();
@@ -599,61 +691,94 @@ useEffect(() => {
       const DUPLICATE_OFFSET_X = 36;
       const DUPLICATE_OFFSET_Y = 36;
 
-      const duplicatedIds: string[] = [];
+      // Build this outside setArtisticCards so selection can be updated reliably.
+      const cardsToDuplicateSnapshot = artisticCards.filter((card) =>
+        selectedSet.has(card.id)
+      );
+
+      if (cardsToDuplicateSnapshot.length === 0) return;
+
+      const idMap = new Map<string, string>();
+
+      for (const card of cardsToDuplicateSnapshot) {
+        idMap.set(card.id, makeCardId());
+      }
+
+      const duplicatedIds = cardsToDuplicateSnapshot
+        .map((card) => idMap.get(card.id))
+        .filter((id): id is string => Boolean(id));
 
       setArtisticCards((prev) => {
-        const cardsToDuplicate = prev.filter((card) => selectedSet.has(card.id));
+        const cardsToDuplicate = prev.filter((card) => idMap.has(card.id));
         if (cardsToDuplicate.length === 0) return prev;
 
-        const idMap = new Map<string, string>();
+        function remapOptionalId(id: string | undefined) {
+          if (!id) return undefined;
+          return idMap.get(id);
+        }
 
-        for (const card of cardsToDuplicate) {
-          idMap.set(card.id, makeCardId());
+        function remapIdList(ids: string[] | undefined) {
+          if (!ids?.length) return undefined;
+
+          const next = ids
+            .map((id) => idMap.get(id))
+            .filter((id): id is string => Boolean(id));
+
+          return next.length > 0 ? next : undefined;
         }
 
         const duplicatedCards = cardsToDuplicate.map((card) => {
           const nextId = idMap.get(card.id)!;
-          duplicatedIds.push(nextId);
 
           const duplicatedCard: ArtisticCard = {
             ...card,
             id: nextId,
             x: card.x + DUPLICATE_OFFSET_X,
             y: card.y + DUPLICATE_OFFSET_Y,
+
+            // Group membership should not silently attach the duplicate
+            // to the old group's metadata.
+            groupId: undefined,
+
+            // Core graph links.
+            links: remapIdList(card.links),
+            sourceCardId: remapOptionalId(card.sourceCardId),
+            upstreamCardId: remapOptionalId(card.upstreamCardId),
+
+            // Visual composition links.
+            linkedImageCardId: remapOptionalId(card.linkedImageCardId),
+            linkedImageCardIds: remapIdList(card.linkedImageCardIds),
+
+            // Processor input links.
+            inputImageCardId: remapOptionalId(card.inputImageCardId),
+            inputTextCardId: remapOptionalId(card.inputTextCardId),
+
+            // PowerPoint image zones.
+            pptImageZones: card.pptImageZones
+              ?.map((zone) => {
+                const nextImageCardId = idMap.get(zone.imageCardId);
+                if (!nextImageCardId) return null;
+
+                return {
+                  ...zone,
+                  imageCardId: nextImageCardId,
+                };
+              })
+              .filter((zone): zone is NonNullable<typeof zone> => Boolean(zone)),
+
+            // Book page visual zones.
+            bookImageZones: card.bookImageZones
+              ?.map((zone) => {
+                const nextVisualCardId = idMap.get(zone.visualCardId);
+                if (!nextVisualCardId) return null;
+
+                return {
+                  ...zone,
+                  visualCardId: nextVisualCardId,
+                };
+              })
+              .filter((zone): zone is NonNullable<typeof zone> => Boolean(zone)),
           };
-
-          if (card.links?.length) {
-            duplicatedCard.links = card.links
-              .filter((linkedId) => idMap.has(linkedId))
-              .map((linkedId) => idMap.get(linkedId)!);
-          }
-
-          if (card.sourceCardId && idMap.has(card.sourceCardId)) {
-            duplicatedCard.sourceCardId = idMap.get(card.sourceCardId)!;
-          } else if (card.sourceCardId) {
-            duplicatedCard.sourceCardId = undefined;
-          }
-
-          if (card.upstreamCardId && idMap.has(card.upstreamCardId)) {
-            duplicatedCard.upstreamCardId = idMap.get(card.upstreamCardId)!;
-          } else if (card.upstreamCardId) {
-            duplicatedCard.upstreamCardId = undefined;
-          }
-
-          if (card.linkedImageCardId && idMap.has(card.linkedImageCardId)) {
-            duplicatedCard.linkedImageCardId = idMap.get(card.linkedImageCardId)!;
-          } else if (card.linkedImageCardId) {
-            duplicatedCard.linkedImageCardId = undefined;
-          }
-
-          if (card.linkedImageCardIds?.length) {
-            const nextLinkedImageCardIds = card.linkedImageCardIds
-              .filter((linkedId) => idMap.has(linkedId))
-              .map((linkedId) => idMap.get(linkedId)!);
-
-            duplicatedCard.linkedImageCardIds =
-              nextLinkedImageCardIds.length > 0 ? nextLinkedImageCardIds : undefined;
-          }
 
           return duplicatedCard;
         });
@@ -820,7 +945,7 @@ useEffect(() => {
 ]);
 
 async function onLogout() {
-  setCoreOpen(false);
+  setNavPanelOpen(null);
   const supabase = supabaseBrowser();
   await supabase.auth.signOut();
   window.location.href = "/";
@@ -1054,23 +1179,23 @@ useEffect(() => {
 
 useEffect(() => {
   function onDown(e: PointerEvent) {
-    if (!coreOpen) return;
+    if (!navPanelOpen) return;
+
     const el = coreRef.current;
     if (!el) return;
+
     if (!el.contains(e.target as Node)) {
-      setCoreOpen(false);
+      setNavPanelOpen(null);
       setCoreView("menu");
     }
   }
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "Escape") {
-      setCoreOpen(false);
+      setNavPanelOpen(null);
       setCoreView("menu");
     }
   }
-
-
 
   document.addEventListener("pointerdown", onDown, true);
   document.addEventListener("keydown", onKey);
@@ -1079,7 +1204,7 @@ useEffect(() => {
     document.removeEventListener("pointerdown", onDown, true);
     document.removeEventListener("keydown", onKey);
   };
-}, [coreOpen]);
+}, [navPanelOpen]);
 
 function isUnfilledSummaryBridge(card: ArtisticCard | null) {
   if (!card) return false;
@@ -1939,7 +2064,7 @@ style={
         <RepoHud repoId={repoId} repoName={repoName} messageCount={messageCount} />
 
 {/* Center nav / Chamber Core */}
-<div className="mx-auto flex items-center gap-3">
+<div className="mx-auto grid grid-cols-[auto_260px_auto] items-center gap-3">
 
 <div className="inline-flex items-center rounded-xl border border-white/10 bg-white/5 p-1 backdrop-blur-md">
   <button
@@ -1969,6 +2094,8 @@ style={
   </button>
 </div>
 
+
+
 <button
   type="button"
   disabled={isRunningArtisticOutputs}
@@ -1983,20 +2110,14 @@ style={
   {isRunningArtisticOutputs ? "⟳ Running..." : "▶ Run"}
 </button>
   {/* Sigil + Chamber Core menu */}
-  <div ref={coreRef} className="relative px-3">
+  {/* Sigil + Chamber Core menu */}
+<div ref={coreRef} className="relative flex h-[118px] w-[260px] items-center justify-center px-3">
     {appMode === "artistic" ? (
-  <button
-  type="button"
-  onClick={() =>
-    setCoreOpen((v) => {
-      const next = !v;
-      if (!next) setCoreView("menu");
-      return next;
-    })
-  }
-  className="relative flex items-center justify-center"
->
-  <div className="relative flex items-center justify-center h-[200px] w-[180px] overflow-visible">
+  <div
+    className="pointer-events-none relative flex items-center justify-center"
+    aria-hidden="true"
+  >
+    <div className="relative flex h-[200px] w-[180px] items-center justify-center overflow-visible">
 
   {/* 🔵 Aura glow - deepest layer */}
   <div className="absolute -inset-6 z-0 rounded-full blur-3xl bg-blue-500/25 opacity-70 animate-pulse" />
@@ -2041,313 +2162,193 @@ style={
     filter: "drop-shadow(0 0 300px rgba(96,165,250,0.35)) saturate(1.15) brightness(1.5) contrast(1)",
   }}
 />
+
 </div>
-</button>
+</div>
 ) : (
-  <Sigil
-    active={coreOpen}
-    onClick={() =>
-      setCoreOpen((v) => {
-        const next = !v;
-        if (!next) setCoreView("menu");
-        return next;
-      })
-    }
-  />
+  <Sigil active={false} />
 )}
 
-    {coreOpen && (
-      <div className="absolute left-1/2 top-full z-50 mt-6 w-[760px] -translate-x-1/2 rounded-2xl border border-white/10 p-3 shadow-[0_20px_60px_rgba(0,0,0,0.55)] backdrop-blur-md ring-1 ring-white/10 bg-black">
-        <div className="grid grid-cols-2 gap-3">
-          {/* Left column */}
-          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
-            <div className="mb-2 text-[10px] uppercase tracking-widest text-white/40">
-              Account / Repo
-            </div>
+<div className="absolute left-1/2 top-[133px] z-[30] flex -translate-x-1/2 items-center gap-2 rounded-xl border border-white/10 bg-black/25 p-1 backdrop-blur-md">
 
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setCoreOpen(false);
-                }}
-                className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-              >
-                Profile (soon)
-              </button>
+  {(["menu", "shortcuts", "assets"] as const).map((panel) => {
+    const active = navPanelOpen === panel;
 
-              <button
-                type="button"
-                onClick={() => {
-                  setCoreOpen(false);
-                }}
-                className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-              >
-                Usage (soon)
-              </button>
+    return (
+      <button
+        key={panel}
+        type="button"
+        onClick={() => toggleNavPanel(panel)}
+        className={[
+          "rounded-lg border px-5 py-1.5 text-xs transition",
+          active
+            ? "border-blue-300/35 bg-blue-500/18 text-blue-100 shadow-[0_0_18px_rgba(96,165,250,0.14)]"
+            : "border-white/10 bg-white/[0.06] text-white/60 hover:bg-white/[0.10] hover:text-white/85",
+        ].join(" ")}
+      >
+        {panel === "menu"
+          ? "Menu"
+          : panel === "shortcuts"
+          ? "Shortcuts"
+          : "Assets"}
+      </button>
+    );
+  })}
+</div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setCoreOpen(false);
-                  setCoreView("menu");
-                  window.location.href = "/pricing";
-                }}
-                className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-              >
-                Pricing
-              </button>
+    {navPanelOpen && (
+      <div className="absolute left-1/2 top-[126px] z-50 w-[760px] -translate-x-1/2 rounded-2xl border border-white/10 bg-black p-3 shadow-[0_20px_60px_rgba(0,0,0,0.55)] ring-1 ring-white/10 backdrop-blur-md">
+        {navPanelOpen === "menu" ? (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
+              <div className="mb-2 text-[10px] uppercase tracking-widest text-white/40">
+                Account / Repo
+              </div>
 
-              <div className="my-2 h-px bg-white/10" />
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setNavPanelOpen(null)}
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
+                >
+                  Profile (soon)
+                </button>
 
-              <button
-                type="button"
+                <button
+                  type="button"
+                  onClick={() => setNavPanelOpen(null)}
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
+                >
+                  Usage (soon)
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => {
-                    setCoreOpen(false);
+                    setNavPanelOpen(null);
+                    setCoreView("menu");
+                    window.location.href = "/pricing";
+                  }}
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
+                >
+                  Pricing
+                </button>
+
+                <div className="my-2 h-px bg-white/10" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNavPanelOpen(null);
                     setCoreView("menu");
                     window.location.href = "/";
                   }}
-                className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-              >
-                Switch repo
-              </button>
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
+                >
+                  Switch repo
+                </button>
 
-              <button
-                type="button"
+                <button
+                  type="button"
                   onClick={() => {
                     copyRepoId();
-                    setCoreOpen(false);
+                    setNavPanelOpen(null);
                     setCoreView("menu");
                   }}
-                className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-              >
-                {copied ? "Copied ✓" : "Copy repo id"}
-              </button>
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
+                >
+                  {copied ? "Copied ✓" : "Copy repo id"}
+                </button>
 
-              <button
-                type="button"
-                onClick={onLogout}
-                className="w-full rounded-xl border border-rose-400/20 bg-rose-500/[0.06] px-3 py-2 text-left text-sm text-rose-200/85 hover:bg-rose-500/12"
-              >
-                Log out
-              </button>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="w-full rounded-xl border border-rose-400/20 bg-rose-500/[0.06] px-3 py-2 text-left text-sm text-rose-200/85 hover:bg-rose-500/12"
+                >
+                  Log out
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
+              <div className="mb-2 text-[10px] uppercase tracking-widest text-white/40">
+                Chamber Core
+              </div>
+
+              <div className="space-y-2">
+                <div className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2">
+                  <div className="text-sm text-white/85">EA Field Guide</div>
+                  <div className="mt-1 text-xs leading-5 text-white/45">
+                    Current capabilities, execution model, useful tips, and known limitations.
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setCoreView("capabilities")}
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Current Capabilities</span>
+                    <span className="text-[10px] uppercase tracking-wide text-emerald-300/70">
+                      Live
+                    </span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCoreView("calibration")}
+                  className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span>First Repo Calibration</span>
+                    <span className="text-[10px] uppercase tracking-wide text-blue-300/70">
+                      Next
+                    </span>
+                  </div>
+                </button>
+              </div>
             </div>
           </div>
-
-          {/* Right column */}
+        ) : navPanelOpen === "shortcuts" ? (
           <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
-            {coreView === "menu" && (
-              <>
-                <div className="mb-2 text-[10px] uppercase tracking-widest text-white/40">
-                  Chamber Core
-                </div>
+            <div className="mb-3 text-[10px] uppercase tracking-widest text-white/40">
+              Shortcuts
+            </div>
 
-                <div className="space-y-2">
-                  <div className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2">
-                    <div className="text-sm text-white/85">EA Field Guide</div>
-                    <div className="mt-1 text-xs leading-5 text-white/45">
-                      Current capabilities, execution model, useful tips, and known limitations.
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setCoreView("capabilities")}
-                    className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Current Capabilities</span>
-                      <span className="text-[10px] uppercase tracking-wide text-emerald-300/70">
-                        Live
-                      </span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setCoreView("calibration")}
-                    className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span>First Repo Calibration</span>
-                      <span className="text-[10px] uppercase tracking-wide text-blue-300/70">
-                        Next
-                      </span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Goal Plan Flow</span>
-                      <span className="text-[10px] uppercase tracking-wide text-blue-300/70">
-                        Next
-                      </span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Chamber Evolution</span>
-                      <span className="text-[10px] uppercase tracking-wide text-white/45">
-                        Planned
-                      </span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    className="w-full rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-left text-sm text-white/75 hover:bg-white/[0.12] hover:text-white"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span>Known Limitations</span>
-                      <span className="text-[10px] uppercase tracking-wide text-amber-300/70">
-                        EA
-                      </span>
-                    </div>
-                  </button>
-                </div>
-              </>
-            )}
-
-            {coreView === "capabilities" && (
-              <div className="flex flex-col">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-widest text-white/40">
-                      Chamber Core
-                    </div>
-                    <div className="mt-1 text-sm text-white/90">
-                      Current Capabilities
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setCoreView("menu")}
-                    className="rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1 text-xs text-white/70 hover:bg-white/[0.12] hover:text-white"
-                  >
-                    Back
-                  </button>
-                </div>
-
-                <div className="space-y-3 text-sm text-white/72">
-                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.08] px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-300/85">
-                      Live
-                    </div>
-                    <div className="mt-2 space-y-2">
-                      <div>• Read repository files and inspect project structure.</div>
-                      <div>• Propose deterministic file changes before applying them.</div>
-                      <div>• Preview file rewrites inside the editor flow.</div>
-                      <div>• Run pre-verify and verify through the runner pipeline.</div>
-                      <div>• Apply approved changes through server-controlled mutation.</div>
-                      <div>• Track file-level verification state: ok, pending, warn, error.</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-blue-400/20 bg-blue-500/[0.08] px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-300/85">
-                      Execution Model
-                    </div>
-                    <div className="mt-2 space-y-2 text-white/68">
-                      <div>• Chamber reasons about the repo and drafts proposed edits.</div>
-                      <div>• Server remains execution authority for apply, verify, and status updates.</div>
-                      <div>• Storage is derived state; database metadata remains canonical.</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-amber-400/20 bg-amber-500/[0.08] px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-300/85">
-                      Early Access Limits
-                    </div>
-                    <div className="mt-2 space-y-2 text-white/68">
-                      <div>• Multi-file autonomy still needs stronger reliability.</div>
-                      <div>• Some control-center actions are surfaced before full activation.</div>
-                      <div>• Calibration, goal planning, and deeper workflow orchestration are not fully wired yet.</div>
-                    </div>
+            <div className="grid gap-2">
+              {[
+                ["Shift + D", "Duplicate selected cards"],
+                ["Delete", "Delete selected cards"],
+                ["X", "Hold to cut hovered connection"],
+                ["Space", "Hold to pan canvas"],
+                ["Escape", "Clear selection / close panel"],
+                ["Drag box", "Select multiple cards"],
+                ["Shift + click", "Add/remove from selection"],
+              ].map(([keys, label]) => (
+                <div
+                  key={keys}
+                  className="flex items-center justify-between gap-4 rounded-xl border border-white/10 bg-white/[0.05] px-3 py-2"
+                >
+                  <div className="text-sm text-white/70">{label}</div>
+                  <div className="rounded-md border border-blue-300/20 bg-blue-500/10 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-blue-100/70">
+                    {keys}
                   </div>
                 </div>
-              </div>
-            )}
-
-            {coreView === "calibration" && (
-              <div className="flex flex-col">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-widest text-white/40">
-                      Chamber Core
-                    </div>
-                    <div className="mt-1 text-sm text-white/90">
-                      First Repo Calibration
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setCoreView("menu")}
-                    className="rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1 text-xs text-white/70 hover:bg-white/[0.12] hover:text-white"
-                  >
-                    Back
-                  </button>
-                </div>
-
-                <div className="space-y-3 text-sm text-white/72">
-                  <div className="rounded-xl border border-blue-400/20 bg-blue-500/[0.08] px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-300/85">
-                      Purpose
-                    </div>
-                    <div className="mt-2 space-y-2 text-white/68">
-                      <div>• Establish how Vestaryn should behave before deeper repo work begins.</div>
-                      <div>• Separate user skill, preference, readiness, and edit style into explicit signals.</div>
-                      <div>• Reduce guesswork before setup help, scaffolding, and guided execution.</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-white/80">
-                      Proposed Questions
-                    </div>
-                    <div className="mt-2 space-y-3 text-white/72">
-                      <div>1. What do you want to create or improve in this repository?</div>
-                      <div>2. How comfortable are you with this tech stack?</div>
-                      <div>3. Do you want Vestaryn to explain steps, or act directly?</div>
-                      <div>4. Is this project already set up and runnable on your machine?</div>
-                      <div>5. Should Vestaryn make minimal changes, or help fill in missing structure when needed?</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/[0.08] px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-300/85">
-                      Behavioral Output
-                    </div>
-                    <div className="mt-2 space-y-2 text-white/68">
-                      <div>• Goal defines repo intent and targeting.</div>
-                      <div>• Skill level adjusts explanation depth.</div>
-                      <div>• Operation style controls guide vs direct behavior.</div>
-                      <div>• Project readiness controls setup assumptions.</div>
-                      <div>• Change style controls minimal edits vs scaffold suggestions.</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-amber-400/20 bg-amber-500/[0.08] px-3 py-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-300/85">
-                      Guardrail
-                    </div>
-                    <div className="mt-2 text-white/68">
-                      • Even when calibration suggests scaffolding, Vestaryn should still propose foundational files before applying them.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+              ))}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-4">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-white/35">
+              Assets
+            </div>
+            <div className="mt-2 text-sm leading-6 text-white/65">
+              Generated and processed image assets will appear here. For now, images are stored durably and refreshed when the canvas reloads.
+            </div>
+          </div>
+        )}
       </div>
     )}
   </div>
@@ -2385,6 +2386,7 @@ style={
           children
         ) : (
          <ArtisticCanvasSurface
+            repoId={repoId}
             viewportRef={viewportRef}
             canvasPresetUi={canvasPresetUi}
             cardPreset={cardPreset}
